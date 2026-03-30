@@ -74,7 +74,6 @@ Thumbs.db
 # --------
 *.dll
 *.exe
-*.md
 OLD/
 # *.svg
 proto/*.pb.cc
@@ -94,3 +93,12 @@ doc/
 *ply
 *.yaml
 .codex/
+.venv/
+__pycache__/
+worklog/
+node_modules/
+.next/
+apps/web/node_modules/
+apps/web/.next/
+apps/agent-runtime/.venv/
+apps/web/node_modules.bak/
