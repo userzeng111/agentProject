@@ -1,12 +1,126 @@
 "use client";
 
 import AutoStoriesRoundedIcon from "@mui/icons-material/AutoStoriesRounded";
+import ArchiveRoundedIcon from "@mui/icons-material/ArchiveRounded";
 import HubRoundedIcon from "@mui/icons-material/HubRounded";
 import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
-import { Button, Card, CardContent, Chip, Container, Stack, Typography } from "@mui/material";
 import Link from "next/link";
+import { useEffect, useState } from "react";
+import {
+  Alert,
+  Button,
+  Card,
+  CardContent,
+  Chip,
+  Container,
+  Stack,
+  Typography,
+} from "@mui/material";
+import { getDashboard } from "@/lib/api";
+import { DashboardResponse, TaskCardSummary, TaskStatus } from "@/lib/types";
+
+const statusLabelMap: Record<TaskStatus, string> = {
+  created: "待启动",
+  sources_ingested: "已入库",
+  planning: "规划中",
+  waiting_outline_review: "待审核",
+  drafting: "正文生成中",
+  waiting_manual_action: "待人工处理",
+  assembling: "结果整理中",
+  completed: "已完成",
+  cancelled: "已取消",
+  failed: "失败",
+};
+
+function resolveTaskHref(task: TaskCardSummary) {
+  if (task.storage_state === "archive") {
+    return `/archive/${task.task_id}`;
+  }
+  if (task.status === "waiting_outline_review") {
+    return `/review/${task.task_id}`;
+  }
+  if (task.status === "completed") {
+    return `/result/${task.task_id}`;
+  }
+  return `/tasks/${task.task_id}`;
+}
+
+function TaskSection({
+  title,
+  items,
+  emptyText,
+}: {
+  title: string;
+  items: TaskCardSummary[];
+  emptyText: string;
+}) {
+  return (
+    <Card sx={{ borderRadius: 4 }}>
+      <CardContent>
+        <Stack spacing={2.5}>
+          <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+            {title}
+          </Typography>
+          {items.length ? (
+            <Stack spacing={2}>
+              {items.map((task) => (
+                <Card key={task.task_id} variant="outlined" sx={{ borderRadius: 3 }}>
+                  <CardContent>
+                    <Stack spacing={1.5}>
+                      <Stack
+                        direction={{ xs: "column", sm: "row" }}
+                        spacing={1}
+                        justifyContent="space-between"
+                        alignItems={{ xs: "flex-start", sm: "center" }}
+                      >
+                        <Typography variant="h6">{task.title || task.task_id}</Typography>
+                        <Chip label={statusLabelMap[task.status] ?? task.status} size="small" />
+                      </Stack>
+                      <Typography color="text.secondary">{task.summary}</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        阶段：{task.current_stage} · 模式：{task.mode} · 更新时间：
+                        {new Date(task.updated_at).toLocaleString()}
+                      </Typography>
+                      <Button
+                        component={Link}
+                        href={resolveTaskHref(task)}
+                        variant="text"
+                        sx={{ alignSelf: "flex-start", px: 0 }}
+                      >
+                        查看详情
+                      </Button>
+                    </Stack>
+                  </CardContent>
+                </Card>
+              ))}
+            </Stack>
+          ) : (
+            <Typography color="text.secondary">{emptyText}</Typography>
+          )}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function Home() {
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void getDashboard()
+      .then((response) => {
+        setDashboard(response);
+        setError("");
+      })
+      .catch((reason) => {
+        setError(reason instanceof Error ? reason.message : "读取首页聚合数据失败");
+      });
+  }, []);
+
+  const visibleRunningCount = dashboard?.running_tasks?.length ?? 0;
+  const reportedActiveRuns = dashboard?.system_summary?.active_runs ?? 0;
+
   return (
     <Container maxWidth="lg" sx={{ py: { xs: 6, md: 10 } }}>
       <Stack spacing={4}>
@@ -23,8 +137,7 @@ export default function Home() {
             输入一个创意，先过大纲审核，再生成可读的小说初稿。
           </Typography>
           <Typography variant="h6" color="text.secondary" sx={{ maxWidth: 760 }}>
-            这个 demo 展示了双运行时架构：Next.js 负责界面和任务流，FastAPI + LangGraph 负责工作流编排，
-            并支持在大纲阶段人工确认后继续生成正文。
+            首页已直接切到聚合接口，能看到继续处理、运行中和失败任务，减少在多个页面之间来回查状态。
           </Typography>
         </Stack>
 
@@ -37,6 +150,47 @@ export default function Home() {
           </Button>
         </Stack>
 
+        {error ? <Alert severity="error">{error}</Alert> : null}
+
+        {dashboard ? (
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+            <Card sx={{ borderRadius: 4, flex: 1 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Typography variant="overline">活动运行</Typography>
+                  <Typography variant="h4">{reportedActiveRuns}</Typography>
+                  <Typography color="text.secondary">
+                    接口统计 {reportedActiveRuns} · 列表展示 {visibleRunningCount}
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+            <Card sx={{ borderRadius: 4, flex: 1 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Typography variant="overline">归档任务</Typography>
+                  <Typography variant="h4">{dashboard.system_summary?.archived_runs ?? 0}</Typography>
+                  <Typography color="text.secondary">已归档运行数</Typography>
+                  <Button component={Link} href="/archive" variant="text" sx={{ alignSelf: "flex-start", px: 0 }}>
+                    进入归档列表
+                  </Button>
+                </Stack>
+              </CardContent>
+            </Card>
+            <Card sx={{ borderRadius: 4, flex: 1 }}>
+              <CardContent>
+                <Stack spacing={1}>
+                  <Typography variant="overline">默认模型</Typography>
+                  <Typography variant="h4">{dashboard.model_summary?.default_model ?? "未提供"}</Typography>
+                  <Typography color="text.secondary">
+                    支持模型 {dashboard.model_summary?.supported_models?.length ?? 0} 个
+                  </Typography>
+                </Stack>
+              </CardContent>
+            </Card>
+          </Stack>
+        ) : null}
+
         <div
           style={{
             display: "grid",
@@ -46,6 +200,11 @@ export default function Home() {
         >
           {[
             {
+              icon: <ArchiveRoundedIcon />,
+              title: "归档结果可回查",
+              text: "已完成任务会进入归档区，首页保留统一入口，便于快速回看结果、章节与事件尾流。",
+            },
+            {
               icon: <HubRoundedIcon />,
               title: "工作流先规划后写作",
               text: "先做需求标准化与故事规划，再在 review 页确认大纲，避免直接把长文本塞进一个不可控的大模型请求里。",
@@ -53,7 +212,7 @@ export default function Home() {
             {
               icon: <LayersRoundedIcon />,
               title: "前后端彻底分层",
-              text: "Web 层只处理任务创建、状态展示和人工审核；Runtime 层只处理 LangGraph 的节点执行和状态恢复。",
+              text: "Web 层只消费聚合接口与事件流；Runtime 层只处理 LangGraph 的节点执行和状态恢复。",
             },
             {
               icon: <AutoStoriesRoundedIcon />,
@@ -86,6 +245,22 @@ export default function Home() {
             </Card>
           ))}
         </div>
+
+        <TaskSection
+          title="待继续处理"
+          items={dashboard?.continue_tasks ?? []}
+          emptyText="当前没有需要人工继续处理的任务。"
+        />
+        <TaskSection
+          title="运行中"
+          items={dashboard?.running_tasks ?? []}
+          emptyText="当前没有运行中的任务。"
+        />
+        <TaskSection
+          title="失败任务"
+          items={dashboard?.failed_tasks ?? []}
+          emptyText="当前没有失败任务。"
+        />
       </Stack>
     </Container>
   );

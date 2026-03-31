@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Alert,
@@ -10,12 +10,13 @@ import {
   CardContent,
   Container,
   MenuItem,
+  Skeleton,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import { createTask, uploadAsset } from "@/lib/api";
-import { TaskCreatePayload, TaskMode } from "@/lib/types";
+import { createTask, getModels, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { ModelOption, TaskCreatePayload, TaskMode } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
   mode: "short_story",
@@ -26,6 +27,7 @@ const defaultPayload: TaskCreatePayload = {
   audience: "",
   banned: "",
   title_hint: "",
+  model_id: "",
 };
 
 const modeOptions: { value: TaskMode; label: string }[] = [
@@ -38,9 +40,39 @@ const modeOptions: { value: TaskMode; label: string }[] = [
 export default function CreateTaskClient() {
   const router = useRouter();
   const [payload, setPayload] = useState(defaultPayload);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        setModelsLoading(true);
+        const nextModels = normalizeModelOptions(await getModels());
+        setModels(nextModels);
+        setPayload((current) => ({
+          ...current,
+          model_id: current.model_id || nextModels[0]?.id || "",
+        }));
+      } catch (loadError) {
+        setError(loadError instanceof Error ? loadError.message : "读取模型列表失败");
+      } finally {
+        setModelsLoading(false);
+      }
+    }
+
+    void loadModels();
+  }, []);
+
+  const resetPayload = useMemo(
+    () => ({
+      ...defaultPayload,
+      model_id: payload.model_id || models[0]?.id || "",
+    }),
+    [models, payload.model_id],
+  );
 
   const updateField =
     (field: keyof TaskCreatePayload) =>
@@ -94,6 +126,29 @@ export default function CreateTaskClient() {
                   </MenuItem>
                 ))}
               </TextField>
+              {modelsLoading ? (
+                <Skeleton variant="rounded" height={56} />
+              ) : (
+                <TextField
+                  select
+                  label="生成模型"
+                  value={payload.model_id ?? ""}
+                  onChange={updateField("model_id")}
+                  helperText={models.length ? "模型选项来自后端 /api/models 接口" : "当前后端没有返回可用模型"}
+                >
+                  {models.length ? (
+                    models.map((option) => (
+                      <MenuItem key={option.id} value={option.id}>
+                        {option.id}
+                      </MenuItem>
+                    ))
+                  ) : (
+                    <MenuItem value="" disabled>
+                      暂无可用模型
+                    </MenuItem>
+                  )}
+                </TextField>
+              )}
               <TextField
                 label="创意提示词"
                 value={payload.prompt}
@@ -132,7 +187,7 @@ export default function CreateTaskClient() {
                 <Button disabled={submitting || !payload.prompt.trim()} onClick={handleSubmit} variant="contained">
                   {submitting ? "正在创建..." : "创建并进入任务页"}
                 </Button>
-                <Button onClick={() => setPayload(defaultPayload)} variant="text">
+                <Button onClick={() => setPayload(resetPayload)} variant="text">
                   重置表单
                 </Button>
               </Stack>

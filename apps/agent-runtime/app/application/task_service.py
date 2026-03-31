@@ -1,29 +1,45 @@
 from __future__ import annotations
 
+import asyncio
+import threading
+from datetime import timedelta
 from typing import Any
 
 from langgraph.types import Command
 
 from app.domain.models import (
+    ArchiveTaskDetailResponse,
+    ArchiveTaskListResponse,
     ArtifactItem,
+    DashboardResponse,
     DraftResult,
+    ResultResponse,
     ReviewPayload,
+    ReviewResponse,
     SourceAsset,
     StoryPlan,
     TaskCreateRequest,
     TaskRecord,
     TaskStatus,
+    TaskSummary,
+    TaskEvent,
+    WorkspaceResponse,
+    utc_now,
 )
 from app.graph.main_graph import build_graph
-from app.llm.story_engine import StoryEngine
-from app.storage.task_store import InMemoryTaskStore
+from app.llm.story_engine import StoryEngine, reset_progress_callback, set_progress_callback
+from app.storage.task_store import TaskLogStore
 
 
 class TaskService:
-    def __init__(self, store: InMemoryTaskStore, engine: StoryEngine) -> None:
+    _STALE_RUN_AFTER = timedelta(minutes=10)
+
+    def __init__(self, store: TaskLogStore, engine: StoryEngine) -> None:
         self.store = store
         self.engine = engine
         self.graph = build_graph(engine)
+        self._active_runs: set[str] = set()
+        self._run_lock = threading.Lock()
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         return self.store.create_task(payload)
@@ -37,22 +53,37 @@ class TaskService:
 
     def run_task(self, task_id: str) -> TaskRecord:
         task = self.store.get(task_id)
-        if task.status is not TaskStatus.CREATED:
-            raise ValueError("只有新建任务才能开始生成。")
-        self.store.append_event(task_id, "running", "开始执行 LangGraph 工作流。")
-        result = self.graph.invoke(self._initial_state(task), config=self._config(task_id))
-        return self._sync_result(task_id, result)
+        if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
+            raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
+        snapshot = self.store.mark_stage(
+            task_id,
+            status=TaskStatus.PLANNING,
+            stage="planning",
+            progress=max(task.progress, 5),
+            message="任务已进入后台执行，正在整理创作要求。",
+            event_type="task.queued",
+        )
+        self._start_background(task_id, self._run_task_sync, task_id)
+        return snapshot
 
     def resume_task(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
         task = self.store.get(task_id)
         if task.status is not TaskStatus.WAITING_OUTLINE_REVIEW or task.pending_review is None:
             raise ValueError("当前任务没有待恢复的审核节点。")
-        self.store.append_event(task_id, "resume", "收到人工审核结果，继续执行。")
-        result = self.graph.invoke(
-            Command(resume={"approved": approved, "comment": comment}),
-            config=self._config(task_id),
+        decision_text = "通过" if approved else "驳回"
+        note = comment.strip() or f"人工审核已{decision_text}，任务转入后台处理。"
+        snapshot = self.store.mark_stage(
+            task_id,
+            status=TaskStatus.DRAFTING if approved else TaskStatus.WAITING_MANUAL_ACTION,
+            stage="drafting" if approved else "review_decision",
+            progress=60 if approved else max(task.progress, 56),
+            message=note,
+            event_type="review.submitted",
+            payload={"approved": approved, "comment": comment},
+            unit_id="outline",
         )
-        return self._sync_result(task_id, result, review_comment=comment)
+        self._start_background(task_id, self._resume_task_sync, task_id, approved, comment)
+        return snapshot
 
     def list_artifacts(self, task_id: str) -> list[ArtifactItem]:
         return self.store.get(task_id).artifacts
@@ -60,12 +91,154 @@ class TaskService:
     def list_models(self) -> list[dict[str, Any]]:
         return self.engine.list_models()
 
+    def get_dashboard(self) -> DashboardResponse:
+        tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
+        continue_statuses = {
+            TaskStatus.CREATED,
+            TaskStatus.SOURCES_INGESTED,
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.CANCELLED,
+        }
+        running_statuses = {
+            TaskStatus.PLANNING,
+            TaskStatus.DRAFTING,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.WAITING_MANUAL_ACTION,
+        }
+        running_tasks = [
+            self._to_summary(task)
+            for task in tasks
+            if task.status in running_statuses and not self._is_stale_running_task(task)
+        ]
+        continue_tasks = [self._to_summary(task) for task in tasks if task.status in continue_statuses]
+        failed_tasks = [self._to_summary(task) for task in tasks if task.status is TaskStatus.FAILED]
+        failed_tasks.extend(self._to_stale_run_summary(task) for task in tasks if self._is_stale_running_task(task))
+        return DashboardResponse(
+            continue_tasks=continue_tasks,
+            running_tasks=running_tasks,
+            failed_tasks=failed_tasks,
+            model_summary=self._model_summary(),
+            system_summary={
+                "active_runs": len(running_tasks),
+                "archived_runs": sum(1 for task in tasks if task.storage_state == "archive"),
+            },
+        )
+
+    def get_archive_list(self) -> ArchiveTaskListResponse:
+        items = [self._to_summary(task) for task in self.store.list_archive_tasks()]
+        return ArchiveTaskListResponse(
+            items=items,
+        )
+
+    def get_archive_detail(self, task_id: str) -> ArchiveTaskDetailResponse:
+        task = self.store.get(task_id)
+        if task.storage_state != "archive":
+            raise ValueError("当前任务尚未归档。")
+        if task.draft_result is None:
+            raise ValueError("归档任务缺少正文结果。")
+        return ArchiveTaskDetailResponse(
+            meta=self._to_summary(task),
+            request_preview=self._request_preview(task),
+            sources=task.sources,
+            recent_events=task.events[-20:],
+            result_summary=task.draft_result.summary,
+            result_markdown=self._result_markdown(task.draft_result),
+            result_md_ref=self._file_ref(task, "result.md"),
+            chapter_index=[
+                {
+                    "number": chapter.number,
+                    "title": chapter.title,
+                    "summary": chapter.summary,
+                    "md_ref": self._artifact_ref(task, f"chapter-{chapter.number:02d}.md"),
+                    "content": chapter.content,
+                }
+                for chapter in task.draft_result.chapters
+            ],
+            artifact_index=[self._artifact_index_item(task, artifact) for artifact in task.artifacts],
+            history_index=self._review_history(task),
+        )
+
+    def get_workspace(self, task_id: str) -> WorkspaceResponse:
+        task = self.store.get(task_id)
+        recent_events = task.events[-20:]
+        return WorkspaceResponse(
+            meta=self._to_summary(task),
+            recent_events=recent_events,
+            active_trace_summary=recent_events[-1].message if recent_events else None,
+            available_tabs=self._workspace_tabs(task),
+            request_preview=self._request_preview(task),
+            sources=task.sources,
+        )
+
+    def get_review(self, task_id: str) -> ReviewResponse:
+        task = self.store.get(task_id)
+        if task.story_plan is None:
+            raise ValueError("当前任务还没有可审核的大纲。")
+        review = task.pending_review
+        outline_ref = self._file_ref(task, "outline.md")
+        return ReviewResponse(
+            meta=self._to_summary(task),
+            review_type=review.type if review else "outline_review",
+            review_version=review.version if review else "v1",
+            summary=review.summary if review else "当前任务已有大纲，可查看历史审核结果。",
+            risk_flags=review.risk_flags if review else [],
+            outline_markdown=self._outline_markdown(task.story_plan),
+            outline_md_ref=outline_ref,
+            review_history=self._review_history(task),
+        )
+
+    def get_result(self, task_id: str) -> ResultResponse:
+        task = self.store.get(task_id)
+        if task.draft_result is None:
+            raise ValueError("当前任务还没有可查看的结果。")
+        return ResultResponse(
+            meta=self._to_summary(task),
+            result_summary=task.draft_result.summary,
+            result_markdown=self._result_markdown(task.draft_result),
+            result_md_ref=self._file_ref(task, "result.md"),
+            chapter_index=[
+                {
+                    "number": chapter.number,
+                    "title": chapter.title,
+                    "summary": chapter.summary,
+                    "md_ref": self._artifact_ref(task, f"chapter-{chapter.number:02d}.md"),
+                    "content": chapter.content,
+                }
+                for chapter in task.draft_result.chapters
+            ],
+            artifact_index=[
+                self._artifact_index_item(task, artifact)
+                for artifact in task.artifacts
+            ],
+            history_index=self._review_history(task),
+        )
+
+    def read_file_text(self, task_id: str, relative_path: str) -> str:
+        return self.store.read_text(task_id, relative_path)
+
+    def subscribe_task_events(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
+        self.store.get(task_id)
+        return self.store.subscribe(task_id)
+
+    def unsubscribe_task_events(self, task_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self.store.unsubscribe(task_id, queue)
+
+    def build_sse_snapshot(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get(task_id)
+        latest_event = task.events[-1].model_dump(mode="json") if task.events else None
+        return {
+            "task_id": task.id,
+            "meta": self._to_summary(task).model_dump(mode="json"),
+            "latest_event": latest_event,
+        }
+
     def _initial_state(self, task: TaskRecord) -> dict[str, Any]:
         reference_text = "\n\n".join(source.content for source in task.sources)
         return {
             "task_id": task.id,
             "input_payload": {
                 "mode": task.mode.value,
+                "model_id": task.model_id,
                 "prompt": task.input.prompt,
                 "genre": task.input.genre,
                 "style": task.input.style,
@@ -91,6 +264,12 @@ class TaskService:
         normalized_spec = values.get("normalized_spec")
         if normalized_spec:
             self.store.update_normalized_spec(task_id, normalized_spec)
+            self._emit_trace_summary(
+                task_id,
+                kind="spec",
+                title="创作要求已标准化",
+                detail="已整理用户诉求、风格、字数和参考材料，开始生成大纲。",
+            )
 
         if "__interrupt__" in result:
             story_plan_data = values.get("story_plan")
@@ -98,7 +277,15 @@ class TaskService:
                 raise RuntimeError("工作流进入审核前未生成可用大纲。")
             review = ReviewPayload.model_validate(result["__interrupt__"][0].value)
             story_plan = StoryPlan.model_validate(story_plan_data)
-            return self.store.set_waiting_review(task_id, review, story_plan)
+            record = self.store.set_waiting_review(task_id, review, story_plan)
+            self._emit_trace_summary(
+                task_id,
+                kind="outline",
+                title="大纲已生成",
+                detail="已完成故事骨架与章节规划，等待人工审核。",
+                unit_id="outline",
+            )
+            return record
 
         story_plan_data = values.get("story_plan")
         if not story_plan_data:
@@ -112,7 +299,97 @@ class TaskService:
             raise RuntimeError("工作流结束后未找到正文结果。")
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
-        return self.store.set_completed(task_id, story_plan, draft_result, artifacts)
+        record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
+        self._emit_trace_summary(
+            task_id,
+            kind="completed",
+            title="正文生成完成",
+            detail="章节已全部写完，正文与工件已归档。",
+        )
+        return record
+
+    def _run_task_sync(self, task_id: str) -> TaskRecord:
+        if not self._enter_active_run(task_id):
+            return self.store.get(task_id)
+        task = self.store.get(task_id)
+        if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED, TaskStatus.PLANNING}:
+            raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
+        try:
+            self.store.mark_stage(
+                task_id,
+                status=TaskStatus.PLANNING,
+                stage="planning",
+                progress=max(task.progress, 20),
+                message="开始执行 LangGraph 工作流，正在生成大纲。",
+                event_type="outline.generating",
+            )
+            self._emit_trace_summary(
+                task_id,
+                kind="outline",
+                title="开始生成大纲",
+                detail="正在结合提示词、风格和参考文本收敛故事骨架。",
+            )
+            token = set_progress_callback(self._build_progress_callback(task_id))
+            try:
+                result = self.graph.invoke(self._initial_state(task), config=self._config(task_id))
+            finally:
+                reset_progress_callback(token)
+            return self._sync_result(task_id, result)
+        except Exception as exc:
+            self.store.set_failed(task_id, f"运行失败：{exc}")
+            raise
+        finally:
+            self._leave_active_run(task_id)
+
+    def _resume_task_sync(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
+        if not self._enter_active_run(task_id):
+            return self.store.get(task_id)
+        task = self.store.get(task_id)
+        if task.pending_review is None or task.status not in {
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.DRAFTING,
+        }:
+            raise ValueError("当前任务没有待恢复的审核节点。")
+        try:
+            if approved:
+                self.store.mark_stage(
+                    task_id,
+                    status=TaskStatus.DRAFTING,
+                    stage="drafting",
+                    progress=max(task.progress, 60),
+                    message="收到人工审核结果，开始继续生成正文。",
+                    event_type="draft.generating",
+                    unit_id="outline",
+                )
+                self._emit_trace_summary(
+                    task_id,
+                    kind="draft",
+                    title="开始生成正文",
+                    detail="审核已通过，正在按章节逐段起草正文。",
+                    unit_id="outline",
+                )
+            else:
+                self.store.append_event(
+                    task_id,
+                    stage="review_decision",
+                    message="收到人工审核结果，准备结束本次任务。",
+                    event_type="task.cancel.pending",
+                )
+            token = set_progress_callback(self._build_progress_callback(task_id))
+            try:
+                result = self.graph.invoke(
+                    Command(resume={"approved": approved, "comment": comment}),
+                    config=self._config(task_id),
+                )
+            finally:
+                reset_progress_callback(token)
+            return self._sync_result(task_id, result, review_comment=comment)
+        except Exception as exc:
+            self.store.set_failed(task_id, f"恢复执行失败：{exc}")
+            raise
+        finally:
+            self._leave_active_run(task_id)
 
     def _build_artifacts(self, story_plan: StoryPlan, draft_result: DraftResult) -> list[ArtifactItem]:
         return [
@@ -127,3 +404,254 @@ class TaskService:
                 content=draft_result.body,
             ),
         ]
+
+    def _to_summary(self, task: TaskRecord) -> TaskSummary:
+        title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
+        summary = task.events[-1].message if task.events else ""
+        return TaskSummary(
+            task_id=task.id,
+            title=title,
+            mode=task.mode,
+            model_id=task.model_id or self.engine.settings.default_chat_model,
+            status=task.status,
+            current_stage=task.current_stage,
+            current_unit=task.current_unit,
+            progress=task.progress,
+            updated_at=task.updated_at,
+            summary=summary,
+            storage_state=task.storage_state,
+        )
+
+    def _model_summary(self) -> dict[str, Any]:
+        models = self.engine.list_models()
+        supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
+        default_model = self.engine.settings.default_chat_model
+        if default_model and default_model not in supported_models:
+            supported_models.insert(0, default_model)
+        return {
+            "default_model": default_model,
+            "supported_models": supported_models,
+        }
+
+    def _workspace_tabs(self, task: TaskRecord) -> list[str]:
+        tabs = ["request", "events"]
+        if task.story_plan is not None:
+            tabs.append("outline")
+        if task.pending_review is not None or task.status in {
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.CANCELLED,
+            TaskStatus.COMPLETED,
+        }:
+            tabs.append("review")
+        if task.draft_result is not None:
+            tabs.append("result")
+        return tabs
+
+    def _review_history(self, task: TaskRecord) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for event in task.events:
+            if event.event_type == "review.waiting":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "waiting",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "review.submitted":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "submitted",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.cancelled":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "rejected",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.completed":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "approved",
+                        "comment": "审核通过，已继续生成正文。",
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+        return items
+
+    def _outline_markdown(self, story_plan: StoryPlan) -> str:
+        lines = [
+            f"# {story_plan.working_title}",
+            "",
+            story_plan.logline,
+            "",
+            "## 世界观",
+            "",
+        ]
+        lines.extend(f"- {item}" for item in story_plan.world_notes)
+        lines.extend(["", "## 人物", ""])
+        lines.extend(f"- {item}" for item in story_plan.character_notes)
+        lines.extend(["", "## 章节计划", ""])
+        for chapter in story_plan.chapter_plan:
+            lines.append(f"- 第{chapter.number}章 {chapter.title}：{chapter.goal}")
+        return "\n".join(lines) + "\n"
+
+    def _result_markdown(self, draft_result: DraftResult) -> str:
+        return f"# {draft_result.title}\n\n{draft_result.summary}\n\n{draft_result.body}\n"
+
+    def _file_ref(self, task: TaskRecord, filename: str) -> str:
+        return f"/api/tasks/{task.id}/files/{filename}"
+
+    def _artifact_ref(self, task: TaskRecord, filename: str) -> str:
+        return f"/api/tasks/{task.id}/files/artifacts/{filename}"
+
+    def _artifact_index_item(self, task: TaskRecord, artifact: ArtifactItem) -> dict[str, Any]:
+        md_ref = None
+        if artifact.type == "story_plan":
+            md_ref = self._file_ref(task, "outline.md")
+        elif artifact.type == "manuscript":
+            md_ref = self._file_ref(task, "result.md")
+        return {
+            "id": artifact.id,
+            "type": artifact.type,
+            "name": artifact.name,
+            "created_at": artifact.created_at.isoformat(),
+            "md_ref": md_ref,
+        }
+
+    def _build_progress_callback(self, task_id: str):
+        def callback(event: dict[str, Any]) -> None:
+            stage = str(event.get("stage") or "drafting")
+            event_type = str(event.get("event_type") or "task.updated")
+            unit_id = event.get("unit_id")
+            message = str(event.get("message") or "任务进度已更新。")
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            progress = self._progress_value(task_id, event_type, payload)
+            status = TaskStatus.DRAFTING if stage == "drafting" else None
+            self.store.mark_stage(
+                task_id,
+                status=status,
+                stage=stage,
+                progress=progress,
+                unit_id=unit_id,
+                message=message,
+                event_type=event_type,
+                payload=payload,
+            )
+            if event_type == "chapter.started":
+                self._emit_trace_summary(
+                    task_id,
+                    kind="chapter",
+                    title=f"开始生成第 {payload.get('chapter_number', '?')} 章",
+                    detail=str(payload.get("chapter_title") or message),
+                    unit_id=unit_id,
+                )
+            elif event_type == "chapter.saved":
+                self._emit_trace_summary(
+                    task_id,
+                    kind="chapter",
+                    title=f"第 {payload.get('chapter_number', '?')} 章已完成",
+                    detail=str(payload.get("chapter_summary") or payload.get("chapter_title") or message),
+                    unit_id=unit_id,
+                )
+
+        return callback
+
+    def _progress_value(self, task_id: str, event_type: str, payload: dict[str, Any]) -> int | None:
+        task = self.store.get(task_id)
+        total = len(task.story_plan.chapter_plan) if task.story_plan is not None else 0
+        chapter_number = payload.get("chapter_number")
+        if not isinstance(chapter_number, int) or total <= 0:
+            return max(task.progress, 60) if event_type.startswith("chapter.") else None
+        base_progress = 55
+        span = 35
+        offset = chapter_number - 1 if event_type == "chapter.started" else chapter_number
+        return min(90, max(task.progress, base_progress + int(offset / total * span)))
+
+    def _enter_active_run(self, task_id: str) -> bool:
+        with self._run_lock:
+            if task_id in self._active_runs:
+                return False
+            self._active_runs.add(task_id)
+            return True
+
+    def _leave_active_run(self, task_id: str) -> None:
+        with self._run_lock:
+            self._active_runs.discard(task_id)
+
+    def _start_background(self, task_id: str, target, *args: Any) -> None:
+        def runner() -> None:
+            try:
+                target(*args)
+            except Exception:
+                return
+
+        threading.Thread(
+            target=runner,
+            name=f"task-worker-{task_id}",
+            daemon=True,
+        ).start()
+
+    def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
+        return {
+            "prompt": task.input.prompt,
+            "model_id": task.model_id or self.engine.settings.default_chat_model,
+            "genre": task.input.genre,
+            "style": task.input.style,
+            "target_words": task.input.target_words,
+            "audience": task.input.audience,
+            "banned": task.input.banned,
+            "title_hint": task.input.title_hint,
+        }
+
+    def _emit_trace_summary(
+        self,
+        task_id: str,
+        *,
+        kind: str,
+        title: str,
+        detail: str,
+        unit_id: str | None = None,
+    ) -> TaskEvent:
+        task = self.store.get(task_id)
+        return self.store.append_event(
+            task_id,
+            stage=task.current_stage,
+            message=f"{title}：{detail}",
+            event_type="trace.summary",
+            unit_id=unit_id,
+            payload={
+                "kind": kind,
+                "title": title,
+                "detail": detail,
+                "display_level": "public",
+            },
+        ).events[-1]
+
+    def _is_stale_running_task(self, task: TaskRecord) -> bool:
+        if task.storage_state != "runs":
+            return False
+        if task.status not in {
+            TaskStatus.PLANNING,
+            TaskStatus.DRAFTING,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.WAITING_MANUAL_ACTION,
+        }:
+            return False
+        if task.id in self._active_runs:
+            return False
+        return utc_now() - task.updated_at > self._STALE_RUN_AFTER
+
+    def _to_stale_run_summary(self, task: TaskRecord) -> TaskSummary:
+        summary = self._to_summary(task)
+        summary.summary = f"该任务在 {summary.updated_at.isoformat()} 后未继续更新，已不计入活动运行数。"
+        return summary

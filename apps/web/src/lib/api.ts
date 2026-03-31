@@ -1,4 +1,8 @@
 import {
+  ArchiveDetailResponse,
+  ArchiveIndexResponse,
+  ModelListResponse,
+  ModelOption,
   DashboardResponse,
   ResultResponse,
   ReviewResponse,
@@ -36,6 +40,11 @@ export function createTask(payload: TaskCreatePayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function getModels() {
+  const response = await request<ModelListResponse>("/api/models");
+  return response.data ?? [];
 }
 
 export function uploadAsset(taskId: string, file: File) {
@@ -76,6 +85,14 @@ export function getResult(taskId: string) {
   return request<ResultResponse>(`/api/tasks/${taskId}/result`);
 }
 
+export function getArchiveList() {
+  return request<ArchiveIndexResponse>("/api/archive");
+}
+
+export function getArchiveDetail(taskId: string) {
+  return request<ArchiveDetailResponse>(`/api/archive/${taskId}`);
+}
+
 export async function fetchTextRef(ref: string) {
   const target = ref.startsWith("http") ? ref : `${API_BASE}${ref.startsWith("/") ? ref : `/${ref}`}`;
   const response = await fetch(target, { cache: "no-store" });
@@ -83,4 +100,22 @@ export async function fetchTextRef(ref: string) {
     throw new Error("读取文本引用失败");
   }
   return response.text();
+}
+
+export async function fetchJsonRef<T>(ref: string) {
+  const target = ref.startsWith("http") ? ref : `${API_BASE}${ref.startsWith("/") ? ref : `/${ref}`}`;
+  const response = await fetch(target, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("读取 JSON 引用失败");
+  }
+  return response.json() as Promise<T>;
+}
+
+export function normalizeModelOptions(models: ModelOption[]) {
+  return models
+    .filter((item) => typeof item?.id === "string" && item.id.trim())
+    .map((item) => ({
+      ...item,
+      id: item.id.trim(),
+    }));
 }

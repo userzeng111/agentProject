@@ -7,15 +7,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "小说 Agent Runtime"
-    runtime_origin: str = "http://127.0.0.1:3000"
+    runtime_origin: str = "http://127.0.0.1:3001"
+    tasklog_root: str = "tasklog"
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(
         default="https://api.lclaitech.com/v1",
         validation_alias=AliasChoices("LLM_BASE_URL", "OPENAI_BASE_URL"),
     )
-    chat_model: str = Field(
+    default_chat_model: str = Field(
         default="gpt-5.4",
-        validation_alias=AliasChoices("LLM_MODEL", "CHAT_MODEL"),
+        validation_alias=AliasChoices("LLM_MODEL", "CHAT_MODEL", "DEFAULT_CHAT_MODEL"),
     )
     openai_api_key: str | None = Field(
         default=None,

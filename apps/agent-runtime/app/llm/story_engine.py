@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextvars import ContextVar, Token
 from typing import Any
 
 from langchain_core.prompts import ChatPromptTemplate
@@ -8,11 +10,25 @@ from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan,
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 from app.settings.config import Settings
 
+_progress_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "story_engine_progress_callback",
+    default=None,
+)
+
+
+def set_progress_callback(callback: Callable[[dict[str, Any]], None] | None) -> Token:
+    return _progress_callback_var.set(callback)
+
+
+def reset_progress_callback(token: Token) -> None:
+    _progress_callback_var.reset(token)
+
 
 class StoryEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.gateway_client: OpenAICompatibleGatewayClient | None = None
+        self.progress_callback: Callable[[dict[str, Any]], None] | None = None
         self.outline_prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -63,15 +79,20 @@ class StoryEngine:
             self.gateway_client = OpenAICompatibleGatewayClient(
                 base_url=settings.openai_base_url,
                 api_key=settings.openai_api_key,
-                model=settings.chat_model,
+                model=settings.default_chat_model,
             )
+
+    def resolve_model(self, model: str | None) -> str:
+        candidate = (model or "").strip()
+        return candidate or self.settings.default_chat_model
 
     def list_models(self) -> list[dict[str, Any]]:
         if self.gateway_client is None:
             return []
         return self.gateway_client.list_models()
 
-    def build_story_plan(self, spec: dict[str, Any], reference_text: str) -> StoryPlan:
+    def build_story_plan(self, spec: dict[str, Any], reference_text: str, model: str | None = None) -> StoryPlan:
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         prompt_value = self.outline_prompt.invoke(
             {
                 "mode": spec["mode"],
@@ -84,7 +105,10 @@ class StoryEngine:
         )
         if self.gateway_client is not None:
             try:
-                payload = self.gateway_client.complete_json(self._prompt_to_messages(prompt_value))
+                payload = self.gateway_client.complete_json(
+                    self._prompt_to_messages(prompt_value),
+                    model=resolved_model,
+                )
                 return StoryPlan.model_validate(payload)
             except (GatewayClientError, ValueError):
                 pass
@@ -126,13 +150,35 @@ class StoryEngine:
             chapter_plan=chapters,
         )
 
-    def generate_draft(self, spec: dict[str, Any], story_plan: dict[str, Any], reference_text: str) -> DraftResult:
+    def generate_draft(
+        self,
+        spec: dict[str, Any],
+        story_plan: dict[str, Any],
+        reference_text: str,
+        model: str | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> DraftResult:
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
         title = story_plan["working_title"]
         summary = story_plan["logline"]
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
         for item in story_plan["chapter_plan"]:
+            if active_progress_callback is not None:
+                active_progress_callback(
+                    {
+                        "event_type": "chapter.started",
+                        "stage": "drafting",
+                        "unit_id": f"chapter-{item['number']:02d}",
+                        "message": f"正在生成第 {item['number']} 章：{item['title']}",
+                        "payload": {
+                            "chapter_number": item["number"],
+                            "chapter_title": item["title"],
+                        },
+                    }
+                )
             chapter_prompt_value = self.chapter_prompt.invoke(
                 {
                     "mode": spec["mode"],
@@ -150,7 +196,8 @@ class StoryEngine:
             if self.gateway_client is not None:
                 try:
                     chapter_payload = self.gateway_client.complete_json(
-                        self._prompt_to_messages(chapter_prompt_value)
+                        self._prompt_to_messages(chapter_prompt_value),
+                        model=resolved_model,
                     )
                     chapter_draft = ChapterDraft.model_validate(chapter_payload)
                 except (GatewayClientError, ValueError):
@@ -170,6 +217,20 @@ class StoryEngine:
                 )
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
+            if active_progress_callback is not None:
+                active_progress_callback(
+                    {
+                        "event_type": "chapter.saved",
+                        "stage": "drafting",
+                        "unit_id": f"chapter-{chapter_draft.number:02d}",
+                        "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
+                        "payload": {
+                            "chapter_number": chapter_draft.number,
+                            "chapter_title": chapter_draft.title,
+                            "chapter_summary": chapter_draft.summary,
+                        },
+                    }
+                )
 
         if spec["mode"] == TaskMode.SHORT_STORY.value and len(chapters) <= 3:
             body = "\n\n".join(chapter.content for chapter in chapters)

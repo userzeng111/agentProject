@@ -38,12 +38,15 @@ def build_graph(engine: StoryEngine):
                 "audience": payload.get("audience", "").strip(),
                 "banned": payload.get("banned", "").strip(),
                 "title_hint": payload.get("title_hint", "").strip(),
+                "model_id": payload.get("model_id", payload.get("model", "")).strip(),
             }
         }
 
     def plan_story(state: WorkflowState) -> WorkflowState:
         story_plan = engine.build_story_plan(
-            state["normalized_spec"], state.get("reference_text", "")
+            state["normalized_spec"],
+            state.get("reference_text", ""),
+            model=state["normalized_spec"].get("model_id"),
         )
         return {"story_plan": story_plan.model_dump()}
 
@@ -69,6 +72,8 @@ def build_graph(engine: StoryEngine):
             state["normalized_spec"],
             state["story_plan"],
             state.get("reference_text", ""),
+            model=state["normalized_spec"].get("model_id"),
+            progress_callback=getattr(engine, "progress_callback", None),
         )
         return {"draft_result": draft_result.model_dump(), "cancelled": False}
 

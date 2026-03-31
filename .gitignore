@@ -102,3 +102,4 @@ apps/web/node_modules/
 apps/web/.next/
 apps/agent-runtime/.venv/
 apps/web/node_modules.bak/
+tasklog/

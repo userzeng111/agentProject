@@ -42,13 +42,18 @@ class TaskLogStore:
         self._write_index()
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
-        task = TaskRecord(mode=payload.mode, input=payload)
+        task = TaskRecord(
+            mode=payload.mode,
+            model_id=(payload.model_id or "").strip(),
+            input=payload,
+        )
         self._tasks[task.id] = task
         self.append_event(
             task.id,
             stage="created",
             message="任务已创建，等待生成大纲。",
             event_type="task.created",
+            payload={"summary": "任务已创建", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -70,6 +75,36 @@ class TaskLogStore:
     def summaries(self) -> list[dict[str, Any]]:
         return [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
 
+    def counts(self) -> dict[str, int]:
+        return {
+            "active_runs": sum(
+                1
+                for task in self._tasks.values()
+                if task.storage_state == "runs"
+                and task.status in {
+                    TaskStatus.PLANNING,
+                    TaskStatus.DRAFTING,
+                    TaskStatus.ASSEMBLING,
+                    TaskStatus.WAITING_MANUAL_ACTION,
+                }
+            ),
+            "archived_runs": sum(1 for task in self._tasks.values() if task.storage_state == "archive"),
+        }
+
+    def list_archive_tasks(self) -> list[TaskRecord]:
+        return sorted(
+            [task for task in self._tasks.values() if task.storage_state == "archive"],
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+
+    def list_run_tasks(self) -> list[TaskRecord]:
+        return sorted(
+            [task for task in self._tasks.values() if task.storage_state == "runs"],
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+
     def add_source(self, task_id: str, source: SourceAsset) -> TaskRecord:
         task = self.get(task_id)
         task.sources.append(source)
@@ -82,6 +117,7 @@ class TaskLogStore:
             message=f"已接收参考文本：{source.filename}",
             event_type="source.ingested",
             unit_id=source.id,
+            payload={"summary": f"已接收素材 {source.filename}", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -101,6 +137,7 @@ class TaskLogStore:
             event_type="review.waiting",
             md_ref=f"tasklog/{task.storage_state}/{task.id}/outline.md",
             json_ref=f"tasklog/{task.storage_state}/{task.id}/outline.json",
+            payload={"summary": "大纲已生成，等待人工审核", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -128,6 +165,7 @@ class TaskLogStore:
             event_type="task.completed",
             md_ref=f"tasklog/{task.storage_state}/{task.id}/result.md",
             json_ref=f"tasklog/{task.storage_state}/{task.id}/result.json",
+            payload={"summary": "正文与工件已生成完成", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -145,6 +183,7 @@ class TaskLogStore:
             stage="cancelled",
             message=note,
             event_type="task.cancelled",
+            payload={"summary": note, "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -159,6 +198,7 @@ class TaskLogStore:
             stage="failed",
             message=message,
             event_type="task.failed",
+            payload={"summary": message, "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -174,6 +214,7 @@ class TaskLogStore:
             stage="planning",
             message="创作要求已标准化，准备生成大纲。",
             event_type="task.stage.changed",
+            payload={"summary": "创作要求已标准化", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -226,6 +267,7 @@ class TaskLogStore:
     ) -> TaskRecord:
         target = task or self.get(task_id)
         event = TaskEvent(
+            task_id=target.id,
             stage=stage,
             message=message,
             event_type=event_type,
@@ -252,6 +294,12 @@ class TaskLogStore:
         if queue in queues:
             queues.remove(queue)
 
+    def read_text(self, task_id: str, relative_path: str) -> str:
+        return self._resolve_task_path(task_id, relative_path).read_text(encoding="utf-8")
+
+    def read_json(self, task_id: str, relative_path: str) -> dict[str, Any]:
+        return json.loads(self.read_text(task_id, relative_path))
+
     def _broadcast_event(self, task_id: str, event: TaskEvent) -> None:
         payload = event.model_dump(mode="json")
         for queue in self._subscribers.get(task_id, []):
@@ -260,7 +308,9 @@ class TaskLogStore:
     def _load_existing_tasks(self) -> None:
         for base_dir, storage_state in ((self.runs_dir, "runs"), (self.archive_dir, "archive")):
             for task_dir in sorted(base_dir.glob("task_*")):
-                snapshot_path = task_dir / "task.json"
+                snapshot_path = task_dir / "state" / "task.json"
+                if not snapshot_path.exists():
+                    snapshot_path = task_dir / "task.json"
                 if not snapshot_path.exists():
                     continue
                 data = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -283,10 +333,13 @@ class TaskLogStore:
         task_dir = self._task_dir(task)
         artifacts_dir = task_dir / "artifacts"
         trace_dir = task_dir / "trace"
+        state_dir = task_dir / "state"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         trace_dir.mkdir(parents=True, exist_ok=True)
+        state_dir.mkdir(parents=True, exist_ok=True)
 
         self._write_json(task_dir / "task.json", task.model_dump(mode="json"))
+        self._write_json(state_dir / "task.json", task.model_dump(mode="json"))
         self._write_json(task_dir / "meta.json", self._meta_payload(task))
         self._write_json(task_dir / "request.json", self._request_payload(task))
         self._write_md(task_dir / "request.md", self._request_markdown(task))
@@ -312,7 +365,9 @@ class TaskLogStore:
             if event.json_ref:
                 refs.append(f"json={event.json_ref}")
             suffix = f" [{' | '.join(refs)}]" if refs else ""
-            events_md.append(f"- {event.at.isoformat()} | {event.event_type} | {event.stage} | {event.message}{suffix}")
+            events_md.append(
+                f"- {event.created_at.isoformat()} | {event.event_type} | {event.stage} | {event.message}{suffix}"
+            )
         self._write_md(task_dir / "events.md", "\n".join(events_md) + "\n")
         tail = [event.model_dump(mode="json") for event in task.events[-self.tail_limit :]]
         self._write_json(task_dir / "events.tail.json", {"task_id": task.id, "items": tail})
@@ -372,9 +427,15 @@ class TaskLogStore:
         if source_dir.exists():
             shutil.move(str(source_dir), str(target_dir))
         task.storage_state = "archive"
+        run_prefix = f"tasklog/runs/{task.id}/"
+        archive_prefix = f"tasklog/archive/{task.id}/"
+        for event in task.events:
+            if event.md_ref and event.md_ref.startswith(run_prefix):
+                event.md_ref = event.md_ref.replace(run_prefix, archive_prefix, 1)
+            if event.json_ref and event.json_ref.startswith(run_prefix):
+                event.json_ref = event.json_ref.replace(run_prefix, archive_prefix, 1)
         self._tasks[task.id] = task
-        self._write_json(target_dir / "task.json", task.model_dump(mode="json"))
-        self._write_json(target_dir / "meta.json", self._meta_payload(task))
+        self._write_task_files(task)
 
     def _write_index(self) -> None:
         summaries = [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
@@ -393,9 +454,11 @@ class TaskLogStore:
             "task_id": task.id,
             "title": title,
             "mode": task.mode.value,
+            "model_id": task.model_id,
             "status": task.status.value,
             "current_stage": task.current_stage,
             "current_unit": task.current_unit,
+            "progress": task.progress,
             "updated_at": task.updated_at.isoformat(),
             "summary": latest_event,
             "storage_state": task.storage_state,
@@ -412,6 +475,7 @@ class TaskLogStore:
             "task_id": task.id,
             "title": title,
             "mode": task.mode.value,
+            "model_id": task.model_id,
             "status": task.status.value,
             "current_stage": task.current_stage,
             "current_unit": task.current_unit,
@@ -425,6 +489,7 @@ class TaskLogStore:
         return {
             "task_id": task.id,
             "mode": task.mode.value,
+            "model_id": task.model_id,
             "input": task.input.model_dump(mode="json"),
             "sources": [source.model_dump(mode="json") for source in task.sources],
         }
@@ -435,6 +500,7 @@ class TaskLogStore:
             "",
             f"- task_id: {task.id}",
             f"- mode: {task.mode.value}",
+            f"- model_id: {task.model_id or 'gpt-5.4'}",
             f"- prompt: {task.input.prompt}",
             f"- genre: {task.input.genre}",
             f"- style: {task.input.style}",
@@ -478,6 +544,24 @@ class TaskLogStore:
         path = base / task.id
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _resolve_task_path(self, task_id: str, relative_path: str) -> Path:
+        task = self.get(task_id)
+        candidate = Path(relative_path)
+        if candidate.is_absolute():
+            raise FileNotFoundError("禁止读取绝对路径。")
+
+        task_dir = self._task_dir(task).resolve()
+        if candidate.parts and candidate.parts[0] == "tasklog":
+            absolute = (self.root_dir.parent / candidate).resolve()
+        else:
+            absolute = (task_dir / candidate).resolve()
+
+        if not str(absolute).startswith(str(self.root_dir.resolve())):
+            raise FileNotFoundError("禁止越界读取任务文件。")
+        if not absolute.exists() or not absolute.is_file():
+            raise FileNotFoundError(relative_path)
+        return absolute
 
     def _write_json(self, path: Path, payload: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

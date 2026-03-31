@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 
 def utc_now() -> datetime:
@@ -48,6 +48,7 @@ class TaskInput(BaseModel):
 
 class TaskCreateRequest(TaskInput):
     mode: TaskMode
+    model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
 
 
 class ResumeRequest(BaseModel):
@@ -109,8 +110,9 @@ class ArtifactItem(BaseModel):
 
 class TaskEvent(BaseModel):
     event_id: str = Field(default_factory=lambda: new_id("evt"))
+    task_id: str | None = None
     event_type: str = "task.updated"
-    at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now, validation_alias=AliasChoices("created_at", "at"))
     stage: str
     message: str
     unit_id: str | None = None
@@ -122,6 +124,7 @@ class TaskEvent(BaseModel):
 class TaskRecord(BaseModel):
     id: str = Field(default_factory=lambda: new_id("task"))
     mode: TaskMode
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "model"))
     status: TaskStatus = TaskStatus.CREATED
     current_stage: str = "created"
     current_unit: str | None = None
@@ -138,3 +141,72 @@ class TaskRecord(BaseModel):
     storage_state: str = "runs"
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TaskSummary(BaseModel):
+    task_id: str
+    title: str
+    mode: TaskMode
+    model_id: str
+    status: TaskStatus
+    current_stage: str
+    current_unit: str | None = None
+    progress: int
+    updated_at: datetime
+    summary: str
+    storage_state: str
+
+
+class DashboardResponse(BaseModel):
+    continue_tasks: list[TaskSummary]
+    running_tasks: list[TaskSummary]
+    failed_tasks: list[TaskSummary]
+    model_summary: dict[str, Any]
+    system_summary: dict[str, Any]
+
+
+class WorkspaceResponse(BaseModel):
+    meta: TaskSummary
+    recent_events: list[TaskEvent]
+    active_trace_summary: str | None = None
+    available_tabs: list[str] = Field(default_factory=list)
+    request_preview: dict[str, Any] = Field(default_factory=dict)
+    sources: list[SourceAsset] = Field(default_factory=list)
+
+
+class ReviewResponse(BaseModel):
+    meta: TaskSummary
+    review_type: str
+    review_version: str
+    summary: str | None = None
+    risk_flags: list[str] = Field(default_factory=list)
+    outline_markdown: str | None = None
+    outline_md_ref: str | None = None
+    review_history: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ResultResponse(BaseModel):
+    meta: TaskSummary
+    result_summary: str | None = None
+    result_markdown: str | None = None
+    result_md_ref: str | None = None
+    chapter_index: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_index: list[dict[str, Any]] = Field(default_factory=list)
+    history_index: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ArchiveTaskListResponse(BaseModel):
+    items: list[TaskSummary] = Field(default_factory=list)
+
+
+class ArchiveTaskDetailResponse(BaseModel):
+    meta: TaskSummary
+    request_preview: dict[str, Any] = Field(default_factory=dict)
+    sources: list[SourceAsset] = Field(default_factory=list)
+    recent_events: list[TaskEvent] = Field(default_factory=list)
+    result_summary: str | None = None
+    result_markdown: str | None = None
+    result_md_ref: str | None = None
+    chapter_index: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_index: list[dict[str, Any]] = Field(default_factory=list)
+    history_index: list[dict[str, Any]] = Field(default_factory=list)
