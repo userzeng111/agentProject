@@ -26,14 +26,77 @@ export interface TaskCreatePayload extends TaskInput {
   mode: TaskMode;
 }
 
+export interface ModelContextWindowCapability {
+  max_input_tokens?: number;
+  max_output_tokens?: number;
+  max_total_tokens?: number;
+  recommended_input_tokens?: number;
+  recommended_prompt_budget?: number;
+  compression_trigger_tokens?: number;
+}
+
+export interface ModelCacheCapability {
+  runtime_context_cache?: boolean;
+  prompt_cache?: boolean;
+  response_cache?: boolean;
+  cache_scope?: string;
+  runtime_response_cache?: boolean;
+  provider_prompt_cache?: string;
+  cache_key_strategy?: string;
+}
+
+export interface ModelCompressionCapability {
+  supported?: boolean;
+  may_compress?: boolean;
+  strategy?: string;
+}
+
+export interface ModelCapabilities {
+  context_window?: ModelContextWindowCapability;
+  cache?: ModelCacheCapability;
+  compression?: ModelCompressionCapability;
+  features?: string[] | Record<string, boolean>;
+}
+
+export interface ModelMetadata {
+  source?: string;
+  profile_version?: string;
+}
+
 export interface ModelOption {
   id: string;
   object?: string;
   owned_by?: string;
+  display_name?: string;
+  provider?: string;
+  capabilities?: ModelCapabilities;
+  metadata?: ModelMetadata;
 }
 
 export interface ModelListResponse {
   data: ModelOption[];
+  meta?: {
+    default_model?: string;
+    capability_schema_version?: string;
+  };
+}
+
+export interface ContextStatus {
+  stage?: string;
+  status?: string;
+  summary?: string;
+  current_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  max_input_tokens?: number;
+  window_usage_ratio?: number;
+  compression_applied?: boolean;
+  compression_ratio?: number;
+  compression_summary?: string;
+  cache_hit?: boolean;
+  cache_scope?: string;
+  cache_key?: string;
+  cached_segments?: number;
 }
 
 export interface TaskRecord {
@@ -81,12 +144,14 @@ export interface WorkspaceMeta {
   title: string;
   mode: TaskMode;
   model_id?: string;
+  model_capabilities?: ModelCapabilities;
   status: TaskStatus;
   current_stage: string;
   current_unit?: string | null;
   progress: number;
   updated_at?: string;
   summary?: string;
+  context_status?: ContextStatus;
 }
 
 export interface WorkspaceEvent {
@@ -127,6 +192,7 @@ export interface WorkspaceResponse {
   request_preview?: {
     prompt: string;
     model_id?: string;
+    model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
     target_words?: number;
@@ -134,6 +200,8 @@ export interface WorkspaceResponse {
     banned?: string;
     title_hint?: string;
   };
+  context_status?: ContextStatus;
+  context_snapshot?: ContextStatus;
   sources?: SourceAsset[];
 }
 
@@ -235,6 +303,7 @@ export interface ArchiveDetailResponse {
   request_preview?: {
     prompt: string;
     model_id?: string;
+    model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
     target_words?: number;
@@ -242,6 +311,8 @@ export interface ArchiveDetailResponse {
     banned?: string;
     title_hint?: string;
   };
+  context_status?: ContextStatus;
+  context_snapshot?: ContextStatus;
   recent_events: WorkspaceEvent[];
   result_summary?: string;
   result_markdown?: string;

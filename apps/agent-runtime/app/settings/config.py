@@ -1,14 +1,18 @@
+from pathlib import Path
 from functools import lru_cache
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_TASKLOG_ROOT = str(Path(__file__).resolve().parents[4] / "tasklog")
+
+
 class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "小说 Agent Runtime"
     runtime_origin: str = "http://127.0.0.1:3001"
-    tasklog_root: str = "tasklog"
+    tasklog_root: str = DEFAULT_TASKLOG_ROOT
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(
         default="https://api.lclaitech.com/v1",

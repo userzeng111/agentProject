@@ -29,7 +29,7 @@ import {
   MenuBook as MenuBookIcon,
 } from "@mui/icons-material";
 import { getApiBase, getWorkspace, runTask } from "@/lib/api";
-import { TaskStatus, WorkspaceEvent, WorkspaceResponse } from "@/lib/types";
+import { ContextStatus, ModelCapabilities, TaskStatus, WorkspaceEvent, WorkspaceResponse } from "@/lib/types";
 
 const statusMap: Record<TaskStatus, { label: string; color: "default" | "success" | "warning" | "error" }> = {
   created: { label: "待启动", color: "default" },
@@ -72,6 +72,68 @@ function formatEventRef(event: WorkspaceEvent) {
 
 function formatEventTime(value: string) {
   return new Date(value).toLocaleString();
+}
+
+function formatTokenCount(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "未上报";
+  }
+  return value.toLocaleString();
+}
+
+function formatPercent(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "未上报";
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function resolveContextStatus(workspace: WorkspaceResponse): ContextStatus | undefined {
+  return workspace.context_status || workspace.context_snapshot || workspace.meta.context_status;
+}
+
+function resolveModelCapabilities(workspace: WorkspaceResponse): ModelCapabilities | undefined {
+  return workspace.request_preview?.model_capabilities || workspace.meta.model_capabilities;
+}
+
+function formatContextWindowLabel(capabilities?: ModelCapabilities) {
+  const contextWindow = capabilities?.context_window;
+  if (!contextWindow) {
+    return "上下文窗口：未上报";
+  }
+  return `上下文窗口：${formatTokenCount(contextWindow.max_input_tokens || contextWindow.max_total_tokens)} tokens`;
+}
+
+function formatRuntimeCacheLabel(capabilities?: ModelCapabilities, contextStatus?: ContextStatus) {
+  if (contextStatus?.cache_hit === true) {
+    return "缓存：本轮已命中";
+  }
+  if (contextStatus?.cache_hit === false) {
+    return "缓存：本轮未命中";
+  }
+  if (capabilities?.cache?.runtime_context_cache) {
+    return "缓存：支持运行时上下文缓存";
+  }
+  if (capabilities?.cache) {
+    return "缓存：未上报命中状态";
+  }
+  return "缓存：未声明";
+}
+
+function formatCompressionLabel(capabilities?: ModelCapabilities, contextStatus?: ContextStatus) {
+  if (contextStatus?.compression_applied === true) {
+    return `压缩：已启用${contextStatus.compression_ratio ? `（压缩率 ${formatPercent(contextStatus.compression_ratio)}）` : ""}`;
+  }
+  if (contextStatus?.compression_applied === false) {
+    return "压缩：本轮未触发";
+  }
+  if (capabilities?.compression?.supported) {
+    return `压缩：支持${capabilities.compression.strategy ? ` ${capabilities.compression.strategy}` : ""}`.trim();
+  }
+  if (capabilities?.compression?.may_compress) {
+    return "压缩：可能按需启用";
+  }
+  return "压缩：未声明";
 }
 
 function buildSummaryStream(events: WorkspaceEvent[], activeTraceSummary?: string) {
@@ -251,6 +313,8 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const chapterProgress = buildChapterProgress(workspace.recent_events);
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
   const currentStep = getStepIndex(workspace.meta.status);
+  const contextStatus = resolveContextStatus(workspace);
+  const modelCapabilities = resolveModelCapabilities(workspace);
 
   return (
     <Stack spacing={3} className="page-fade-in">
@@ -374,6 +438,40 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                 执行摘要：{workspace.active_trace_summary}
               </Typography>
             )}
+
+            <Box
+              sx={{
+                p: 2,
+                borderRadius: 2,
+                border: "1px solid",
+                borderColor: "divider",
+                backgroundColor: "rgba(29, 42, 39, 0.03)",
+              }}
+            >
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle1">上下文状态</Typography>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Chip size="small" variant="outlined" label={formatContextWindowLabel(modelCapabilities)} />
+                  <Chip size="small" variant="outlined" label={formatRuntimeCacheLabel(modelCapabilities, contextStatus)} />
+                  <Chip size="small" variant="outlined" label={formatCompressionLabel(modelCapabilities, contextStatus)} />
+                </Stack>
+                <Typography variant="body2" color="text.secondary">
+                  阶段：{contextStatus?.stage || workspace.meta.current_stage || "未上报"}
+                  {" · "}
+                  状态：{contextStatus?.status || "暂未上报"}
+                  {" · "}
+                  当前输入：{formatTokenCount(contextStatus?.input_tokens || contextStatus?.current_tokens)} tokens
+                  {" · "}
+                  输入上限：{formatTokenCount(
+                    contextStatus?.max_input_tokens || modelCapabilities?.context_window?.max_input_tokens,
+                  )}{" "}
+                  tokens
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {contextStatus?.summary || contextStatus?.compression_summary || "后端暂未返回上下文摘要或缓存/压缩细节。"}
+                </Typography>
+              </Stack>
+            </Box>
           </Stack>
         </CardContent>
       </Card>
@@ -522,6 +620,13 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                   模型：{workspace.request_preview?.model_id || workspace.meta.model_id || "默认模型"}
                 </Typography>
               </Stack>
+              <Typography variant="body2" color="text.secondary">
+                {formatContextWindowLabel(modelCapabilities)}
+                {" · "}
+                {formatRuntimeCacheLabel(modelCapabilities, contextStatus)}
+                {" · "}
+                {formatCompressionLabel(modelCapabilities, contextStatus)}
+              </Typography>
               {typeof workspace.request_preview?.target_words === "number" && (
                 <Typography variant="body2" color="text.secondary">
                   目标字数：{workspace.request_preview.target_words} · 读者：{workspace.request_preview.audience || "未指定"}
@@ -537,6 +642,13 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                   最近更新：{new Date(workspace.meta.updated_at).toLocaleString()}
                 </Typography>
               )}
+              <Typography variant="body2" color="text.secondary">
+                缓存键：{contextStatus?.cache_key || "未上报"}
+                {" · "}
+                缓存范围：{contextStatus?.cache_scope || "未上报"}
+                {" · "}
+                缓存片段：{typeof contextStatus?.cached_segments === "number" ? contextStatus.cached_segments : "未上报"}
+              </Typography>
               <Typography variant="body2" color="text.secondary">
                 {workspace.meta.summary || "暂无摘要"}
               </Typography>

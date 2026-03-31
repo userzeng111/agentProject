@@ -117,5 +117,55 @@ export function normalizeModelOptions(models: ModelOption[]) {
     .map((item) => ({
       ...item,
       id: item.id.trim(),
+      display_name: typeof item.display_name === "string" && item.display_name.trim() ? item.display_name.trim() : undefined,
+      provider: typeof item.provider === "string" && item.provider.trim() ? item.provider.trim() : undefined,
+      capabilities: item.capabilities
+        ? {
+            context_window: item.capabilities.context_window
+              ? {
+                  max_input_tokens: item.capabilities.context_window.max_input_tokens,
+                  max_output_tokens: item.capabilities.context_window.max_output_tokens,
+                  max_total_tokens: item.capabilities.context_window.max_total_tokens,
+                  recommended_input_tokens: item.capabilities.context_window.recommended_input_tokens,
+                  recommended_prompt_budget: item.capabilities.context_window.recommended_prompt_budget,
+                  compression_trigger_tokens: item.capabilities.context_window.compression_trigger_tokens,
+                }
+              : undefined,
+            cache: item.capabilities.cache
+              ? {
+                  runtime_context_cache: item.capabilities.cache.runtime_context_cache,
+                  prompt_cache: item.capabilities.cache.prompt_cache,
+                  response_cache: item.capabilities.cache.response_cache,
+                  cache_scope: item.capabilities.cache.cache_scope,
+                  runtime_response_cache: item.capabilities.cache.runtime_response_cache,
+                  provider_prompt_cache: item.capabilities.cache.provider_prompt_cache,
+                  cache_key_strategy: item.capabilities.cache.cache_key_strategy,
+                }
+              : undefined,
+            compression: item.capabilities.compression
+              ? {
+                  supported: item.capabilities.compression.supported,
+                  may_compress: item.capabilities.compression.may_compress,
+                  strategy: item.capabilities.compression.strategy,
+                }
+              : undefined,
+            features: Array.isArray(item.capabilities.features)
+              ? item.capabilities.features.filter((feature): feature is string => typeof feature === "string" && feature.trim().length > 0)
+              : item.capabilities.features && typeof item.capabilities.features === "object"
+                ? Object.entries(item.capabilities.features)
+                    .filter(([, enabled]) => Boolean(enabled))
+                    .map(([feature]) => feature)
+                : undefined,
+          }
+        : undefined,
+      metadata: item.metadata
+        ? {
+            source: typeof item.metadata.source === "string" && item.metadata.source.trim() ? item.metadata.source.trim() : undefined,
+            profile_version:
+              typeof item.metadata.profile_version === "string" && item.metadata.profile_version.trim()
+                ? item.metadata.profile_version.trim()
+                : undefined,
+          }
+        : undefined,
     }));
 }

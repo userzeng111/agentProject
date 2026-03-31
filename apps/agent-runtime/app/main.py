@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import build_router
 from app.application.task_service import TaskService
+from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.settings.config import get_settings
 from app.storage.task_store import TaskLogStore
@@ -11,7 +12,8 @@ from app.storage.task_store import TaskLogStore
 settings = get_settings()
 store = TaskLogStore(root_dir=settings.tasklog_root)
 engine = StoryEngine(settings)
-task_service = TaskService(store=store, engine=engine)
+model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(

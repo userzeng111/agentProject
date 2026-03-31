@@ -10,6 +10,7 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   MenuItem,
   Skeleton,
   Stack,
@@ -38,6 +39,41 @@ const modeOptions: { value: TaskMode; label: string }[] = [
   { value: "fanfic", label: "同人创作" },
   { value: "style_remix", label: "风格复刻" },
 ];
+
+function formatTokenCount(value?: number) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    return "未声明";
+  }
+  return `${value.toLocaleString()} tokens`;
+}
+
+function formatCacheLabel(model?: ModelOption) {
+  const cache = model?.capabilities?.cache;
+  if (!cache) {
+    return "缓存：未声明";
+  }
+  if (cache.runtime_context_cache) {
+    return "缓存：支持运行时上下文缓存";
+  }
+  if (cache.prompt_cache || cache.response_cache) {
+    return "缓存：支持部分缓存能力";
+  }
+  return "缓存：未启用";
+}
+
+function formatCompressionLabel(model?: ModelOption) {
+  const compression = model?.capabilities?.compression;
+  if (!compression) {
+    return "压缩：未声明";
+  }
+  if (compression.supported) {
+    return `压缩：支持${compression.strategy ? ` ${compression.strategy}` : ""}`.trim();
+  }
+  if (compression.may_compress) {
+    return `压缩：可能按需启用${compression.strategy ? `（${compression.strategy}）` : ""}`;
+  }
+  return "压缩：未启用";
+}
 
 export default function CreateTaskClient() {
   const router = useRouter();
@@ -74,6 +110,20 @@ export default function CreateTaskClient() {
       model_id: payload.model_id || models[0]?.id || "",
     }),
     [models, payload.model_id],
+  );
+
+  const selectedModel = useMemo(
+    () => models.find((item) => item.id === payload.model_id) ?? models[0],
+    [models, payload.model_id],
+  );
+
+  const selectedModelCapabilities = selectedModel?.capabilities;
+  const modelFeatures = useMemo(
+    () =>
+      Array.isArray(selectedModelCapabilities?.features)
+        ? selectedModelCapabilities.features.slice(0, 6)
+        : [],
+    [selectedModelCapabilities],
   );
 
   const updateField =
@@ -152,12 +202,16 @@ export default function CreateTaskClient() {
                 label="生成模型"
                 value={payload.model_id ?? ""}
                 onChange={updateField("model_id")}
-                helperText={models.length ? "模型选项来自后端 /api/models 接口" : "当前后端没有返回可用模型"}
+                helperText={
+                  models.length
+                    ? "模型选项来自后端 /api/models 接口，能力字段缺失时会自动兼容。"
+                    : "当前后端没有返回可用模型"
+                }
               >
                 {models.length ? (
                   models.map((option) => (
                     <MenuItem key={option.id} value={option.id}>
-                      {option.id}
+                      {option.display_name || option.id}
                     </MenuItem>
                   ))
                 ) : (
@@ -166,6 +220,71 @@ export default function CreateTaskClient() {
                   </MenuItem>
                 )}
               </TextField>
+            )}
+
+            {!modelsLoading && selectedModel && (
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  backgroundColor: "rgba(29, 42, 39, 0.03)",
+                }}
+              >
+                <Stack spacing={1.5}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1">模型能力摘要</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        {selectedModel.display_name || selectedModel.id}
+                        {selectedModel.provider ? ` · ${selectedModel.provider}` : ""}
+                      </Typography>
+                    </Box>
+                    {selectedModel.metadata?.source && (
+                      <Chip size="small" variant="outlined" label={`来源：${selectedModel.metadata.source}`} />
+                    )}
+                  </Stack>
+
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={`上下文窗口：${formatTokenCount(
+                        selectedModelCapabilities?.context_window?.max_input_tokens ||
+                          selectedModelCapabilities?.context_window?.max_total_tokens,
+                      )}`}
+                    />
+                    <Chip size="small" variant="outlined" label={formatCacheLabel(selectedModel)} />
+                    <Chip size="small" variant="outlined" label={formatCompressionLabel(selectedModel)} />
+                  </Stack>
+
+                  <Typography variant="body2" color="text.secondary">
+                    输入上限：{formatTokenCount(selectedModelCapabilities?.context_window?.max_input_tokens)}
+                    {" · "}
+                    输出上限：{formatTokenCount(selectedModelCapabilities?.context_window?.max_output_tokens)}
+                    {" · "}
+                    推荐输入预算：{formatTokenCount(selectedModelCapabilities?.context_window?.recommended_input_tokens)}
+                  </Typography>
+
+                  {modelFeatures.length ? (
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                      {modelFeatures.map((feature) => (
+                        <Chip key={feature} size="small" label={feature} />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" color="text.secondary">
+                      后端暂未返回更多能力画像，创建流程仍保持兼容。
+                    </Typography>
+                  )}
+                </Stack>
+              </Box>
             )}
 
             <TextField

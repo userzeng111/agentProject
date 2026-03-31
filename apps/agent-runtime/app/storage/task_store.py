@@ -300,6 +300,45 @@ class TaskLogStore:
     def read_json(self, task_id: str, relative_path: str) -> dict[str, Any]:
         return json.loads(self.read_text(task_id, relative_path))
 
+    def write_context_snapshot(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        snapshot_name: str,
+        payload: dict[str, Any],
+    ) -> str:
+        task = self.get(task_id)
+        safe_stage = (stage or "shared").strip().replace("\\", "-").replace("/", "-")
+        safe_name = (snapshot_name or "snapshot").strip().replace("\\", "-").replace("/", "-")
+        relative_path = f"context/{safe_stage}/{safe_name}.json"
+        path = self._task_dir(task) / relative_path
+        self._write_json(path, payload)
+        return relative_path
+
+    def write_message_history(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        history: list[dict[str, Any]],
+        filename: str = "message-history",
+    ) -> str:
+        task = self.get(task_id)
+        safe_stage = (stage or "shared").strip().replace("\\", "-").replace("/", "-")
+        safe_name = (filename or "message-history").strip().replace("\\", "-").replace("/", "-")
+        relative_path = f"context/{safe_stage}/{safe_name}.json"
+        path = self._task_dir(task) / relative_path
+        self._write_json(
+            path,
+            {
+                "task_id": task_id,
+                "stage": safe_stage,
+                "messages": history,
+            },
+        )
+        return relative_path
+
     def _broadcast_event(self, task_id: str, event: TaskEvent) -> None:
         payload = event.model_dump(mode="json")
         for queue in self._subscribers.get(task_id, []):

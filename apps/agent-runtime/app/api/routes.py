@@ -42,7 +42,7 @@ def build_router(task_service) -> APIRouter:
     @router.get("/models")
     def list_models():
         try:
-            return {"data": task_service.list_models()}
+            return task_service.list_models_payload()
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
 

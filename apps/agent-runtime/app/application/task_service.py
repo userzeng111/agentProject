@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import threading
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 from langgraph.types import Command
 
+from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
+from app.context.manager import ContextManager
 from app.domain.models import (
     ArchiveTaskDetailResponse,
     ArchiveTaskListResponse,
@@ -27,17 +30,46 @@ from app.domain.models import (
     utc_now,
 )
 from app.graph.main_graph import build_graph
-from app.llm.story_engine import StoryEngine, reset_progress_callback, set_progress_callback
+from app.llm.model_catalog import ModelCatalogService
+from app.llm.story_engine import (
+    StoryEngine,
+    reset_exchange_callback,
+    reset_progress_callback,
+    set_exchange_callback,
+    set_progress_callback,
+)
 from app.storage.task_store import TaskLogStore
 
 
 class TaskService:
     _STALE_RUN_AFTER = timedelta(minutes=10)
 
-    def __init__(self, store: TaskLogStore, engine: StoryEngine) -> None:
+    def __init__(
+        self,
+        store: TaskLogStore,
+        engine: StoryEngine,
+        model_catalog: ModelCatalogService | None = None,
+        context_manager: ContextManager | None = None,
+    ) -> None:
         self.store = store
         self.engine = engine
-        self.graph = build_graph(engine)
+        self.model_catalog = model_catalog or ModelCatalogService(
+            settings=engine.settings,
+            gateway_client=engine.gateway_client,
+        )
+        self.context_manager = context_manager or ContextManager(
+            cache_store=LayeredCacheStore(
+                [
+                    InMemoryCacheStore(ttl_seconds=1800),
+                    FileBackedCacheStore(Path(self.store.root_dir) / "cache" / "context", ttl_seconds=86400),
+                ]
+            )
+        )
+        self.graph = build_graph(
+            engine,
+            context_manager=self.context_manager,
+            model_catalog=self.model_catalog,
+        )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
 
@@ -89,7 +121,10 @@ class TaskService:
         return self.store.get(task_id).artifacts
 
     def list_models(self) -> list[dict[str, Any]]:
-        return self.engine.list_models()
+        return self.model_catalog.list_models()
+
+    def list_models_payload(self) -> dict[str, Any]:
+        return self.model_catalog.list_models_payload()
 
     def get_dashboard(self) -> DashboardResponse:
         tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
@@ -161,12 +196,14 @@ class TaskService:
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
         task = self.store.get(task_id)
         recent_events = task.events[-20:]
+        context_status = self._load_context_status(task.id)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
             active_trace_summary=recent_events[-1].message if recent_events else None,
             available_tabs=self._workspace_tabs(task),
             request_preview=self._request_preview(task),
+            context_status=context_status,
             sources=task.sources,
         )
 
@@ -248,6 +285,7 @@ class TaskService:
                 "title_hint": task.input.title_hint,
             },
             "reference_text": reference_text,
+            "source_assets": [source.model_dump(mode="json") for source in task.sources],
         }
 
     def _config(self, task_id: str) -> dict[str, Any]:
@@ -269,6 +307,22 @@ class TaskService:
                 kind="spec",
                 title="创作要求已标准化",
                 detail="已整理用户诉求、风格、字数和参考材料，开始生成大纲。",
+            )
+
+        outline_context_snapshot = values.get("outline_context_snapshot")
+        if isinstance(outline_context_snapshot, dict):
+            self.store.write_context_snapshot(
+                task_id,
+                stage="planning",
+                snapshot_name="outline-context",
+                payload=outline_context_snapshot,
+            )
+            self._emit_trace_summary(
+                task_id,
+                kind="context",
+                title="大纲上下文已装配",
+                detail="已完成 planning 阶段上下文预算、压缩与缓存判定。",
+                unit_id="outline-context",
             )
 
         if "__interrupt__" in result:
@@ -297,6 +351,21 @@ class TaskService:
         draft_result_data = values.get("draft_result")
         if not draft_result_data:
             raise RuntimeError("工作流结束后未找到正文结果。")
+        draft_context_snapshot = values.get("draft_context_snapshot")
+        if isinstance(draft_context_snapshot, dict):
+            self.store.write_context_snapshot(
+                task_id,
+                stage="drafting",
+                snapshot_name="draft-context",
+                payload=draft_context_snapshot,
+            )
+            self._emit_trace_summary(
+                task_id,
+                kind="context",
+                title="正文上下文已装配",
+                detail="已完成 drafting 阶段上下文预算、压缩与缓存判定。",
+                unit_id="draft-context",
+            )
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
@@ -329,11 +398,13 @@ class TaskService:
                 title="开始生成大纲",
                 detail="正在结合提示词、风格和参考文本收敛故事骨架。",
             )
-            token = set_progress_callback(self._build_progress_callback(task_id))
+            progress_token = set_progress_callback(self._build_progress_callback(task_id))
+            exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
                 result = self.graph.invoke(self._initial_state(task), config=self._config(task_id))
             finally:
-                reset_progress_callback(token)
+                reset_progress_callback(progress_token)
+                reset_exchange_callback(exchange_token)
             return self._sync_result(task_id, result)
         except Exception as exc:
             self.store.set_failed(task_id, f"运行失败：{exc}")
@@ -376,14 +447,16 @@ class TaskService:
                     message="收到人工审核结果，准备结束本次任务。",
                     event_type="task.cancel.pending",
                 )
-            token = set_progress_callback(self._build_progress_callback(task_id))
+            progress_token = set_progress_callback(self._build_progress_callback(task_id))
+            exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
                 result = self.graph.invoke(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),
                 )
             finally:
-                reset_progress_callback(token)
+                reset_progress_callback(progress_token)
+                reset_exchange_callback(exchange_token)
             return self._sync_result(task_id, result, review_comment=comment)
         except Exception as exc:
             self.store.set_failed(task_id, f"恢复执行失败：{exc}")
@@ -408,11 +481,13 @@ class TaskService:
     def _to_summary(self, task: TaskRecord) -> TaskSummary:
         title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
         summary = task.events[-1].message if task.events else ""
+        model_id = task.model_id or self.engine.settings.default_chat_model
         return TaskSummary(
             task_id=task.id,
             title=title,
             mode=task.mode,
-            model_id=task.model_id or self.engine.settings.default_chat_model,
+            model_id=model_id,
+            model_capabilities=self._model_capabilities(model_id),
             status=task.status,
             current_stage=task.current_stage,
             current_unit=task.current_unit,
@@ -423,7 +498,7 @@ class TaskService:
         )
 
     def _model_summary(self) -> dict[str, Any]:
-        models = self.engine.list_models()
+        models = self.model_catalog.list_models()
         supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
         default_model = self.engine.settings.default_chat_model
         if default_model and default_model not in supported_models:
@@ -566,6 +641,45 @@ class TaskService:
 
         return callback
 
+    def _build_exchange_callback(self, task_id: str):
+        def callback(event: dict[str, Any]) -> None:
+            stage = str(event.get("stage") or "unknown")
+            exchange_label = str(event.get("exchange_label") or "exchange")
+            history = event.get("conversation_history")
+            if not isinstance(history, list):
+                return
+            history_path = self.store.write_message_history(
+                task_id,
+                stage=stage,
+                history=history,
+                filename=f"{exchange_label}-history",
+            )
+            cache_hit = bool(event.get("cache_hit"))
+            cache_key = event.get("cache_key")
+            model_name = str(event.get("model") or self.engine.settings.default_chat_model)
+            message = (
+                f"{stage} 阶段已命中模型响应缓存：{exchange_label}"
+                if cache_hit
+                else f"{stage} 阶段已记录模型上下文链：{exchange_label}"
+            )
+            self.store.append_event(
+                task_id,
+                stage=stage,
+                message=message,
+                event_type="cache.hit" if cache_hit else "context.history.updated",
+                unit_id=exchange_label,
+                json_ref=f"tasklog/{self.store.get(task_id).storage_state}/{task_id}/{history_path}",
+                payload={
+                    "summary": message,
+                    "display_level": "public",
+                    "cache_hit": cache_hit,
+                    "cache_key": cache_key,
+                    "model": model_name,
+                },
+            )
+
+        return callback
+
     def _progress_value(self, task_id: str, event_type: str, payload: dict[str, Any]) -> int | None:
         task = self.store.get(task_id)
         total = len(task.story_plan.chapter_plan) if task.story_plan is not None else 0
@@ -602,15 +716,76 @@ class TaskService:
         ).start()
 
     def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
+        model_id = task.model_id or self.engine.settings.default_chat_model
         return {
             "prompt": task.input.prompt,
-            "model_id": task.model_id or self.engine.settings.default_chat_model,
+            "model_id": model_id,
+            "model_capabilities": self._model_capabilities(model_id),
             "genre": task.input.genre,
             "style": task.input.style,
             "target_words": task.input.target_words,
             "audience": task.input.audience,
             "banned": task.input.banned,
             "title_hint": task.input.title_hint,
+        }
+
+    def _model_capabilities(self, model_id: str) -> dict[str, Any] | None:
+        profile = self.model_catalog.get_model_profile(model_id)
+        capabilities = profile.get("capabilities")
+        return capabilities if isinstance(capabilities, dict) else None
+
+    def _load_context_status(self, task_id: str) -> dict[str, Any]:
+        for relative_path in ("context/drafting/draft-context.json", "context/planning/outline-context.json"):
+            try:
+                snapshot = self.store.read_json(task_id, relative_path)
+            except FileNotFoundError:
+                continue
+            return self._context_status_from_snapshot(snapshot)
+        return {}
+
+    def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}
+        packet = snapshot.get("packet") if isinstance(snapshot.get("packet"), dict) else {}
+        compressed_references = snapshot.get("compressed_references")
+        compressed_items = compressed_references if isinstance(compressed_references, list) else []
+        original_chars = sum(
+            int(item.get("original_chars") or 0)
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        compressed_chars = sum(
+            int(item.get("compressed_chars") or 0)
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        compression_applied = any(
+            bool(item.get("was_compressed"))
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        ratio = None
+        if original_chars > 0:
+            ratio = round(max(original_chars - compressed_chars, 0) / original_chars, 4)
+        max_input_tokens = budget.get("max_input_tokens")
+        input_tokens = packet.get("estimated_input_tokens")
+        window_usage_ratio = None
+        if isinstance(max_input_tokens, int) and max_input_tokens > 0 and isinstance(input_tokens, int):
+            window_usage_ratio = round(input_tokens / max_input_tokens, 4)
+        return {
+            "stage": snapshot.get("stage"),
+            "status": "cached" if snapshot.get("cache_hit") else "fresh",
+            "summary": "已完成上下文预算、压缩与装配。",
+            "input_tokens": input_tokens,
+            "current_tokens": input_tokens,
+            "max_input_tokens": max_input_tokens,
+            "window_usage_ratio": window_usage_ratio,
+            "compression_applied": compression_applied,
+            "compression_ratio": ratio,
+            "compression_summary": f"已压缩 {sum(1 for item in compressed_items if isinstance(item, dict) and item.get('was_compressed'))} 份素材",
+            "cache_hit": bool(snapshot.get("cache_hit")),
+            "cache_scope": "runtime_context",
+            "cache_key": snapshot.get("cache_key"),
+            "cached_segments": len(compressed_items),
         }
 
     def _emit_trace_summary(

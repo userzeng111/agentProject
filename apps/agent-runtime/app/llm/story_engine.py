@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextvars import ContextVar, Token
+import hashlib
+import json
+from pathlib import Path
 from typing import Any
 
+from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from langchain_core.prompts import ChatPromptTemplate
 
 from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan, TaskMode
@@ -12,6 +16,10 @@ from app.settings.config import Settings
 
 _progress_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
     "story_engine_progress_callback",
+    default=None,
+)
+_exchange_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "story_engine_exchange_callback",
     default=None,
 )
 
@@ -24,11 +32,26 @@ def reset_progress_callback(token: Token) -> None:
     _progress_callback_var.reset(token)
 
 
+def set_exchange_callback(callback: Callable[[dict[str, Any]], None] | None) -> Token:
+    return _exchange_callback_var.set(callback)
+
+
+def reset_exchange_callback(token: Token) -> None:
+    _exchange_callback_var.reset(token)
+
+
 class StoryEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.gateway_client: OpenAICompatibleGatewayClient | None = None
         self.progress_callback: Callable[[dict[str, Any]], None] | None = None
+        self.exchange_callback: Callable[[dict[str, Any]], None] | None = None
+        self.response_cache = LayeredCacheStore(
+            [
+                InMemoryCacheStore(ttl_seconds=1800),
+                FileBackedCacheStore(Path(settings.tasklog_root) / "cache" / "responses", ttl_seconds=86400),
+            ]
+        )
         self.outline_prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -40,7 +63,8 @@ class StoryEngine:
                     "请基于以下信息生成小说大纲，并严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n目标字数：{target_words}\n用户要求：{prompt}\n参考摘要：{reference_excerpt}",
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n目标字数：{target_words}\n用户要求：{prompt}\n"
+                    "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
             ]
         )
@@ -54,7 +78,8 @@ class StoryEngine:
                     "human",
                     "请基于以下信息生成正文初稿总览，并严格返回 JSON，结构必须包含："
                     "title(string), summary(string)。\n"
-                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n章节计划：{chapter_titles}\n参考摘要：{reference_excerpt}",
+                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n章节计划：{chapter_titles}\n"
+                    "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
             ]
         )
@@ -70,7 +95,8 @@ class StoryEngine:
                     "number(int), title(string), summary(string), content(string)。\n"
                     "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
-                    "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n参考摘要：{reference_excerpt}\n"
+                    "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
+                    "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
                     "要求：当前章节内容控制在 250 到 450 字，保留冷静克制的中文叙事风格。",
                 ),
             ]
@@ -91,8 +117,15 @@ class StoryEngine:
             return []
         return self.gateway_client.list_models()
 
-    def build_story_plan(self, spec: dict[str, Any], reference_text: str, model: str | None = None) -> StoryPlan:
+    def build_story_plan(
+        self,
+        spec: dict[str, Any],
+        reference_text: str,
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> StoryPlan:
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         prompt_value = self.outline_prompt.invoke(
             {
                 "mode": spec["mode"],
@@ -100,14 +133,19 @@ class StoryEngine:
                 "style": spec.get("style", ""),
                 "target_words": spec.get("target_words", 1800),
                 "prompt": spec.get("prompt", ""),
-                "reference_excerpt": self._reference_excerpt(reference_text),
+                "context_memory": self._context_memory(context_packet),
+                "reference_excerpt": self._context_reference(reference_text, context_packet),
             }
         )
         if self.gateway_client is not None:
             try:
-                payload = self.gateway_client.complete_json(
-                    self._prompt_to_messages(prompt_value),
+                request_messages = self._prompt_to_messages(prompt_value)
+                payload, _ = self._complete_json_with_cache(
+                    request_messages=request_messages,
                     model=resolved_model,
+                    stage="planning",
+                    exchange_label="outline",
+                    exchange_callback=active_exchange_callback,
                 )
                 return StoryPlan.model_validate(payload)
             except (GatewayClientError, ValueError):
@@ -155,16 +193,30 @@ class StoryEngine:
         spec: dict[str, Any],
         story_plan: dict[str, Any],
         reference_text: str,
+        context_packet: dict[str, Any] | None = None,
         model: str | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> DraftResult:
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         title = story_plan["working_title"]
         summary = story_plan["logline"]
+        draft_prompt_value = self.draft_prompt.invoke(
+            {
+                "mode": spec["mode"],
+                "title": title,
+                "logline": summary,
+                "chapter_titles": " / ".join(ch["title"] for ch in story_plan["chapter_plan"]),
+                "context_memory": self._context_memory(context_packet),
+                "reference_excerpt": self._context_reference(reference_text, context_packet),
+            }
+        )
+        draft_prompt_text = self._prompt_to_text(draft_prompt_value)
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
+        conversation_history: list[dict[str, str]] = []
         for item in story_plan["chapter_plan"]:
             if active_progress_callback is not None:
                 active_progress_callback(
@@ -189,20 +241,32 @@ class StoryEngine:
                     "chapter_goal": item["goal"],
                     "chapter_titles": " / ".join(ch["title"] for ch in story_plan["chapter_plan"]),
                     "completed_summaries": "；".join(completed_summaries) if completed_summaries else "无",
-                    "reference_excerpt": self._reference_excerpt(reference_text),
+                    "context_memory": self._context_memory(context_packet),
+                    "reference_excerpt": self._context_reference(reference_text, context_packet),
                 }
             )
             chapter_draft: ChapterDraft | None = None
             if self.gateway_client is not None:
                 try:
-                    chapter_payload = self.gateway_client.complete_json(
-                        self._prompt_to_messages(chapter_prompt_value),
+                    request_messages = self._conversation_request_messages(
+                        conversation_history=conversation_history,
+                        prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+                    )
+                    chapter_payload, conversation_history = self._complete_json_with_cache(
+                        request_messages=request_messages,
                         model=resolved_model,
+                        stage="drafting",
+                        exchange_label=f"chapter-{item['number']:02d}",
+                        exchange_callback=active_exchange_callback,
                     )
                     chapter_draft = ChapterDraft.model_validate(chapter_payload)
                 except (GatewayClientError, ValueError):
                     chapter_draft = None
             if chapter_draft is None:
+                request_messages = self._conversation_request_messages(
+                    conversation_history=conversation_history,
+                    prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+                )
                 chapter_draft = ChapterDraft(
                     number=item["number"],
                     title=item["title"],
@@ -212,8 +276,25 @@ class StoryEngine:
                         item["title"],
                         item["goal"],
                         reference_text,
+                        context_packet,
+                        draft_prompt_text,
                         self._prompt_to_text(chapter_prompt_value),
                     ),
+                )
+                conversation_history = self._append_assistant_message(
+                    request_messages=request_messages,
+                    response_payload=chapter_draft.model_dump(mode="json"),
+                )
+                self._emit_exchange(
+                    callback=active_exchange_callback,
+                    stage="drafting",
+                    exchange_label=f"chapter-{item['number']:02d}",
+                    model=resolved_model,
+                    cache_hit=False,
+                    request_messages=request_messages,
+                    conversation_history=conversation_history,
+                    response_payload=chapter_draft.model_dump(mode="json"),
+                    cache_key=None,
                 )
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
@@ -252,9 +333,12 @@ class StoryEngine:
         chapter_title: str,
         chapter_goal: str,
         reference_text: str,
+        context_packet: dict[str, Any] | None,
+        draft_prompt_text: str,
         prompt_text: str,
     ) -> str:
-        reference_hint = self._reference_excerpt(reference_text)
+        reference_hint = self._context_reference(reference_text, context_packet)
+        context_memory = self._context_memory(context_packet)
         style_hint = spec.get("style") or "克制但有张力"
         genre_hint = spec.get("genre") or "幻想"
         return (
@@ -265,8 +349,9 @@ class StoryEngine:
             f"叙事语气保持“{style_hint}”，句子要有节奏变化，并在段落末尾留下下一步冲动。"
             f"{'参考文本给到的气味是：' + reference_hint if reference_text else '这里不依赖外部原文，只围绕用户需求推进。'}"
             f"策划提示中反复强调“{spec.get('prompt', '')[:24]}”，所以这一段必须把这一点落到具体场面，而不是抽象概念。"
+            f"{' 上下文记忆强调：' + context_memory[:80] if context_memory else ''}"
             f"为了让 demo 有完整阅读感，本段最后会抛出一个更难回答的问题，把读者推向下一节。"
-            f"\n\n写作基底：{prompt_text[:90]}。"
+            f"\n\n写作基底：{draft_prompt_text[:72]} / {prompt_text[:90]}。"
         )
 
     def _prompt_to_text(self, prompt_value) -> str:
@@ -281,9 +366,126 @@ class StoryEngine:
             messages.append({"role": role, "content": str(message.content)})
         return messages
 
+    def _conversation_request_messages(
+        self,
+        conversation_history: list[dict[str, str]],
+        prompt_messages: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        if not conversation_history:
+            return [dict(item) for item in prompt_messages]
+        latest_user_messages = [dict(item) for item in prompt_messages if item.get("role") != "system"]
+        return [dict(item) for item in conversation_history] + latest_user_messages
+
+    def _append_assistant_message(
+        self,
+        request_messages: list[dict[str, str]],
+        response_payload: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        assistant_message = {
+            "role": "assistant",
+            "content": json.dumps(response_payload, ensure_ascii=False),
+        }
+        return [dict(item) for item in request_messages] + [assistant_message]
+
+    def _complete_json_with_cache(
+        self,
+        request_messages: list[dict[str, str]],
+        model: str,
+        stage: str,
+        exchange_label: str,
+        exchange_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+        cache_key = self._response_cache_key(model=model, request_messages=request_messages)
+        cached_payload = self.response_cache.get(cache_key)
+        if isinstance(cached_payload, dict):
+            conversation_history = self._append_assistant_message(request_messages, cached_payload)
+            self._emit_exchange(
+                callback=exchange_callback,
+                stage=stage,
+                exchange_label=exchange_label,
+                model=model,
+                cache_hit=True,
+                request_messages=request_messages,
+                conversation_history=conversation_history,
+                response_payload=cached_payload,
+                cache_key=cache_key,
+            )
+            return cached_payload, conversation_history
+
+        if self.gateway_client is None:
+            raise GatewayClientError("当前没有可用的模型网关。")
+        payload = self.gateway_client.complete_json(request_messages, model=model)
+        self.response_cache.set(cache_key, payload)
+        conversation_history = self._append_assistant_message(request_messages, payload)
+        self._emit_exchange(
+            callback=exchange_callback,
+            stage=stage,
+            exchange_label=exchange_label,
+            model=model,
+            cache_hit=False,
+            request_messages=request_messages,
+            conversation_history=conversation_history,
+            response_payload=payload,
+            cache_key=cache_key,
+        )
+        return payload, conversation_history
+
+    def _emit_exchange(
+        self,
+        *,
+        callback: Callable[[dict[str, Any]], None] | None,
+        stage: str,
+        exchange_label: str,
+        model: str,
+        cache_hit: bool,
+        request_messages: list[dict[str, str]],
+        conversation_history: list[dict[str, str]],
+        response_payload: dict[str, Any],
+        cache_key: str | None,
+    ) -> None:
+        if callback is None:
+            return
+        callback(
+            {
+                "stage": stage,
+                "exchange_label": exchange_label,
+                "model": model,
+                "cache_hit": cache_hit,
+                "cache_key": cache_key,
+                "request_messages": request_messages,
+                "conversation_history": conversation_history,
+                "response_payload": response_payload,
+            }
+        )
+
+    def _response_cache_key(self, model: str, request_messages: list[dict[str, str]]) -> str:
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": request_messages,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return f"response:{digest}"
+
     def _reference_excerpt(self, text: str) -> str:
         cleaned = " ".join(text.strip().split())
         return cleaned[:80] if cleaned else "无"
+
+    def _context_reference(self, reference_text: str, context_packet: dict[str, Any] | None) -> str:
+        if isinstance(context_packet, dict):
+            references_text = str(context_packet.get("references_text") or "").strip()
+            if references_text:
+                return self._reference_excerpt(references_text)
+        return self._reference_excerpt(reference_text)
+
+    def _context_memory(self, context_packet: dict[str, Any] | None) -> str:
+        if not isinstance(context_packet, dict):
+            return "无"
+        memory_text = str(context_packet.get("memory_text") or "").strip()
+        return memory_text or "无"
 
     def _theme_tail(self, mode: str) -> str:
         if mode == TaskMode.LONG_STORY.value:

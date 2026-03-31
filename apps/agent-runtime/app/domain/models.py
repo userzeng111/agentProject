@@ -148,6 +148,7 @@ class TaskSummary(BaseModel):
     title: str
     mode: TaskMode
     model_id: str
+    model_capabilities: dict[str, Any] | None = None
     status: TaskStatus
     current_stage: str
     current_unit: str | None = None
@@ -171,6 +172,7 @@ class WorkspaceResponse(BaseModel):
     active_trace_summary: str | None = None
     available_tabs: list[str] = Field(default_factory=list)
     request_preview: dict[str, Any] = Field(default_factory=dict)
+    context_status: dict[str, Any] = Field(default_factory=dict)
     sources: list[SourceAsset] = Field(default_factory=list)
 
 
