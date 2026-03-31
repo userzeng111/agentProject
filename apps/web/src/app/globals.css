@@ -1,11 +1,44 @@
 :root {
+  /* === 主色 === */
   --app-paper: #fffaf2;
   --app-bg: #efe4cf;
   --app-ink: #1d2a27;
   --app-accent: #276451;
+  --app-accent-light: #3a8a70;
+  --app-secondary: #9a5f2f;
+
+  /* === 辅助色 === */
+  --app-success: #2e7d5b;
+  --app-warning: #c47a2a;
+  --app-error: #b44a3f;
+  --app-info: #4a7a8a;
+
+  /* === 背景色层级 === */
+  --app-surface-1: rgba(255, 250, 242, 0.95);
+  --app-surface-2: rgba(255, 250, 242, 0.85);
+  --app-surface-3: rgba(255, 250, 242, 0.65);
+
+  /* === 边框色层级 === */
+  --app-border-light: rgba(29, 42, 39, 0.06);
   --app-border: rgba(29, 42, 39, 0.12);
+  --app-border-strong: rgba(29, 42, 39, 0.22);
+
+  /* === 字体 === */
   --font-sans-sc: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --font-serif-sc: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+
+  /* === 阴影 === */
+  --shadow-sm: 0 2px 8px rgba(88, 69, 37, 0.12);
+  --shadow-md: 0 4px 20px rgba(88, 69, 37, 0.10);
+  --shadow-lg: 0 8px 32px rgba(88, 69, 37, 0.12);
+  --shadow-xl: 0 16px 48px rgba(88, 69, 37, 0.15);
+
+  /* === 间距 === */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
 }
 
 * {
@@ -33,4 +66,29 @@ a {
 pre {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* === 玻璃态卡片 === */
+.glass-card {
+  background: var(--app-surface-3);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  box-shadow: var(--shadow-lg);
+  border-radius: 16px;
+}
+
+/* === 全局过渡动画 === */
+.transition-default {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* === 页面淡入动画 === */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.page-fade-in {
+  animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }

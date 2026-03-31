@@ -8,11 +8,11 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   Alert,
+  Box,
   Button,
   Card,
   CardContent,
   Chip,
-  Container,
   Stack,
   Typography,
 } from "@mui/material";
@@ -122,146 +122,144 @@ export default function Home() {
   const reportedActiveRuns = dashboard?.system_summary?.active_runs ?? 0;
 
   return (
-    <Container maxWidth="lg" sx={{ py: { xs: 6, md: 10 } }}>
-      <Stack spacing={4}>
-        <Stack spacing={2}>
-          <Chip label="LangChain + LangGraph + GPT-5.4" sx={{ alignSelf: "flex-start" }} />
-          <Typography
-            variant="h2"
-            sx={{
-              fontFamily: "var(--font-serif-sc)",
-              maxWidth: 760,
-              lineHeight: 1.12,
-            }}
-          >
-            输入一个创意，先过大纲审核，再生成可读的小说初稿。
-          </Typography>
-          <Typography variant="h6" color="text.secondary" sx={{ maxWidth: 760 }}>
-            首页已直接切到聚合接口，能看到继续处理、运行中和失败任务，减少在多个页面之间来回查状态。
-          </Typography>
-        </Stack>
-
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-          <Button component={Link} href="/create" size="large" variant="contained">
-            创建一个新任务
-          </Button>
-          <Button component={Link} href="/create" size="large" variant="outlined">
-            直接体验短篇 / 长篇 / 同人 / 风格复刻
-          </Button>
-        </Stack>
-
-        {error ? <Alert severity="error">{error}</Alert> : null}
-
-        {dashboard ? (
-          <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
-            <Card sx={{ borderRadius: 4, flex: 1 }}>
-              <CardContent>
-                <Stack spacing={1}>
-                  <Typography variant="overline">活动运行</Typography>
-                  <Typography variant="h4">{reportedActiveRuns}</Typography>
-                  <Typography color="text.secondary">
-                    接口统计 {reportedActiveRuns} · 列表展示 {visibleRunningCount}
-                  </Typography>
-                </Stack>
-              </CardContent>
-            </Card>
-            <Card sx={{ borderRadius: 4, flex: 1 }}>
-              <CardContent>
-                <Stack spacing={1}>
-                  <Typography variant="overline">归档任务</Typography>
-                  <Typography variant="h4">{dashboard.system_summary?.archived_runs ?? 0}</Typography>
-                  <Typography color="text.secondary">已归档运行数</Typography>
-                  <Button component={Link} href="/archive" variant="text" sx={{ alignSelf: "flex-start", px: 0 }}>
-                    进入归档列表
-                  </Button>
-                </Stack>
-              </CardContent>
-            </Card>
-            <Card sx={{ borderRadius: 4, flex: 1 }}>
-              <CardContent>
-                <Stack spacing={1}>
-                  <Typography variant="overline">默认模型</Typography>
-                  <Typography variant="h4">{dashboard.model_summary?.default_model ?? "未提供"}</Typography>
-                  <Typography color="text.secondary">
-                    支持模型 {dashboard.model_summary?.supported_models?.length ?? 0} 个
-                  </Typography>
-                </Stack>
-              </CardContent>
-            </Card>
-          </Stack>
-        ) : null}
-
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-            gap: 24,
+    <Stack spacing={4} className="page-fade-in">
+      <Stack spacing={2}>
+        <Chip label="LangChain + LangGraph + GPT-5.4" sx={{ alignSelf: "flex-start" }} />
+        <Typography
+          variant="h2"
+          sx={{
+            fontFamily: "var(--font-serif-sc)",
+            maxWidth: 760,
+            lineHeight: 1.12,
           }}
         >
-          {[
-            {
-              icon: <ArchiveRoundedIcon />,
-              title: "归档结果可回查",
-              text: "已完成任务会进入归档区，首页保留统一入口，便于快速回看结果、章节与事件尾流。",
-            },
-            {
-              icon: <HubRoundedIcon />,
-              title: "工作流先规划后写作",
-              text: "先做需求标准化与故事规划，再在 review 页确认大纲，避免直接把长文本塞进一个不可控的大模型请求里。",
-            },
-            {
-              icon: <LayersRoundedIcon />,
-              title: "前后端彻底分层",
-              text: "Web 层只消费聚合接口与事件流；Runtime 层只处理 LangGraph 的节点执行和状态恢复。",
-            },
-            {
-              icon: <AutoStoriesRoundedIcon />,
-              title: "支持参考文本输入",
-              text: "你可以上传一个 UTF-8 文本文件，demo 会把它作为世界观或风格参考，但不会把原文直接拼贴进输出。",
-            },
-          ].map((item) => (
-            <Card key={item.title} sx={{ borderRadius: 4 }}>
-              <CardContent>
-                <Stack spacing={2}>
-                  <div
-                    style={{
-                      width: 48,
-                      height: 48,
-                      borderRadius: 16,
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: "rgba(39, 100, 81, 0.1)",
-                      color: "#276451",
-                    }}
-                  >
-                    {item.icon}
-                  </div>
-                  <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-                    {item.title}
-                  </Typography>
-                  <Typography color="text.secondary">{item.text}</Typography>
-                </Stack>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        <TaskSection
-          title="待继续处理"
-          items={dashboard?.continue_tasks ?? []}
-          emptyText="当前没有需要人工继续处理的任务。"
-        />
-        <TaskSection
-          title="运行中"
-          items={dashboard?.running_tasks ?? []}
-          emptyText="当前没有运行中的任务。"
-        />
-        <TaskSection
-          title="失败任务"
-          items={dashboard?.failed_tasks ?? []}
-          emptyText="当前没有失败任务。"
-        />
+          小说工坊
+        </Typography>
+        <Typography variant="h6" color="text.secondary" sx={{ maxWidth: 760 }}>
+          从灵感到成稿，AI 辅助小说创作。输入创意，审核大纲，生成初稿。
+        </Typography>
       </Stack>
-    </Container>
+
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+        <Button component={Link} href="/create" size="large" variant="contained">
+          创建新任务
+        </Button>
+        <Button component={Link} href="/archive" size="large" variant="outlined">
+          查看归档
+        </Button>
+      </Stack>
+
+      {error ? <Alert severity="error">{error}</Alert> : null}
+
+      {dashboard ? (
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+          <Card sx={{ flex: 1 }}>
+            <CardContent>
+              <Stack spacing={1}>
+                <Typography variant="overline">活动运行</Typography>
+                <Typography variant="h4">{reportedActiveRuns}</Typography>
+                <Typography color="text.secondary">
+                  接口统计 {reportedActiveRuns} · 列表展示 {visibleRunningCount}
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+          <Card sx={{ flex: 1 }}>
+            <CardContent>
+              <Stack spacing={1}>
+                <Typography variant="overline">归档任务</Typography>
+                <Typography variant="h4">{dashboard.system_summary?.archived_runs ?? 0}</Typography>
+                <Typography color="text.secondary">已归档运行数</Typography>
+                <Button component={Link} href="/archive" variant="text" sx={{ alignSelf: "flex-start", px: 0 }}>
+                  进入归档列表
+                </Button>
+              </Stack>
+            </CardContent>
+          </Card>
+          <Card sx={{ flex: 1 }}>
+            <CardContent>
+              <Stack spacing={1}>
+                <Typography variant="overline">默认模型</Typography>
+                <Typography variant="h4">{dashboard.model_summary?.default_model ?? "未提供"}</Typography>
+                <Typography color="text.secondary">
+                  支持模型 {dashboard.model_summary?.supported_models?.length ?? 0} 个
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        </Stack>
+      ) : null}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 24,
+        }}
+      >
+        {[
+          {
+            icon: <ArchiveRoundedIcon />,
+            title: "归档回查",
+            text: "已完成任务自动归档，随时回看结果与章节。",
+          },
+          {
+            icon: <HubRoundedIcon />,
+            title: "先规划后写作",
+            text: "大纲审核机制，把控故事走向后再生成正文。",
+          },
+          {
+            icon: <LayersRoundedIcon />,
+            title: "多种创作模式",
+            text: "短篇、长篇、同人创作、风格复刻，灵活选择。",
+          },
+          {
+            icon: <AutoStoriesRoundedIcon />,
+            title: "参考文本",
+            text: "上传文本作为世界观或风格参考，融入创作。",
+          },
+        ].map((item) => (
+          <Card key={item.title} className="glass-card">
+            <CardContent>
+              <Stack spacing={2}>
+                <Box
+                  sx={{
+                    width: 48,
+                    height: 48,
+                    borderRadius: 3,
+                    display: "grid",
+                    placeItems: "center",
+                    backgroundColor: "rgba(39, 100, 81, 0.10)",
+                    color: "primary.main",
+                  }}
+                >
+                  {item.icon}
+                </Box>
+                <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+                  {item.title}
+                </Typography>
+                <Typography color="text.secondary">{item.text}</Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <TaskSection
+        title="待继续处理"
+        items={dashboard?.continue_tasks ?? []}
+        emptyText="当前没有需要人工继续处理的任务。"
+      />
+      <TaskSection
+        title="运行中"
+        items={dashboard?.running_tasks ?? []}
+        emptyText="当前没有运行中的任务。"
+      />
+      <TaskSection
+        title="失败任务"
+        items={dashboard?.failed_tasks ?? []}
+        emptyText="当前没有失败任务。"
+      />
+    </Stack>
   );
 }
