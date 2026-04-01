@@ -1,9 +1,5 @@
 "use client";
 
-import AutoStoriesRoundedIcon from "@mui/icons-material/AutoStoriesRounded";
-import ArchiveRoundedIcon from "@mui/icons-material/ArchiveRounded";
-import HubRoundedIcon from "@mui/icons-material/HubRounded";
-import LayersRoundedIcon from "@mui/icons-material/LayersRounded";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
@@ -15,14 +11,17 @@ import {
   Chip,
   Container,
   Grid,
+  MenuItem,
   Pagination,
+  Select,
+  Skeleton,
   Stack,
   Tab,
   Tabs,
   Typography,
 } from "@mui/material";
-import { getDashboard } from "@/lib/api";
-import { DashboardResponse, TaskCardSummary, TaskStatus } from "@/lib/types";
+import { getDashboard, getModels, updateDefaultModel } from "@/lib/api";
+import { DashboardResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -101,8 +100,9 @@ function TaskListItem({ task }: { task: TaskCardSummary }) {
   );
 }
 
-// Tab 分组 + 前端分页
+// Tab 分组 + 独立滚动列表 + 固定分页器
 const PAGE_SIZE = 5;
+const LIST_MAX_HEIGHT = 480;
 
 function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
   const [activeTab, setActiveTab] = useState(0);
@@ -126,8 +126,9 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
   const emptyTexts = ["当前没有需要人工继续处理的任务。", "当前没有运行中的任务。", "当前没有失败任务。"];
 
   return (
-    <Card sx={{ borderRadius: 4 }}>
-      <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+    <Card sx={{ borderRadius: 4, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Tab 栏固定 */}
+      <Box sx={{ borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
         <Tabs
           value={activeTab}
           onChange={handleTabChange}
@@ -141,7 +142,17 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
           ))}
         </Tabs>
       </Box>
-      <Box sx={{ p: 2 }}>
+
+      {/* 列表区域独立滚动 */}
+      <Box
+        sx={{
+          overflowY: "auto",
+          maxHeight: LIST_MAX_HEIGHT,
+          px: 2,
+          py: 1.5,
+          flex: 1,
+        }}
+      >
         {pagedList.length ? (
           <Stack spacing={1.5}>
             {pagedList.map((task) => (
@@ -153,29 +164,57 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
             {emptyTexts[activeTab]}
           </Typography>
         )}
-        {current.total > PAGE_SIZE && (
-          <Box sx={{ display: "flex", justifyContent: "center", mt: 2 }}>
-            <Pagination
-              count={totalPages}
-              page={page}
-              onChange={(_, p) => setPage(p)}
-              size="small"
-              shape="rounded"
-            />
-          </Box>
-        )}
       </Box>
+
+      {/* 分页器固定在底部 */}
+      {current.total > PAGE_SIZE && (
+        <Box
+          sx={{
+            flexShrink: 0,
+            display: "flex",
+            justifyContent: "center",
+            py: 1.5,
+            borderTop: 1,
+            borderColor: "divider",
+          }}
+        >
+          <Pagination
+            count={totalPages}
+            page={page}
+            onChange={(_, p) => setPage(p)}
+            size="small"
+            shape="rounded"
+          />
+        </Box>
+      )}
     </Card>
   );
 }
 
 // 侧边栏 - 统计卡片
-function SidebarStats({ dashboard }: { dashboard: DashboardResponse }) {
+function SidebarStats({
+  dashboard,
+  models,
+  onModelChange,
+}: {
+  dashboard: DashboardResponse;
+  models: ModelOption[];
+  onModelChange: (modelId: string) => void;
+}) {
   const stats = [
-    { label: "活动运行", value: dashboard.running_tasks.length, sub: `${dashboard.system_summary?.active_runs ?? 0} 接口统计` },
-    { label: "归档任务", value: dashboard.system_summary?.archived_runs ?? 0, sub: "已归档运行数" },
-    { label: "默认模型", value: dashboard.model_summary?.default_model ?? "未提供", sub: `支持 ${dashboard.model_summary?.supported_models?.length ?? 0} 个` },
+    {
+      label: "活动运行",
+      value: dashboard.running_tasks.length,
+      sub: `${dashboard.system_summary?.active_runs ?? 0} 接口统计`,
+    },
+    {
+      label: "归档任务",
+      value: dashboard.system_summary?.archived_runs ?? 0,
+      sub: "已归档运行数",
+    },
   ];
+
+  const currentDefault = dashboard.model_summary?.default_model ?? "";
 
   return (
     <Stack spacing={2}>
@@ -186,7 +225,7 @@ function SidebarStats({ dashboard }: { dashboard: DashboardResponse }) {
               <Typography variant="overline" color="text.secondary">
                 {item.label}
               </Typography>
-              <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)", wordBreak: "break-all" }}>
+              <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)" }}>
                 {item.value}
               </Typography>
               <Typography variant="caption" color="text.secondary">
@@ -196,60 +235,87 @@ function SidebarStats({ dashboard }: { dashboard: DashboardResponse }) {
           </CardContent>
         </Card>
       ))}
+
+      {/* 默认模型切换卡片 */}
+      <Card>
+        <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
+          <Stack spacing={1.5}>
+            <Typography variant="overline" color="text.secondary">
+              默认模型
+            </Typography>
+            <Select
+              size="small"
+              value={currentDefault}
+              onChange={(e) => onModelChange(e.target.value)}
+              sx={{ fontSize: "0.9rem" }}
+            >
+              {models.map((m) => (
+                <MenuItem key={m.id} value={m.id}>
+                  <Stack spacing={0.25}>
+                    <Typography sx={{ fontSize: "0.875rem", fontWeight: 500 }}>
+                      {m.display_name || m.id}
+                    </Typography>
+                    {m.provider && (
+                      <Typography variant="caption" color="text.secondary">
+                        {m.provider}
+                      </Typography>
+                    )}
+                  </Stack>
+                </MenuItem>
+              ))}
+            </Select>
+            <Typography variant="caption" color="text.secondary">
+              支持 {dashboard.model_summary?.supported_models?.length ?? 0} 个模型 · 新任务默认使用
+            </Typography>
+          </Stack>
+        </CardContent>
+      </Card>
     </Stack>
   );
 }
 
-// 侧边栏 - 功能特性
-function SidebarFeatures() {
-  const features = [
-    { icon: <ArchiveRoundedIcon />, title: "归档回查", text: "已完成任务自动归档，随时回看结果与章节。" },
-    { icon: <HubRoundedIcon />, title: "先规划后写作", text: "大纲审核机制，把控故事走向后再生成正文。" },
-    { icon: <LayersRoundedIcon />, title: "多种创作模式", text: "短篇、长篇、同人创作、风格复刻，灵活选择。" },
-    { icon: <AutoStoriesRoundedIcon />, title: "参考文本", text: "上传文本作为世界观或风格参考，融入创作。" },
-  ];
-
+// 骨架屏
+function HomeSkeleton() {
   return (
-    <Stack spacing={1.5}>
-      {features.map((item) => (
-        <Card key={item.title} className="glass-card">
-          <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
-            <Stack direction="row" spacing={1.5} alignItems="flex-start">
-              <Box
-                sx={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: 2,
-                  display: "grid",
-                  placeItems: "center",
-                  backgroundColor: "rgba(39, 100, 81, 0.10)",
-                  color: "primary.main",
-                  flexShrink: 0,
-                }}
-              >
-                {item.icon}
-              </Box>
-              <Stack spacing={0.5}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-                  {item.title}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  {item.text}
-                </Typography>
-              </Stack>
+    <Grid container spacing={3}>
+      <Grid item xs={12} md={8}>
+        <Card sx={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          <Box sx={{ borderBottom: 1, borderColor: "divider", px: 2, py: 1 }}>
+            <Skeleton variant="text" width={240} height={24} />
+          </Box>
+          <Box sx={{ p: 2, maxHeight: LIST_MAX_HEIGHT, overflow: "hidden" }}>
+            <Stack spacing={1.5}>
+              {[1, 2, 3].map((i) => (
+                <Box key={i} sx={{ height: 80, bgcolor: "action.hover", borderRadius: 3 }} />
+              ))}
             </Stack>
-          </CardContent>
+          </Box>
         </Card>
-      ))}
-    </Stack>
+      </Grid>
+      <Grid item xs={12} md={4}>
+        <Stack spacing={2}>
+          {[1, 2, 3].map((i) => (
+            <Card key={i}>
+              <CardContent sx={{ p: 2 }}>
+                <Skeleton variant="text" width="60%" height={16} />
+                <Skeleton variant="text" width="40%" height={28} sx={{ my: 0.5 }} />
+                <Skeleton variant="text" width="70%" height={14} />
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
+      </Grid>
+    </Grid>
   );
 }
 
 export default function Home() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
   const [error, setError] = useState("");
+  const [modelUpdating, setModelUpdating] = useState(false);
 
-  useEffect(() => {
+  const fetchDashboard = () => {
     void getDashboard()
       .then((response) => {
         setDashboard(response);
@@ -258,7 +324,37 @@ export default function Home() {
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : "读取首页聚合数据失败");
       });
+  };
+
+  const fetchModels = () => {
+    void getModels()
+      .then((data) => {
+        setModels(data ?? []);
+      })
+      .catch(() => {
+        // 模型列表加载失败不影响主流程
+      });
+  };
+
+  useEffect(() => {
+    fetchDashboard();
+    fetchModels();
   }, []);
+
+  const handleModelChange = (modelId: string) => {
+    if (modelUpdating) return;
+    setModelUpdating(true);
+    void updateDefaultModel(modelId)
+      .then(() => {
+        // 更新成功后刷新 dashboard 和模型列表
+        fetchDashboard();
+        fetchModels();
+      })
+      .catch((reason) => {
+        setError(`切换模型失败：${reason instanceof Error ? reason.message : "未知错误"}`);
+      })
+      .finally(() => setModelUpdating(false));
+  };
 
   return (
     <Container maxWidth="lg" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -303,42 +399,15 @@ export default function Home() {
 
             {/* 侧边栏 */}
             <Grid item xs={12} md={4}>
-              <Stack spacing={2}>
-                <SidebarStats dashboard={dashboard} />
-                <Typography variant="overline" color="text.secondary">
-                  功能特性
-                </Typography>
-                <SidebarFeatures />
-              </Stack>
+              <SidebarStats
+                dashboard={dashboard}
+                models={models}
+                onModelChange={handleModelChange}
+              />
             </Grid>
           </Grid>
         ) : (
-          /* 骨架屏 */
-          <Grid container spacing={3}>
-            <Grid item xs={12} md={8}>
-              <Card>
-                <CardContent>
-                  <Stack spacing={2}>
-                    <Box sx={{ height: 48, bgcolor: "action.hover", borderRadius: 1 }} />
-                    {[1, 2, 3].map((i) => (
-                      <Box key={i} sx={{ height: 80, bgcolor: "action.hover", borderRadius: 2 }} />
-                    ))}
-                  </Stack>
-                </CardContent>
-              </Card>
-            </Grid>
-            <Grid item xs={12} md={4}>
-              <Stack spacing={2}>
-                {[1, 2, 3].map((i) => (
-                  <Card key={i}>
-                    <CardContent sx={{ p: 2 }}>
-                      <Box sx={{ height: 60, bgcolor: "action.hover", borderRadius: 1 }} />
-                    </CardContent>
-                  </Card>
-                ))}
-              </Stack>
-            </Grid>
-          </Grid>
+          <HomeSkeleton />
         )}
       </Stack>
     </Container>

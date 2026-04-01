@@ -99,6 +99,18 @@ export interface ContextStatus {
   cached_segments?: number;
 }
 
+export interface ResponseCacheStatus {
+  stage?: string;
+  status?: string;
+  summary?: string;
+  cache_hit?: boolean;
+  cache_scope?: string;
+  cache_key?: string;
+  history_count?: number;
+  exchange_label?: string;
+  model?: string;
+}
+
 export interface TaskRecord {
   id: string;
   mode: TaskMode;
@@ -204,6 +216,7 @@ export interface WorkspaceResponse {
     title_hint?: string;
   };
   context_status?: ContextStatus;
+  response_cache_status?: ResponseCacheStatus;
   context_snapshot?: ContextStatus;
   sources?: SourceAsset[];
 }

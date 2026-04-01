@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -29,6 +31,7 @@ class WorkflowState(TypedDict, total=False):
     review_comment: str
     draft_context_packet: dict[str, Any]
     draft_context_snapshot: dict[str, Any]
+    draft_conversation_seed: list[dict[str, str]]
     draft_result: dict[str, Any]
     cancelled: bool
 
@@ -37,9 +40,11 @@ def build_graph(
     engine: StoryEngine,
     context_manager: ContextManager | None = None,
     model_catalog: ModelCatalogService | None = None,
+    history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
 ):
     active_context_manager = context_manager or ContextManager()
     active_model_catalog = model_catalog
+    active_history_loader = history_loader
 
     def normalize_request(state: WorkflowState) -> WorkflowState:
         payload = state["input_payload"]
@@ -115,6 +120,10 @@ def build_graph(
         return {
             "draft_context_packet": snapshot.packet.model_dump(mode="json"),
             "draft_context_snapshot": snapshot.model_dump(mode="json"),
+            "draft_conversation_seed": _draft_conversation_seed(
+                state,
+                history_loader=active_history_loader,
+            ),
         }
 
     def draft_story(state: WorkflowState) -> WorkflowState:
@@ -125,6 +134,7 @@ def build_graph(
             context_packet=state.get("draft_context_packet"),
             model=state["normalized_spec"].get("model_id"),
             progress_callback=getattr(engine, "progress_callback", None),
+            initial_conversation_history=state.get("draft_conversation_seed"),
         )
         return {"draft_result": draft_result.model_dump(), "cancelled": False}
 
@@ -273,3 +283,75 @@ def _draft_memory_items(state: WorkflowState) -> list[str]:
             f"章节计划：第{chapter.get('number')}章 {chapter.get('title')} - {chapter.get('goal')}"
         )
     return memory_items
+
+
+def _draft_conversation_seed(
+    state: WorkflowState,
+    history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
+) -> list[dict[str, str]]:
+    story_plan = state.get("story_plan")
+    normalized_spec = state.get("normalized_spec") or {}
+    approval_comment = str(state.get("review_comment") or "").strip()
+    followup = approval_comment or "q2: 大纲已确认，请基于这版大纲继续生成正文。"
+    planning_history = _load_planning_history(state, history_loader)
+    if planning_history:
+        return planning_history + [
+            {
+                "role": "user",
+                "content": followup if followup.startswith("q") else f"q2: {followup}",
+            }
+        ]
+
+    if not isinstance(story_plan, dict):
+        return []
+
+    return [
+        {
+            "role": "system",
+            "content": "你是一个中文小说创作助手，需要沿着既有问答上下文继续完成正文写作。",
+        },
+        {
+            "role": "user",
+            "content": (
+                "q1: 请先根据以下需求生成小说大纲。\n"
+                f"创作要求：{normalized_spec.get('prompt', '')}\n"
+                f"题材：{normalized_spec.get('genre', '')}\n"
+                f"风格：{normalized_spec.get('style', '')}"
+            ).strip(),
+        },
+        {
+            "role": "assistant",
+            "content": f"a1: {json.dumps(story_plan, ensure_ascii=False)}",
+        },
+        {
+            "role": "user",
+            "content": followup if followup.startswith("q") else f"q2: {followup}",
+        },
+    ]
+
+
+def _load_planning_history(
+    state: WorkflowState,
+    history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
+) -> list[dict[str, str]]:
+    if history_loader is None:
+        return []
+    task_id = str(state.get("task_id") or "").strip()
+    if not task_id:
+        return []
+    try:
+        history = history_loader(task_id, "planning", "outline-history")
+    except FileNotFoundError:
+        return []
+    except Exception:
+        return []
+    normalized: list[dict[str, str]] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "user").strip() or "user"
+        content = str(item.get("content") or "").strip()
+        if not content:
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized

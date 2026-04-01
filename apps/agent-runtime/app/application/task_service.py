@@ -69,9 +69,14 @@ class TaskService:
             engine,
             context_manager=self.context_manager,
             model_catalog=self.model_catalog,
+            history_loader=self._load_message_history,
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
+        # 启动时同步运行时默认模型到 StoryEngine
+        runtime_default = self.model_catalog._effective_default_model()
+        if self.model_catalog._runtime_default_model and hasattr(self.engine, "set_runtime_default_model"):
+            self.engine.set_runtime_default_model(runtime_default)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         return self.store.create_task(payload)
@@ -125,6 +130,13 @@ class TaskService:
 
     def list_models_payload(self) -> dict[str, Any]:
         return self.model_catalog.list_models_payload()
+
+    def update_default_model(self, model_id: str) -> dict[str, Any]:
+        """更新默认模型，同时持久化到配置文件并更新运行时状态。"""
+        result = self.model_catalog.update_default_model(model_id)
+        # 同步到 StoryEngine，使其立即生效
+        self.engine.set_runtime_default_model(model_id)
+        return result
 
     def get_dashboard(self) -> DashboardResponse:
         tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
@@ -205,14 +217,14 @@ class TaskService:
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
         task = self.store.get(task_id)
         recent_events = task.events[-20:]
-        context_status = self._load_context_status(task.id)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
             active_trace_summary=recent_events[-1].message if recent_events else None,
             available_tabs=self._workspace_tabs(task),
             request_preview=self._request_preview(task),
-            context_status=context_status,
+            context_status=self._load_context_status(task.id),
+            response_cache_status=self._load_response_cache_status(task),
             sources=task.sources,
         )
 
@@ -509,9 +521,7 @@ class TaskService:
     def _model_summary(self) -> dict[str, Any]:
         models = self.model_catalog.list_models()
         supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
-        default_model = self.engine.settings.default_chat_model
-        if default_model and default_model not in supported_models:
-            supported_models.insert(0, default_model)
+        default_model = self.model_catalog._effective_default_model()
         return {
             "default_model": default_model,
             "supported_models": supported_models,
@@ -684,6 +694,8 @@ class TaskService:
                     "cache_hit": cache_hit,
                     "cache_key": cache_key,
                     "model": model_name,
+                    "history_count": len(history),
+                    "exchange_label": exchange_label,
                 },
             )
 
@@ -751,6 +763,55 @@ class TaskService:
                 continue
             return self._context_status_from_snapshot(snapshot)
         return {}
+
+    def _load_response_cache_status(self, task: TaskRecord) -> dict[str, Any]:
+        cache_event = next(
+            (event for event in reversed(task.events) if event.event_type == "cache.hit"),
+            None,
+        )
+        if cache_event is None:
+            return {}
+        payload = cache_event.payload if isinstance(cache_event.payload, dict) else {}
+        status: dict[str, Any] = {
+            "stage": cache_event.stage,
+            "status": "cached",
+            "summary": cache_event.message,
+            "cache_hit": True,
+            "cache_scope": "response_cache",
+        }
+        if payload.get("cache_key"):
+            status["cache_key"] = payload.get("cache_key")
+        if payload.get("model"):
+            status["model"] = payload.get("model")
+        if isinstance(payload.get("history_count"), int):
+            status["history_count"] = payload.get("history_count")
+        if payload.get("exchange_label"):
+            status["exchange_label"] = payload.get("exchange_label")
+        return status
+
+    def _load_message_history(
+        self,
+        task_id: str,
+        stage: str,
+        filename: str,
+    ) -> list[dict[str, str]]:
+        try:
+            payload = self.store.read_json(task_id, f"context/{stage}/{filename}.json")
+        except FileNotFoundError:
+            return []
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user").strip() or "user"
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized
 
     def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}

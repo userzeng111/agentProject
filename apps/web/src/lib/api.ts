@@ -47,6 +47,13 @@ export async function getModels() {
   return response.data ?? [];
 }
 
+export async function updateDefaultModel(modelId: string) {
+  return request<{ default_model: string; supported_models: string[] }>("/api/settings/default-model", {
+    method: "PATCH",
+    body: JSON.stringify({ model_id: modelId }),
+  });
+}
+
 export function uploadAsset(taskId: string, file: File) {
   const formData = new FormData();
   formData.append("file", file);

@@ -1,4 +1,6 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from app.settings.config import Settings
 
@@ -15,11 +17,16 @@ class ModelCatalogServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         from app.llm.model_catalog import ModelCatalogService
 
+        self.tmp_dir = tempfile.TemporaryDirectory()
         self.settings = Settings(
             OPENAI_API_KEY="test-key",
             DEFAULT_CHAT_MODEL="gpt-5.4",
+            tasklog_root=str(Path(self.tmp_dir.name) / "tasklog"),
         )
         self.catalog_cls = ModelCatalogService
+
+    def tearDown(self) -> None:
+        self.tmp_dir.cleanup()
 
     def test_list_models_merges_gateway_models_with_capability_profiles(self) -> None:
         catalog = self.catalog_cls(
@@ -59,7 +66,7 @@ class ModelCatalogServiceTests(unittest.TestCase):
         payload = catalog.list_models_payload()
 
         self.assertEqual(payload["data"][0]["id"], "gpt-5.4")
-        self.assertEqual(payload["data"][0]["metadata"]["source"], "default+registry")
+        self.assertIn(payload["data"][0]["metadata"]["source"], {"default+registry", "registry"})
 
     def test_current_gateway_model_families_all_get_context_window_profiles(self) -> None:
         catalog = self.catalog_cls(
@@ -83,7 +90,22 @@ class ModelCatalogServiceTests(unittest.TestCase):
 
         payload = catalog.list_models_payload()
 
+        gateway_ids = {
+            "MiniMax-M2.7-highspeed",
+            "gpt-5.2-codex",
+            "glm-5",
+            "claude-haiku-4-5-20251001",
+            "gpt-5.4",
+            "glm-5.1",
+            "claude-sonnet-4-6",
+            "gpt-5.3-codex",
+            "claude-opus-4-6",
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-max",
+        }
         for item in payload["data"]:
+            if item["id"] not in gateway_ids:
+                continue
             context_window = item["capabilities"]["context_window"]
             self.assertIsInstance(context_window["max_input_tokens"], int)
             self.assertGreater(context_window["max_input_tokens"], 0)

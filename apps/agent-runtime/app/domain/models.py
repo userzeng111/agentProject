@@ -176,6 +176,7 @@ class WorkspaceResponse(BaseModel):
     available_tabs: list[str] = Field(default_factory=list)
     request_preview: dict[str, Any] = Field(default_factory=dict)
     context_status: dict[str, Any] = Field(default_factory=dict)
+    response_cache_status: dict[str, Any] = Field(default_factory=dict)
     sources: list[SourceAsset] = Field(default_factory=list)
 
 

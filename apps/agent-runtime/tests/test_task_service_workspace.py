@@ -36,6 +36,9 @@ class FakeEngine:
         self.gateway_client = FakeGatewayClient()
         self.progress_callback = None
 
+    def set_runtime_default_model(self, model_id: str) -> None:
+        self.settings.default_chat_model = model_id
+
     def build_story_plan(self, spec, reference_text, context_packet=None, model=None):
         from app.domain.models import StoryPlan
 
@@ -55,6 +58,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
@@ -90,6 +94,8 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertEqual(workspace.meta.model_capabilities["context_window"]["max_input_tokens"], 256000)
             self.assertEqual(workspace.context_status["stage"], "planning")
             self.assertTrue(workspace.context_status["compression_applied"])
+            self.assertEqual(workspace.context_status["cache_scope"], "runtime_context")
+            self.assertEqual(workspace.response_cache_status, {})
             self.assertEqual(workspace.request_preview["model_capabilities"]["cache"]["runtime_context_cache"], True)
 
     def test_second_equivalent_task_hits_context_and_response_cache(self) -> None:
@@ -120,8 +126,51 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             workspace = service.get_workspace(second_task.id)
 
             self.assertEqual(len(engine.gateway_client.calls), 1)
-            self.assertTrue(workspace.context_status["cache_hit"])
+            self.assertIn("cache_hit", workspace.context_status)
+            self.assertEqual(workspace.context_status["cache_scope"], "runtime_context")
+            self.assertTrue(workspace.response_cache_status["cache_hit"])
             self.assertTrue(any(event.event_type == "cache.hit" for event in service.get_task(second_task.id).events))
+            self.assertEqual(workspace.response_cache_status["cache_scope"], "response_cache")
+
+    def test_workspace_still_exposes_response_cache_status_when_cache_event_is_outside_recent_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            from app.llm.story_engine import StoryEngine
+
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = FakeGatewayClient()
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            payload = TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一部克制风格的都市悬疑小说",
+                model_id="gpt-5.4",
+            )
+            first_task = service.create_task(payload)
+            second_task = service.create_task(payload)
+
+            service._run_task_sync(first_task.id)
+            service._run_task_sync(second_task.id)
+
+            for index in range(25):
+                store.append_event(
+                    second_task.id,
+                    stage="waiting_outline_review",
+                    message=f"后续事件 {index}",
+                    event_type="trace.summary",
+                    payload={"summary": f"后续事件 {index}"},
+                )
+
+            workspace = service.get_workspace(second_task.id)
+
+            self.assertTrue(workspace.response_cache_status["cache_hit"])
+            self.assertEqual(workspace.response_cache_status["cache_scope"], "response_cache")
 
 
 if __name__ == "__main__":

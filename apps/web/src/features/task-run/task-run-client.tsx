@@ -30,7 +30,14 @@ import {
   MenuBook as MenuBookIcon,
 } from "@mui/icons-material";
 import { getApiBase, getWorkspace, runTask } from "@/lib/api";
-import { ContextStatus, ModelCapabilities, TaskStatus, WorkspaceEvent, WorkspaceResponse } from "@/lib/types";
+import {
+  ContextStatus,
+  ModelCapabilities,
+  ResponseCacheStatus,
+  TaskStatus,
+  WorkspaceEvent,
+  WorkspaceResponse,
+} from "@/lib/types";
 
 const statusMap: Record<TaskStatus, { label: string; color: "default" | "success" | "warning" | "error" }> = {
   created: { label: "待启动", color: "default" },
@@ -89,8 +96,16 @@ function formatPercent(value?: number) {
   return `${Math.round(value * 100)}%`;
 }
 
+function hasPayload<T extends object>(value?: T | null): value is T {
+  return Boolean(value) && Object.keys(value ?? {}).length > 0;
+}
+
 function resolveContextStatus(workspace: WorkspaceResponse): ContextStatus | undefined {
-  return workspace.context_status || workspace.context_snapshot || workspace.meta.context_status;
+  return hasPayload(workspace.context_status) ? workspace.context_status : undefined;
+}
+
+function resolveResponseCacheStatus(workspace: WorkspaceResponse): ResponseCacheStatus | undefined {
+  return hasPayload(workspace.response_cache_status) ? workspace.response_cache_status : undefined;
 }
 
 function resolveModelCapabilities(workspace: WorkspaceResponse): ModelCapabilities | undefined {
@@ -105,20 +120,36 @@ function formatContextWindowLabel(capabilities?: ModelCapabilities) {
   return `上下文窗口：${formatTokenCount(contextWindow.max_input_tokens || contextWindow.max_total_tokens)} tokens`;
 }
 
-function formatRuntimeCacheLabel(capabilities?: ModelCapabilities, contextStatus?: ContextStatus) {
+function formatContextCacheLabel(capabilities?: ModelCapabilities, contextStatus?: ContextStatus) {
   if (contextStatus?.cache_hit === true) {
-    return "缓存：本轮已命中";
+    return "上下文缓存：本轮已命中";
   }
   if (contextStatus?.cache_hit === false) {
-    return "缓存：本轮未命中";
+    return "上下文缓存：本轮未命中";
   }
   if (capabilities?.cache?.runtime_context_cache) {
-    return "缓存：支持运行时上下文缓存";
+    return "上下文缓存：支持运行时上下文缓存";
   }
   if (capabilities?.cache) {
-    return "缓存：未上报命中状态";
+    return "上下文缓存：未上报";
   }
-  return "缓存：未声明";
+  return "上下文缓存：未声明";
+}
+
+function formatResponseCacheLabel(capabilities?: ModelCapabilities, responseCacheStatus?: ResponseCacheStatus) {
+  if (responseCacheStatus?.cache_hit === true) {
+    return "响应缓存：本轮已命中";
+  }
+  if (responseCacheStatus?.cache_hit === false) {
+    return "响应缓存：本轮未命中";
+  }
+  if (capabilities?.cache?.runtime_response_cache || capabilities?.cache?.response_cache) {
+    return "响应缓存：支持运行时响应缓存";
+  }
+  if (capabilities?.cache) {
+    return "响应缓存：未上报";
+  }
+  return "响应缓存：未声明";
 }
 
 function formatCompressionLabel(capabilities?: ModelCapabilities, contextStatus?: ContextStatus) {
@@ -317,6 +348,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
   const currentStep = getStepIndex(workspace.meta.status);
   const contextStatus = resolveContextStatus(workspace);
+  const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
 
   return (
@@ -456,7 +488,8 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                 <Typography variant="subtitle1">上下文状态</Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Chip size="small" variant="outlined" label={formatContextWindowLabel(modelCapabilities)} />
-                  <Chip size="small" variant="outlined" label={formatRuntimeCacheLabel(modelCapabilities, contextStatus)} />
+                  <Chip size="small" variant="outlined" label={formatContextCacheLabel(modelCapabilities, contextStatus)} />
+                  <Chip size="small" variant="outlined" label={formatResponseCacheLabel(modelCapabilities, responseCacheStatus)} />
                   <Chip size="small" variant="outlined" label={formatCompressionLabel(modelCapabilities, contextStatus)} />
                 </Stack>
                 <Typography variant="body2" color="text.secondary">
@@ -473,6 +506,18 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
                   {contextStatus?.summary || contextStatus?.compression_summary || "后端暂未返回上下文摘要或缓存/压缩细节。"}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {responseCacheStatus
+                    ? [
+                        responseCacheStatus.summary || "响应缓存状态已返回。",
+                        typeof responseCacheStatus.history_count === "number"
+                          ? `历史消息：${responseCacheStatus.history_count} 条`
+                          : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
+                    : "响应缓存：当前未上报独立状态。"}
                 </Typography>
               </Stack>
             </Box>
@@ -627,7 +672,9 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
               <Typography variant="body2" color="text.secondary">
                 {formatContextWindowLabel(modelCapabilities)}
                 {" · "}
-                {formatRuntimeCacheLabel(modelCapabilities, contextStatus)}
+                {formatContextCacheLabel(modelCapabilities, contextStatus)}
+                {" · "}
+                {formatResponseCacheLabel(modelCapabilities, responseCacheStatus)}
                 {" · "}
                 {formatCompressionLabel(modelCapabilities, contextStatus)}
               </Typography>
@@ -647,11 +694,18 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                 </Typography>
               )}
               <Typography variant="body2" color="text.secondary">
-                缓存键：{contextStatus?.cache_key || "未上报"}
+                上下文缓存键：{contextStatus?.cache_key || "未上报"}
                 {" · "}
-                缓存范围：{contextStatus?.cache_scope || "未上报"}
+                上下文缓存范围：{contextStatus?.cache_scope || "未上报"}
                 {" · "}
                 缓存片段：{typeof contextStatus?.cached_segments === "number" ? contextStatus.cached_segments : "未上报"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary">
+                响应缓存键：{responseCacheStatus?.cache_key || "未上报"}
+                {" · "}
+                响应缓存范围：{responseCacheStatus?.cache_scope || "未上报"}
+                {" · "}
+                历史消息：{typeof responseCacheStatus?.history_count === "number" ? responseCacheStatus.history_count : "未上报"}
               </Typography>
               <Typography variant="body2" color="text.secondary">
                 {workspace.meta.summary || "暂无摘要"}

@@ -107,10 +107,17 @@ class StoryEngine:
                 api_key=settings.openai_api_key,
                 model=settings.default_chat_model,
             )
+        self._runtime_default_model: str | None = None
 
     def resolve_model(self, model: str | None) -> str:
         candidate = (model or "").strip()
-        return candidate or self.settings.default_chat_model
+        return candidate or self._runtime_default_model or self.settings.default_chat_model
+
+    def set_runtime_default_model(self, model_id: str) -> None:
+        """设置运行时默认模型覆盖。"""
+        self._runtime_default_model = model_id
+        if self.gateway_client is not None:
+            self.gateway_client.model = model_id
 
     def list_models(self) -> list[dict[str, Any]]:
         if self.gateway_client is None:
@@ -196,6 +203,7 @@ class StoryEngine:
         context_packet: dict[str, Any] | None = None,
         model: str | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        initial_conversation_history: list[dict[str, str]] | None = None,
     ) -> DraftResult:
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
@@ -216,7 +224,11 @@ class StoryEngine:
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
-        conversation_history: list[dict[str, str]] = []
+        conversation_history: list[dict[str, str]] = [
+            {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")}
+            for item in (initial_conversation_history or [])
+            if isinstance(item, dict) and str(item.get("content") or "").strip()
+        ]
         for item in story_plan["chapter_plan"]:
             if active_progress_callback is not None:
                 active_progress_callback(
@@ -373,8 +385,10 @@ class StoryEngine:
     ) -> list[dict[str, str]]:
         if not conversation_history:
             return [dict(item) for item in prompt_messages]
+        current_system_messages = [dict(item) for item in prompt_messages if item.get("role") == "system"]
+        historical_messages = [dict(item) for item in conversation_history if item.get("role") != "system"]
         latest_user_messages = [dict(item) for item in prompt_messages if item.get("role") != "system"]
-        return [dict(item) for item in conversation_history] + latest_user_messages
+        return current_system_messages + historical_messages + latest_user_messages
 
     def _append_assistant_message(
         self,

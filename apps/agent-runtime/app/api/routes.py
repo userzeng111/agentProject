@@ -46,6 +46,18 @@ def build_router(task_service) -> APIRouter:
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
 
+    @router.patch("/settings/default-model")
+    def update_default_model(payload: dict[str, str]):
+        model_id = payload.get("model_id", "").strip()
+        if not model_id:
+            raise HTTPException(status_code=400, detail="model_id 不能为空。")
+        try:
+            return task_service.update_default_model(model_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
+
     @router.post("/tasks")
     def create_task(payload: TaskCreateRequest):
         return task_service.create_task(payload)
