@@ -98,6 +98,15 @@ class TaskLogStore:
             reverse=True,
         )
 
+    def list_archive_tasks_paginated(
+        self, page: int = 1, page_size: int = 10
+    ) -> tuple[list[TaskRecord], int]:
+        """返回分页后的归档任务列表及总数。"""
+        all_archived = self.list_archive_tasks()
+        total = len(all_archived)
+        skip = (page - 1) * page_size
+        return all_archived[skip : skip + page_size], total
+
     def list_run_tasks(self) -> list[TaskRecord]:
         return sorted(
             [task for task in self._tasks.values() if task.storage_state == "runs"],

@@ -166,6 +166,45 @@ const theme = createTheme({
         },
       },
     },
+    MuiTab: {
+      styleOverrides: {
+        root: {
+          textTransform: "none",
+          fontWeight: 500,
+          fontSize: "0.95rem",
+          minHeight: 48,
+          color: "text.secondary",
+          "&.Mui-selected": {
+            color: "primary.main",
+            fontWeight: 600,
+          },
+        },
+      },
+    },
+    MuiTabs: {
+      styleOverrides: {
+        indicator: {
+          backgroundColor: "primary.main",
+          height: 2,
+          borderRadius: 1,
+        },
+      },
+    },
+    MuiPaginationItem: {
+      styleOverrides: {
+        root: {
+          borderRadius: 8,
+          fontWeight: 500,
+        },
+        selected: {
+          backgroundColor: "primary.main",
+          color: "#fff",
+          "&:hover": {
+            backgroundColor: "primary.dark",
+          },
+        },
+      },
+    },
   },
 });
 

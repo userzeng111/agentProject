@@ -11,6 +11,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Container,
   MenuItem,
   Skeleton,
   Stack,
@@ -154,6 +155,7 @@ export default function CreateTaskClient() {
   };
 
   return (
+    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
       {/* 面包屑 */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
@@ -336,5 +338,6 @@ export default function CreateTaskClient() {
         </CardContent>
       </Card>
     </Stack>
+    </Container>
   );
 }

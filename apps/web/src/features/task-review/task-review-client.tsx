@@ -11,6 +11,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Container,
   List,
   ListItem,
   ListItemText,
@@ -78,13 +79,16 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
 
   if (!review) {
     return (
-      <Box sx={{ py: 6 }}>
-        <Typography>正在载入审核信息...</Typography>
-      </Box>
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Box sx={{ py: 6 }}>
+          <Typography>正在载入审核信息...</Typography>
+        </Box>
+      </Container>
     );
   }
 
   return (
+    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
       {/* 面包屑 */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
@@ -278,5 +282,6 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
     </Stack>
+    </Container>
   );
 }

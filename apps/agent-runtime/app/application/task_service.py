@@ -157,12 +157,21 @@ class TaskService:
                 "active_runs": len(running_tasks),
                 "archived_runs": sum(1 for task in tasks if task.storage_state == "archive"),
             },
+            continue_total=len(continue_tasks),
+            running_total=len(running_tasks),
+            failed_total=len(failed_tasks),
         )
 
-    def get_archive_list(self) -> ArchiveTaskListResponse:
-        items = [self._to_summary(task) for task in self.store.list_archive_tasks()]
+    def get_archive_list(self, page: int = 1, page_size: int = 10) -> ArchiveTaskListResponse:
+        paginated_tasks, total = self.store.list_archive_tasks_paginated(page, page_size)
+        items = [self._to_summary(task) for task in paginated_tasks]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
         return ArchiveTaskListResponse(
             items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
         )
 
     def get_archive_detail(self, task_id: str) -> ArchiveTaskDetailResponse:

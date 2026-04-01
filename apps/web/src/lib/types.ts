@@ -137,6 +137,9 @@ export interface DashboardResponse {
     active_runs: number;
     archived_runs: number;
   };
+  continue_total?: number;
+  running_total?: number;
+  failed_total?: number;
 }
 
 export interface WorkspaceMeta {
@@ -265,6 +268,10 @@ export interface ArchiveTaskSummary extends TaskCardSummary {
 
 export interface ArchiveIndexResponse {
   items: ArchiveTaskSummary[];
+  total?: number;
+  page?: number;
+  page_size?: number;
+  total_pages?: number;
 }
 
 export interface ArchiveMeta {

@@ -11,6 +11,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Container,
   Divider,
   LinearProgress,
   List,
@@ -302,9 +303,11 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
 
   if (!workspace) {
     return (
-      <Box sx={{ py: 6 }}>
-        <Typography>正在读取工作台...</Typography>
-      </Box>
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Box sx={{ py: 6 }}>
+          <Typography>正在读取工作台...</Typography>
+        </Box>
+      </Container>
     );
   }
 
@@ -317,6 +320,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const modelCapabilities = resolveModelCapabilities(workspace);
 
   return (
+    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
       {/* 面包屑 + 状态 */}
       <Stack direction={{ xs: "column", sm: "row" }} spacing={2} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
@@ -657,5 +661,6 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
     </Stack>
+    </Container>
   );
 }

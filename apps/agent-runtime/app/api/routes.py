@@ -58,9 +58,12 @@ def build_router(task_service) -> APIRouter:
             raise _handle_error(exc) from exc
 
     @router.get("/archive")
-    def get_archive():
+    def get_archive(
+        page: int = Query(1, ge=1, description="页码"),
+        page_size: int = Query(10, ge=1, le=50, description="每页条数"),
+    ):
         try:
-            return task_service.get_archive_list()
+            return task_service.get_archive_list(page=page, page_size=page_size)
         except Exception as exc:
             raise _handle_error(exc) from exc
 

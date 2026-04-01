@@ -164,6 +164,9 @@ class DashboardResponse(BaseModel):
     failed_tasks: list[TaskSummary]
     model_summary: dict[str, Any]
     system_summary: dict[str, Any]
+    continue_total: int = 0
+    running_total: int = 0
+    failed_total: int = 0
 
 
 class WorkspaceResponse(BaseModel):
@@ -199,6 +202,10 @@ class ResultResponse(BaseModel):
 
 class ArchiveTaskListResponse(BaseModel):
     items: list[TaskSummary] = Field(default_factory=list)
+    total: int = 0
+    page: int = 1
+    page_size: int = 10
+    total_pages: int = 0
 
 
 class ArchiveTaskDetailResponse(BaseModel):

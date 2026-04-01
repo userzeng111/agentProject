@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { AppThemeProvider } from "@/components/app-theme-provider";
 import { AppHeader } from "@/components/app-header";
-import { Box, Container } from "@mui/material";
+import { Box } from "@mui/material";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -28,17 +28,14 @@ export default function RootLayout({
             }}
           >
             <AppHeader />
-            <Container
+            <Box
               component="main"
-              maxWidth="md"
               sx={{
                 flex: 1,
-                py: 3,
-                px: { xs: 2, sm: 3 },
               }}
             >
               {children}
-            </Container>
+            </Box>
           </Box>
         </AppThemeProvider>
       </body>

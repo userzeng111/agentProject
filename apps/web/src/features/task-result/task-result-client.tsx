@@ -10,6 +10,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Container,
   List,
   ListItem,
   ListItemText,
@@ -60,13 +61,16 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
 
   if (!result) {
     return (
-      <Box sx={{ py: 6 }}>
-        <Typography>正在读取结果...</Typography>
-      </Box>
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Box sx={{ py: 6 }}>
+          <Typography>正在读取结果...</Typography>
+        </Box>
+      </Container>
     );
   }
 
   return (
+    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
       {/* 面包屑 */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
@@ -267,5 +271,6 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
         </Card>
       ) : null}
     </Stack>
+    </Container>
   );
 }

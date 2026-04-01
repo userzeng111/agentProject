@@ -85,8 +85,12 @@ export function getResult(taskId: string) {
   return request<ResultResponse>(`/api/tasks/${taskId}/result`);
 }
 
-export function getArchiveList() {
-  return request<ArchiveIndexResponse>("/api/archive");
+export function getArchiveList(page?: number, pageSize?: number) {
+  const params = new URLSearchParams();
+  if (page !== undefined) params.set("page", String(page));
+  if (pageSize !== undefined) params.set("page_size", String(pageSize));
+  const query = params.toString();
+  return request<ArchiveIndexResponse>(`/api/archive${query ? `?${query}` : ""}`);
 }
 
 export function getArchiveDetail(taskId: string) {

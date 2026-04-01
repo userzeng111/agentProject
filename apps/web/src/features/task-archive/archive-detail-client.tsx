@@ -9,6 +9,7 @@ import {
   Button,
   Card,
   CardContent,
+  Container,
   Divider,
   List,
   ListItem,
@@ -50,13 +51,16 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
 
   if (!detail) {
     return (
-      <Box sx={{ py: 6 }}>
-        <Typography>正在读取归档详情...</Typography>
-      </Box>
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Box sx={{ py: 6 }}>
+          <Typography>正在读取归档详情...</Typography>
+        </Box>
+      </Container>
     );
   }
 
   return (
+    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
       {/* 面包屑 */}
       <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
@@ -207,5 +211,6 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
         </CardContent>
       </Card>
     </Stack>
+    </Container>
   );
 }
