@@ -14,6 +14,7 @@ from app.domain.models import (
     ArchiveTaskDetailResponse,
     ArchiveTaskListResponse,
     ArtifactItem,
+    ChapterDraft,
     DashboardResponse,
     DraftResult,
     ResultResponse,
@@ -65,11 +66,13 @@ class TaskService:
                 ]
             )
         )
+        checkpoint_db_path = str(Path(self.store.root_dir) / "checkpoints.db")
         self.graph = build_graph(
             engine,
             context_manager=self.context_manager,
             model_catalog=self.model_catalog,
             history_loader=self._load_message_history,
+            checkpoint_db_path=checkpoint_db_path,
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
@@ -105,20 +108,60 @@ class TaskService:
 
     def resume_task(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
         task = self.store.get(task_id)
-        if task.status is not TaskStatus.WAITING_OUTLINE_REVIEW or task.pending_review is None:
+        valid_statuses = {
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+        }
+        if task.status not in valid_statuses or task.pending_review is None:
             raise ValueError("当前任务没有待恢复的审核节点。")
-        decision_text = "通过" if approved else "驳回"
-        note = comment.strip() or f"人工审核已{decision_text}，任务转入后台处理。"
-        snapshot = self.store.mark_stage(
-            task_id,
-            status=TaskStatus.DRAFTING if approved else TaskStatus.WAITING_MANUAL_ACTION,
-            stage="drafting" if approved else "review_decision",
-            progress=60 if approved else max(task.progress, 56),
-            message=note,
-            event_type="review.submitted",
-            payload={"approved": approved, "comment": comment},
-            unit_id="outline",
-        )
+        review_type = task.pending_review.type
+
+        if review_type == "chapter_pair_review":
+            note = comment.strip() or (
+                "人工审核已通过，任务转入后台处理。"
+                if approved
+                else "人工审核已驳回，正在修订章节。"
+            )
+            snapshot = self.store.mark_stage(
+                task_id,
+                status=TaskStatus.DRAFTING,
+                stage="drafting",
+                progress=max(task.progress, 60),
+                message=note,
+                event_type="review.submitted",
+                unit_id=f"chapter-pair-{task.pending_review.batch_index or 0}",
+            )
+        elif review_type == "verification_review":
+            note = comment.strip() or (
+                "人工审核已通过，任务转入后台处理。"
+                if approved
+                else "人工审核已驳回，正在根据验证意见修复。"
+            )
+            snapshot = self.store.mark_stage(
+                task_id,
+                status=TaskStatus.DRAFTING,
+                stage="verification",
+                progress=max(task.progress, 92),
+                message=note,
+                event_type="review.submitted",
+                unit_id="verification",
+            )
+        else:
+            note = comment.strip() or (
+                "人工审核已通过，任务转入后台处理。"
+                if approved
+                else "人工审核已驳回，正在修订大纲。"
+            )
+            snapshot = self.store.mark_stage(
+                task_id,
+                status=TaskStatus.DRAFTING if approved else TaskStatus.PLANNING,
+                stage="drafting" if approved else "planning",
+                progress=60 if approved else max(task.progress, 56),
+                message=note,
+                event_type="review.submitted",
+                unit_id="outline",
+            )
         self._start_background(task_id, self._resume_task_sync, task_id, approved, comment)
         return snapshot
 
@@ -144,13 +187,15 @@ class TaskService:
             TaskStatus.CREATED,
             TaskStatus.SOURCES_INGESTED,
             TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.WAITING_MANUAL_ACTION,
             TaskStatus.CANCELLED,
         }
         running_statuses = {
             TaskStatus.PLANNING,
             TaskStatus.DRAFTING,
             TaskStatus.ASSEMBLING,
-            TaskStatus.WAITING_MANUAL_ACTION,
         }
         running_tasks = [
             self._to_summary(task)
@@ -230,17 +275,74 @@ class TaskService:
 
     def get_review(self, task_id: str) -> ReviewResponse:
         task = self.store.get(task_id)
-        if task.story_plan is None:
-            raise ValueError("当前任务还没有可审核的大纲。")
         review = task.pending_review
+        if review is None:
+            if task.story_plan is None:
+                raise ValueError("当前任务还没有可审核的内容。")
+            outline_ref = self._file_ref(task, "outline.md")
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type="outline_review",
+                review_version="v1",
+                summary="当前任务已有大纲，可查看历史审核结果。",
+                risk_flags=[],
+                outline_markdown=self._outline_markdown(task.story_plan),
+                outline_md_ref=outline_ref,
+                review_history=self._review_history(task),
+            )
+
+        review_type = review.type
         outline_ref = self._file_ref(task, "outline.md")
+
+        if review_type == "chapter_pair_review":
+            chapter_pair_data = review.chapter_pair or []
+            chapter_index = [
+                {
+                    "number": ch.number,
+                    "title": ch.title,
+                    "summary": ch.summary,
+                    "content": ch.content,
+                }
+                for ch in chapter_pair_data
+            ]
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type="chapter_pair_review",
+                review_version=review.version,
+                summary=review.summary,
+                risk_flags=review.risk_flags,
+                outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
+                outline_md_ref=outline_ref,
+                review_history=self._review_history(task),
+                chapter_pair=chapter_index,
+                batch_index=review.batch_index,
+                completed_count=review.completed_count,
+                total_chapters=review.total_chapters,
+                chapter_pair_revision_count=review.chapter_pair_revision_count,
+            )
+
+        elif review_type == "verification_review":
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type="verification_review",
+                review_version=review.version,
+                summary=review.summary,
+                risk_flags=review.risk_flags,
+                outline_markdown=None,
+                outline_md_ref=None,
+                review_history=self._review_history(task),
+                verification_report=review.verification_report,
+                verification_revision_count=review.verification_revision_count,
+            )
+
+        # 默认：大纲审核
         return ReviewResponse(
             meta=self._to_summary(task),
-            review_type=review.type if review else "outline_review",
-            review_version=review.version if review else "v1",
-            summary=review.summary if review else "当前任务已有大纲，可查看历史审核结果。",
-            risk_flags=review.risk_flags if review else [],
-            outline_markdown=self._outline_markdown(task.story_plan),
+            review_type="outline_review",
+            review_version=review.version,
+            summary=review.summary,
+            risk_flags=review.risk_flags,
+            outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
             outline_md_ref=outline_ref,
             review_history=self._review_history(task),
         )
@@ -348,20 +450,62 @@ class TaskService:
 
         if "__interrupt__" in result:
             story_plan_data = values.get("story_plan")
+            review = ReviewPayload.model_validate(result["__interrupt__"][0].value)
+            review_type = review.type
+
+            if review_type == "outline_review":
+                if not story_plan_data:
+                    raise RuntimeError("工作流进入审核前未生成可用大纲。")
+                story_plan = StoryPlan.model_validate(story_plan_data)
+                record = self.store.set_waiting_review(task_id, review, story_plan)
+                self._emit_trace_summary(
+                    task_id,
+                    kind="outline",
+                    title="大纲已生成",
+                    detail="已完成故事骨架与章节规划，等待人工审核。",
+                    unit_id="outline",
+                )
+                return record
+
+            elif review_type == "chapter_pair_review":
+                current_chapter_pair = values.get("current_chapter_pair") or []
+                review.chapter_pair = [ChapterDraft.model_validate(ch) for ch in current_chapter_pair]
+                batch_index = values.get("batch_index", 0)
+                completed = values.get("completed_chapters") or []
+                chapter_plan = (story_plan_data or {}).get("chapter_plan") or []
+                review.batch_index = batch_index
+                review.completed_count = len(completed)
+                review.total_chapters = len(chapter_plan)
+                record = self.store.set_waiting_chapter_review(task_id, review)
+                self._emit_trace_summary(
+                    task_id,
+                    kind="chapter",
+                    title=f"章节对 {batch_index // 2 + 1} 已生成",
+                    detail=f"第 {batch_index + 1}-{min(batch_index + 2, len(chapter_plan))} 章已起草，等待审核。",
+                    unit_id=f"chapter-pair-{batch_index}",
+                )
+                return record
+
+            elif review_type == "verification_review":
+                verification_report = values.get("verification_report") or {}
+                review.verification_report = verification_report
+                record = self.store.set_waiting_verification_review(task_id, review)
+                self._emit_trace_summary(
+                    task_id,
+                    kind="verification",
+                    title="全文验证完成",
+                    detail=f"总分 {verification_report.get('overall_score', '?')}，发现 {len(verification_report.get('issues') or [])} 个问题。",
+                    unit_id="verification",
+                )
+                return record
+
+            # 兜底：未知类型按大纲审核处理
             if not story_plan_data:
                 raise RuntimeError("工作流进入审核前未生成可用大纲。")
-            review = ReviewPayload.model_validate(result["__interrupt__"][0].value)
             story_plan = StoryPlan.model_validate(story_plan_data)
-            record = self.store.set_waiting_review(task_id, review, story_plan)
-            self._emit_trace_summary(
-                task_id,
-                kind="outline",
-                title="大纲已生成",
-                detail="已完成故事骨架与章节规划，等待人工审核。",
-                unit_id="outline",
-            )
-            return record
+            return self.store.set_waiting_review(task_id, review, story_plan)
 
+        # 工作流正常结束
         story_plan_data = values.get("story_plan")
         if not story_plan_data:
             raise RuntimeError("工作流结束后未找到大纲结果。")
@@ -372,21 +516,6 @@ class TaskService:
         draft_result_data = values.get("draft_result")
         if not draft_result_data:
             raise RuntimeError("工作流结束后未找到正文结果。")
-        draft_context_snapshot = values.get("draft_context_snapshot")
-        if isinstance(draft_context_snapshot, dict):
-            self.store.write_context_snapshot(
-                task_id,
-                stage="drafting",
-                snapshot_name="draft-context",
-                payload=draft_context_snapshot,
-            )
-            self._emit_trace_summary(
-                task_id,
-                kind="context",
-                title="正文上下文已装配",
-                detail="已完成 drafting 阶段上下文预算、压缩与缓存判定。",
-                unit_id="draft-context",
-            )
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
@@ -437,11 +566,15 @@ class TaskService:
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         task = self.store.get(task_id)
-        if task.pending_review is None or task.status not in {
+        valid_statuses = {
             TaskStatus.WAITING_OUTLINE_REVIEW,
             TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.PLANNING,
             TaskStatus.DRAFTING,
-        }:
+        }
+        if task.pending_review is None or task.status not in valid_statuses:
             raise ValueError("当前任务没有待恢复的审核节点。")
         try:
             if approved:
@@ -450,23 +583,16 @@ class TaskService:
                     status=TaskStatus.DRAFTING,
                     stage="drafting",
                     progress=max(task.progress, 60),
-                    message="收到人工审核结果，开始继续生成正文。",
+                    message="收到人工审核结果，继续执行工作流。",
                     event_type="draft.generating",
-                    unit_id="outline",
-                )
-                self._emit_trace_summary(
-                    task_id,
-                    kind="draft",
-                    title="开始生成正文",
-                    detail="审核已通过，正在按章节逐段起草正文。",
-                    unit_id="outline",
+                    unit_id=task.current_unit,
                 )
             else:
                 self.store.append_event(
                     task_id,
                     stage="review_decision",
-                    message="收到人工审核结果，准备结束本次任务。",
-                    event_type="task.cancel.pending",
+                    message="收到人工审核结果（驳回），准备修订。",
+                    event_type="task.review.rejected",
                 )
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
@@ -531,11 +657,14 @@ class TaskService:
         tabs = ["request", "events"]
         if task.story_plan is not None:
             tabs.append("outline")
-        if task.pending_review is not None or task.status in {
+        review_statuses = {
             TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
             TaskStatus.CANCELLED,
             TaskStatus.COMPLETED,
-        }:
+        }
+        if task.pending_review is not None or task.status in review_statuses:
             tabs.append("review")
         if task.draft_result is not None:
             tabs.append("result")
@@ -559,6 +688,28 @@ class TaskService:
                         "version": "v1",
                         "action": "submitted",
                         "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.review.rejected":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "rejected",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif (
+                event.event_type == "context.history.updated"
+                and event.stage == "verification"
+                and (event.payload or {}).get("exchange_label") == "fix-issues"
+            ):
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "repairing",
+                        "comment": "已进入验证问题修复阶段。",
                         "created_at": event.created_at.isoformat(),
                     }
                 )
@@ -641,15 +792,22 @@ class TaskService:
                 event_type=event_type,
                 payload=payload,
             )
-            if event_type == "chapter.started":
-                self._emit_trace_summary(
-                    task_id,
-                    kind="chapter",
-                    title=f"开始生成第 {payload.get('chapter_number', '?')} 章",
-                    detail=str(payload.get("chapter_title") or message),
-                    unit_id=unit_id,
-                )
-            elif event_type == "chapter.saved":
+            # 章节正文持久化（从 conversation_history 中提取）
+            if event_type == "chapter.saved":
+                chapter_number = payload.get("chapter_number")
+                chapter_title = payload.get("chapter_title")
+                chapter_summary = payload.get("chapter_summary")
+                conversation_history = event.get("conversation_history") or []
+                # 从对话历史中提取章节 JSON
+                chapter_content = self._extract_chapter_content(conversation_history)
+                if chapter_content:
+                    self._write_chapter_file(
+                        task_id,
+                        chapter_number=chapter_number,
+                        title=chapter_title or f"第{chapter_number}章",
+                        summary=chapter_summary or "",
+                        content=chapter_content,
+                    )
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",
@@ -657,8 +815,98 @@ class TaskService:
                     detail=str(payload.get("chapter_summary") or payload.get("chapter_title") or message),
                     unit_id=unit_id,
                 )
+            elif event_type == "chapter.started":
+                self._emit_trace_summary(
+                    task_id,
+                    kind="chapter",
+                    title=f"开始生成第 {payload.get('chapter_number', '?')} 章",
+                    detail=str(payload.get("chapter_title") or message),
+                    unit_id=unit_id,
+                )
 
         return callback
+
+    def _extract_chapter_content(self, conversation_history: list[dict[str, Any]]) -> str | None:
+        """从对话历史中提取最后一轮 assistant 消息中的章节正文。"""
+        for item in reversed(conversation_history):
+            if not isinstance(item, dict):
+                continue
+            if item.get("role") != "assistant":
+                continue
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            # 尝试解析 JSON
+            try:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and parsed.get("content"):
+                    return str(parsed["content"])
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return None
+
+    def _write_chapter_file(
+        self,
+        task_id: str,
+        chapter_number: int | None,
+        title: str,
+        summary: str,
+        content: str,
+    ) -> None:
+        """将章节正文写入磁盘文件。"""
+        task = self.store.get(task_id)
+        task_dir = self.store._task_dir(task)
+        chapters_dir = task_dir / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        safe_num = f"{chapter_number:02d}" if chapter_number else "00"
+        chapter_file = chapters_dir / f"{safe_num}.json"
+        chapter_data = {
+            "number": chapter_number,
+            "title": title,
+            "summary": summary,
+            "content": content,
+        }
+        chapter_file.write_text(json.dumps(chapter_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 更新 chapters/index.json
+        index_file = chapters_dir / "index.json"
+        index_data: list[dict[str, Any]] = []
+        if index_file.exists():
+            try:
+                index_data = json.loads(index_file.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, ValueError):
+                index_data = []
+        # 去重后追加
+        existing = {item.get("number") for item in index_data}
+        if chapter_number not in existing:
+            index_data.append({"number": chapter_number, "title": title, "summary": summary})
+            index_data.sort(key=lambda x: x.get("number") or 0)
+        index_file.write_text(json.dumps(index_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def get_current_chapters(self, task_id: str) -> list[dict[str, Any]]:
+        """获取当前任务的章节正文列表（用于工作台预览）。"""
+        task = self.store.get(task_id)
+        task_dir = self.store._task_dir(task)
+        chapters_dir = task_dir / "chapters"
+        index_file = chapters_dir / "index.json"
+        if not index_file.exists():
+            return []
+        try:
+            index_data = json.loads(index_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            return []
+        chapters: list[dict[str, Any]] = []
+        for item in index_data:
+            num = item.get("number")
+            safe_num = f"{num:02d}" if num else "00"
+            chapter_file = chapters_dir / f"{safe_num}.json"
+            if chapter_file.exists():
+                try:
+                    chapters.append(json.loads(chapter_file.read_text(encoding="utf-8")))
+                except (json.JSONDecodeError, ValueError):
+                    chapters.append(item)
+            else:
+                chapters.append(item)
+        return chapters
 
     def _build_exchange_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:
@@ -883,13 +1131,14 @@ class TaskService:
         ).events[-1]
 
     def _is_stale_running_task(self, task: TaskRecord) -> bool:
+        # 只有自动执行中的状态（planning/drafting/assembling）才可能过期
+        # 等待用户操作的状态（waiting_*）不会过期
         if task.storage_state != "runs":
             return False
         if task.status not in {
             TaskStatus.PLANNING,
             TaskStatus.DRAFTING,
             TaskStatus.ASSEMBLING,
-            TaskStatus.WAITING_MANUAL_ACTION,
         }:
             return False
         if task.id in self._active_runs:

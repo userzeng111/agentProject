@@ -151,6 +151,43 @@ class TaskLogStore:
         )
         return self.save(task)
 
+    def set_waiting_chapter_review(self, task_id: str, review: ReviewPayload) -> TaskRecord:
+        task = self.get(task_id)
+        task.pending_review = review
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = f"chapter-pair-{review.batch_index or 0}"
+        batch = review.batch_index or 0
+        total = review.total_chapters or 0
+        completed = review.completed_count or 0
+        task.progress = 55 + int(35 * completed / total) if total > 0 else 60
+        self.append_event(
+            task_id,
+            stage="waiting_chapter_review",
+            message=f"第 {batch + 1}-{min(batch + 2, total)} 章已生成（{completed}/{total}），等待审核。",
+            event_type="review.waiting",
+            payload={"summary": f"章节对审核等待中 ({completed}/{total})", "display_level": "public"},
+            task=task,
+        )
+        return self.save(task)
+
+    def set_waiting_verification_review(self, task_id: str, review: ReviewPayload) -> TaskRecord:
+        task = self.get(task_id)
+        task.pending_review = review
+        task.status = TaskStatus.WAITING_VERIFICATION_REVIEW
+        task.current_stage = "waiting_verification_review"
+        task.current_unit = "verification"
+        task.progress = 92
+        self.append_event(
+            task_id,
+            stage="waiting_verification_review",
+            message="全文一致性验证完成，等待审核验证报告。",
+            event_type="review.waiting",
+            payload={"summary": "全文验证报告待审核", "display_level": "public"},
+            task=task,
+        )
+        return self.save(task)
+
     def set_completed(
         self,
         task_id: str,

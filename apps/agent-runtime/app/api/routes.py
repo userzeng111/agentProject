@@ -147,6 +147,13 @@ def build_router(task_service) -> APIRouter:
         except Exception as exc:
             raise _handle_error(exc) from exc
 
+    @router.get("/tasks/{task_id}/chapters")
+    def get_current_chapters(task_id: str):
+        try:
+            return {"task_id": task_id, "chapters": task_service.get_current_chapters(task_id)}
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
     @router.get("/file-text")
     def get_file_text(ref: str = Query(..., description="tasklog 相对路径")):
         try:

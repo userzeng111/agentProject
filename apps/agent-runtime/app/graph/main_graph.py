@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -13,9 +14,24 @@ from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 
 try:
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    _HAS_SQLITE = True
+except ImportError:
+    _HAS_SQLITE = False
+
+try:
     from langgraph.checkpoint.memory import MemorySaver
 except ImportError:  # pragma: no cover
     from langgraph.checkpoint.memory import InMemorySaver as MemorySaver
+
+
+def _create_checkpointer(db_path: str | Path | None = None):
+    """创建 checkpointer：优先 SQLite 持久化，回退到内存。"""
+    if _HAS_SQLITE and db_path:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False)
+        return SqliteSaver(conn)
+    return MemorySaver()
 
 
 class WorkflowState(TypedDict, total=False):
@@ -27,13 +43,30 @@ class WorkflowState(TypedDict, total=False):
     outline_context_packet: dict[str, Any]
     outline_context_snapshot: dict[str, Any]
     story_plan: dict[str, Any]
-    approved: bool
+    outline_revision_count: int
+    # 章节对
+    batch_index: int
+    total_chapters: int
+    completed_count: int
+    chapter_pair_context_packet: dict[str, Any]
+    current_chapter_pair: list[dict[str, Any]]
+    completed_chapters: list[dict[str, Any]]
+    chapter_pair_revision_count: int
+    # 验证
+    verification_report: dict[str, Any]
+    verification_revision_count: int
+    # 打断回复
+    review_type: str
     review_comment: str
-    draft_context_packet: dict[str, Any]
-    draft_context_snapshot: dict[str, Any]
-    draft_conversation_seed: list[dict[str, str]]
-    draft_result: dict[str, Any]
+    approved: bool
     cancelled: bool
+    # 最终结果
+    draft_result: dict[str, Any]
+
+
+MAX_OUTLINE_REVISIONS = 5
+MAX_CHAPTER_PAIR_REVISIONS = 5
+MAX_VERIFICATION_REVISIONS = 3
 
 
 def build_graph(
@@ -41,10 +74,15 @@ def build_graph(
     context_manager: ContextManager | None = None,
     model_catalog: ModelCatalogService | None = None,
     history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
+    checkpoint_db_path: str | Path | None = None,
 ):
     active_context_manager = context_manager or ContextManager()
     active_model_catalog = model_catalog
     active_history_loader = history_loader
+
+    # ─────────────────────────────────────────────
+    # 节点定义
+    # ─────────────────────────────────────────────
 
     def normalize_request(state: WorkflowState) -> WorkflowState:
         payload = state["input_payload"]
@@ -59,7 +97,10 @@ def build_graph(
                 "banned": payload.get("banned", "").strip(),
                 "title_hint": payload.get("title_hint", "").strip(),
                 "model_id": payload.get("model_id", payload.get("model", "")).strip(),
-            }
+            },
+            "batch_index": 0,
+            "chapter_pair_revision_count": 0,
+            "verification_revision_count": 0,
         }
 
     def prepare_outline_context(state: WorkflowState) -> WorkflowState:
@@ -86,7 +127,10 @@ def build_graph(
             context_packet=state.get("outline_context_packet"),
             model=state["normalized_spec"].get("model_id"),
         )
-        return {"story_plan": story_plan.model_dump()}
+        return {
+            "story_plan": story_plan.model_dump(),
+            "outline_revision_count": 0,
+        }
 
     def review_outline(state: WorkflowState) -> WorkflowState:
         review = interrupt(
@@ -96,77 +140,318 @@ def build_graph(
                 "summary": "请确认大纲是否可以进入正文起草。",
                 "story_plan": state["story_plan"],
                 "risk_flags": [
-                    "这是 demo 版本，大纲以稳定展示工作流为优先。",
+                    "demo 版本，大纲以稳定展示工作流为优先。",
                     "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
                 ],
+                "revision_count": state.get("outline_revision_count", 0),
             }
         )
         approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
         comment = review.get("comment", "") if isinstance(review, dict) else ""
         return {"approved": approved, "review_comment": comment}
 
-    def prepare_draft_context(state: WorkflowState) -> WorkflowState:
+    def revise_outline(state: WorkflowState) -> WorkflowState:
+        revision_count = state.get("outline_revision_count", 0) + 1
+        if revision_count >= MAX_OUTLINE_REVISIONS:
+            # 超过上限，自动放行
+            return {"approved": True, "review_comment": state.get("review_comment", "")}
+
+        story_plan = engine.build_story_plan(
+            state["normalized_spec"],
+            state.get("reference_text", ""),
+            context_packet=state.get("outline_context_packet"),
+            model=state["normalized_spec"].get("model_id"),
+            revision_comment=state.get("review_comment", ""),
+            original_plan=state.get("story_plan"),
+        )
+        return {
+            "story_plan": story_plan.model_dump(),
+            "outline_revision_count": revision_count,
+        }
+
+    def prepare_chapter_pair_context(state: WorkflowState) -> WorkflowState:
+        batch_index = state.get("batch_index", 0)
+        story_plan = state.get("story_plan") or {}
+        chapter_plan = story_plan.get("chapter_plan") or []
+        total_chapters = len(chapter_plan)
+        completed = state.get("completed_chapters") or []
+        completed_count = len(completed)
+
         snapshot = active_context_manager.build_snapshot(
             task_id=state["task_id"],
             stage="drafting",
-            instruction=_draft_instruction(state["normalized_spec"], state.get("story_plan")),
+            instruction=_chapter_pair_instruction(state["normalized_spec"], state.get("story_plan")),
             model_profile=_resolve_model_profile(
                 active_model_catalog,
                 state["normalized_spec"].get("model_id"),
             ),
             references=_build_references(state),
-            memory_items=_draft_memory_items(state),
+            memory_items=_chapter_pair_memory_items(state),
         )
         return {
-            "draft_context_packet": snapshot.packet.model_dump(mode="json"),
-            "draft_context_snapshot": snapshot.model_dump(mode="json"),
-            "draft_conversation_seed": _draft_conversation_seed(
-                state,
-                history_loader=active_history_loader,
-            ),
+            "chapter_pair_context_packet": snapshot.packet.model_dump(mode="json"),
+            "total_chapters": total_chapters,
+            "completed_count": completed_count,
+            "batch_index": batch_index,
         }
 
-    def draft_story(state: WorkflowState) -> WorkflowState:
-        draft_result = engine.generate_draft(
+    def draft_chapter_pair(state: WorkflowState) -> WorkflowState:
+        batch_index = state.get("batch_index", 0)
+        completed_chapters = state.get("completed_chapters") or []
+        chapter_pair = engine.generate_chapter_pair(
             state["normalized_spec"],
-            state["story_plan"],
+            state.get("story_plan") or {},
+            batch_index,
+            completed_chapters,
             state.get("reference_text", ""),
-            context_packet=state.get("draft_context_packet"),
+            context_packet=state.get("chapter_pair_context_packet"),
             model=state["normalized_spec"].get("model_id"),
             progress_callback=getattr(engine, "progress_callback", None),
-            initial_conversation_history=state.get("draft_conversation_seed"),
         )
-        return {"draft_result": draft_result.model_dump(), "cancelled": False}
+        return {
+            "current_chapter_pair": [ch.model_dump() for ch in chapter_pair],
+            "chapter_pair_revision_count": 0,
+        }
+
+    def review_chapter_pair(state: WorkflowState) -> WorkflowState:
+        review = interrupt(
+            {
+                "type": "chapter_pair_review",
+                "version": "v1",
+                "summary": "请审核这对章节是否符合大纲要求。",
+                "story_plan": state.get("story_plan"),
+                "batch_index": state.get("batch_index", 0),
+                "chapter_pair": state.get("current_chapter_pair", []),
+                "completed_count": state.get("completed_count", 0),
+                "total_chapters": state.get("total_chapters", 0),
+                "chapter_pair_revision_count": state.get("chapter_pair_revision_count", 0),
+            }
+        )
+        approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
+        comment = review.get("comment", "") if isinstance(review, dict) else ""
+        return {"approved": approved, "review_comment": comment}
+
+    def revise_chapter_pair(state: WorkflowState) -> WorkflowState:
+        revision_count = state.get("chapter_pair_revision_count", 0) + 1
+        if revision_count >= MAX_CHAPTER_PAIR_REVISIONS:
+            return {"approved": True, "review_comment": state.get("review_comment", "")}
+
+        revised_pair = engine.revise_chapter_pair(
+            current_pair=state.get("current_chapter_pair") or [],
+            revision_comment=state.get("review_comment", ""),
+            spec=state["normalized_spec"],
+            story_plan=state.get("story_plan") or {},
+            completed_chapters=state.get("completed_chapters") or [],
+            reference_text=state.get("reference_text", ""),
+            context_packet=state.get("chapter_pair_context_packet"),
+            model=state["normalized_spec"].get("model_id"),
+        )
+        return {
+            "current_chapter_pair": [ch.model_dump() for ch in revised_pair],
+            "chapter_pair_revision_count": revision_count,
+        }
+
+    def accumulate_chapters(state: WorkflowState) -> WorkflowState:
+        current_pair = state.get("current_chapter_pair") or []
+        completed_chapters = list(state.get("completed_chapters") or [])
+        completed_chapters.extend(current_pair)
+        batch_index = state.get("batch_index", 0) + len(current_pair)
+        return {
+            "completed_chapters": completed_chapters,
+            "batch_index": batch_index,
+        }
+
+    def verify_full_story(state: WorkflowState) -> WorkflowState:
+        report = engine.verify_full_story(
+            completed_chapters=state.get("completed_chapters") or [],
+            story_plan=state.get("story_plan") or {},
+            spec=state["normalized_spec"],
+            reference_text=state.get("reference_text", ""),
+            context_packet=None,
+            model=state["normalized_spec"].get("model_id"),
+        )
+        return {"verification_report": report}
+
+    def review_verification(state: WorkflowState) -> WorkflowState:
+        review = interrupt(
+            {
+                "type": "verification_review",
+                "version": "v1",
+                "summary": "请审核全文一致性验证报告。",
+                "story_plan": state.get("story_plan"),
+                "verification_report": state.get("verification_report", {}),
+                "verification_revision_count": state.get("verification_revision_count", 0),
+            }
+        )
+        approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
+        comment = review.get("comment", "") if isinstance(review, dict) else ""
+        return {"approved": approved, "review_comment": comment}
+
+    def fix_verified_issues(state: WorkflowState) -> WorkflowState:
+        revision_count = state.get("verification_revision_count", 0) + 1
+        if revision_count >= MAX_VERIFICATION_REVISIONS:
+            return {"approved": True, "review_comment": state.get("review_comment", "")}
+
+        fixed = engine.fix_verified_issues(
+            completed_chapters=state.get("completed_chapters") or [],
+            verification_report=state.get("verification_report") or {},
+            review_comment=state.get("review_comment", ""),
+            story_plan=state.get("story_plan") or {},
+            spec=state["normalized_spec"],
+            reference_text=state.get("reference_text", ""),
+            context_packet=None,
+            model=state["normalized_spec"].get("model_id"),
+        )
+        return {
+            "completed_chapters": fixed,
+            "verification_revision_count": revision_count,
+        }
+
+    def assemble_result(state: WorkflowState) -> WorkflowState:
+        completed_chapters = state.get("completed_chapters") or []
+        story_plan = state.get("story_plan") or {}
+        spec = state["normalized_spec"]
+
+        title = story_plan.get("working_title", "未命名")
+        logline = story_plan.get("logline", "")
+
+        if spec.get("mode") == "short_story" and len(completed_chapters) <= 3:
+            body = "\n\n".join(str(ch.get("content", "")) for ch in completed_chapters)
+        else:
+            body = "\n\n".join(
+                f"## {ch.get('title', '')}\n{ch.get('content', '')}" for ch in completed_chapters
+            )
+
+        draft_result = {
+            "title": title,
+            "summary": logline,
+            "body": body,
+            "chapters": [
+                {
+                    "number": ch.get("number", i + 1),
+                    "title": ch.get("title", f"第{i + 1}章"),
+                    "summary": ch.get("summary", ""),
+                    "content": ch.get("content", ""),
+                }
+                for i, ch in enumerate(completed_chapters)
+            ],
+        }
+        return {"draft_result": draft_result}
 
     def cancel_task(state: WorkflowState) -> WorkflowState:
         return {"cancelled": True}
 
-    def route_after_review(state: WorkflowState) -> str:
-        return "draft_story" if state.get("approved") else "cancel_task"
+    # ─────────────────────────────────────────────
+    # 路由函数
+    # ─────────────────────────────────────────────
+
+    def route_after_outline_review(state: WorkflowState) -> str:
+        if state.get("approved"):
+            return "prepare_chapter_pair_context"
+        return "revise_outline"
+
+    def route_after_revise_outline(state: WorkflowState) -> str:
+        return "review_outline"
+
+    def route_after_chapter_pair_review(state: WorkflowState) -> str:
+        if state.get("approved"):
+            return "accumulate_chapters"
+        return "revise_chapter_pair"
+
+    def route_after_accumulate(state: WorkflowState) -> WorkflowState:
+        batch_index = state.get("batch_index", 0)
+        total_chapters = state.get("total_chapters", 0)
+        if batch_index < total_chapters:
+            return "prepare_chapter_pair_context"
+        return "verify_full_story"
+
+    def route_after_verification_review(state: WorkflowState) -> str:
+        if state.get("approved"):
+            return "assemble_result"
+        return "fix_verified_issues"
+
+    def route_after_fix_issues(state: WorkflowState) -> str:
+        return "review_verification"
+
+    # ─────────────────────────────────────────────
+    # 构建图
+    # ─────────────────────────────────────────────
 
     graph = StateGraph(WorkflowState)
     graph.add_node("normalize_request", normalize_request)
     graph.add_node("prepare_outline_context", prepare_outline_context)
     graph.add_node("plan_story", plan_story)
     graph.add_node("review_outline", review_outline)
-    graph.add_node("prepare_draft_context", prepare_draft_context)
-    graph.add_node("draft_story", draft_story)
+    graph.add_node("revise_outline", revise_outline)
+    graph.add_node("prepare_chapter_pair_context", prepare_chapter_pair_context)
+    graph.add_node("draft_chapter_pair", draft_chapter_pair)
+    graph.add_node("review_chapter_pair", review_chapter_pair)
+    graph.add_node("revise_chapter_pair", revise_chapter_pair)
+    graph.add_node("accumulate_chapters", accumulate_chapters)
+    graph.add_node("verify_full_story", verify_full_story)
+    graph.add_node("review_verification", review_verification)
+    graph.add_node("fix_verified_issues", fix_verified_issues)
+    graph.add_node("assemble_result", assemble_result)
     graph.add_node("cancel_task", cancel_task)
 
+    # 边
     graph.add_edge(START, "normalize_request")
     graph.add_edge("normalize_request", "prepare_outline_context")
     graph.add_edge("prepare_outline_context", "plan_story")
     graph.add_edge("plan_story", "review_outline")
+
+    # 大纲审核循环
     graph.add_conditional_edges(
         "review_outline",
-        route_after_review,
-        {"draft_story": "prepare_draft_context", "cancel_task": "cancel_task"},
+        route_after_outline_review,
+        {
+            "prepare_chapter_pair_context": "prepare_chapter_pair_context",
+            "revise_outline": "revise_outline",
+        },
     )
-    graph.add_edge("prepare_draft_context", "draft_story")
-    graph.add_edge("draft_story", END)
+    graph.add_edge("revise_outline", "review_outline")
+
+    # 章节对循环
+    graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")
+    graph.add_edge("draft_chapter_pair", "review_chapter_pair")
+    graph.add_conditional_edges(
+        "review_chapter_pair",
+        route_after_chapter_pair_review,
+        {
+            "accumulate_chapters": "accumulate_chapters",
+            "revise_chapter_pair": "revise_chapter_pair",
+        },
+    )
+    graph.add_edge("revise_chapter_pair", "review_chapter_pair")
+    graph.add_conditional_edges(
+        "accumulate_chapters",
+        route_after_accumulate,
+        {
+            "prepare_chapter_pair_context": "prepare_chapter_pair_context",
+            "verify_full_story": "verify_full_story",
+        },
+    )
+
+    # 验证循环
+    graph.add_edge("verify_full_story", "review_verification")
+    graph.add_conditional_edges(
+        "review_verification",
+        route_after_verification_review,
+        {
+            "assemble_result": "assemble_result",
+            "fix_verified_issues": "fix_verified_issues",
+        },
+    )
+    graph.add_edge("fix_verified_issues", "review_verification")
+    graph.add_edge("assemble_result", END)
     graph.add_edge("cancel_task", END)
 
-    return graph.compile(checkpointer=MemorySaver())
+    return graph.compile(checkpointer=_create_checkpointer(checkpoint_db_path))
+
+
+# ─────────────────────────────────────────────
+# 辅助函数
+# ─────────────────────────────────────────────
 
 
 def _resolve_model_profile(
@@ -251,7 +536,7 @@ def _outline_instruction(spec: dict[str, Any]) -> str:
     ).strip()
 
 
-def _draft_instruction(spec: dict[str, Any], story_plan: dict[str, Any] | None) -> str:
+def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] | None) -> str:
     title = ""
     logline = ""
     if isinstance(story_plan, dict):
@@ -263,11 +548,11 @@ def _draft_instruction(spec: dict[str, Any], story_plan: dict[str, Any] | None) 
         f"一句话梗概：{logline}\n"
         f"风格要求：{spec.get('style', '')}\n"
         f"禁忌要求：{spec.get('banned', '')}\n"
-        f"正文任务：基于既定大纲连续起草小说正文。"
+        f"正文任务：基于既定大纲连续起草小说正文，每次生成一对章节。"
     ).strip()
 
 
-def _draft_memory_items(state: WorkflowState) -> list[str]:
+def _chapter_pair_memory_items(state: WorkflowState) -> list[str]:
     story_plan = state.get("story_plan")
     if not isinstance(story_plan, dict):
         return []
@@ -283,75 +568,3 @@ def _draft_memory_items(state: WorkflowState) -> list[str]:
             f"章节计划：第{chapter.get('number')}章 {chapter.get('title')} - {chapter.get('goal')}"
         )
     return memory_items
-
-
-def _draft_conversation_seed(
-    state: WorkflowState,
-    history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
-) -> list[dict[str, str]]:
-    story_plan = state.get("story_plan")
-    normalized_spec = state.get("normalized_spec") or {}
-    approval_comment = str(state.get("review_comment") or "").strip()
-    followup = approval_comment or "q2: 大纲已确认，请基于这版大纲继续生成正文。"
-    planning_history = _load_planning_history(state, history_loader)
-    if planning_history:
-        return planning_history + [
-            {
-                "role": "user",
-                "content": followup if followup.startswith("q") else f"q2: {followup}",
-            }
-        ]
-
-    if not isinstance(story_plan, dict):
-        return []
-
-    return [
-        {
-            "role": "system",
-            "content": "你是一个中文小说创作助手，需要沿着既有问答上下文继续完成正文写作。",
-        },
-        {
-            "role": "user",
-            "content": (
-                "q1: 请先根据以下需求生成小说大纲。\n"
-                f"创作要求：{normalized_spec.get('prompt', '')}\n"
-                f"题材：{normalized_spec.get('genre', '')}\n"
-                f"风格：{normalized_spec.get('style', '')}"
-            ).strip(),
-        },
-        {
-            "role": "assistant",
-            "content": f"a1: {json.dumps(story_plan, ensure_ascii=False)}",
-        },
-        {
-            "role": "user",
-            "content": followup if followup.startswith("q") else f"q2: {followup}",
-        },
-    ]
-
-
-def _load_planning_history(
-    state: WorkflowState,
-    history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
-) -> list[dict[str, str]]:
-    if history_loader is None:
-        return []
-    task_id = str(state.get("task_id") or "").strip()
-    if not task_id:
-        return []
-    try:
-        history = history_loader(task_id, "planning", "outline-history")
-    except FileNotFoundError:
-        return []
-    except Exception:
-        return []
-    normalized: list[dict[str, str]] = []
-    for item in history:
-        if not isinstance(item, dict):
-            continue
-        role = str(item.get("role") or "user").strip() or "user"
-        content = str(item.get("content") or "").strip()
-        if not content:
-            continue
-        normalized.append({"role": role, "content": content})
-    return normalized

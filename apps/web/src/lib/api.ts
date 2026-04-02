@@ -92,6 +92,10 @@ export function getResult(taskId: string) {
   return request<ResultResponse>(`/api/tasks/${taskId}/result`);
 }
 
+export function getCurrentChapters(taskId: string) {
+  return request<{ task_id: string; chapters: Array<{ number: number; title: string; summary: string; content: string }> }>(`/api/tasks/${taskId}/chapters`);
+}
+
 export function getArchiveList(page?: number, pageSize?: number) {
   const params = new URLSearchParams();
   if (page !== undefined) params.set("page", String(page));

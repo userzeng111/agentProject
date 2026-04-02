@@ -12,10 +12,15 @@ import {
   CardContent,
   Chip,
   Container,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   Divider,
+  IconButton,
   LinearProgress,
   List,
   ListItem,
+  ListItemButton,
   ListItemText,
   Stack,
   Tab,
@@ -28,8 +33,9 @@ import {
   Edit as EditIcon,
   PlayArrow as PlayIcon,
   MenuBook as MenuBookIcon,
+  Close as CloseIcon,
 } from "@mui/icons-material";
-import { getApiBase, getWorkspace, runTask } from "@/lib/api";
+import { getApiBase, getCurrentChapters, getWorkspace, runTask } from "@/lib/api";
 import {
   ContextStatus,
   ModelCapabilities,
@@ -43,13 +49,15 @@ const statusMap: Record<TaskStatus, { label: string; color: "default" | "success
   created: { label: "待启动", color: "default" },
   sources_ingested: { label: "素材已入库", color: "default" },
   planning: { label: "规划中", color: "warning" },
-  waiting_outline_review: { label: "待审核", color: "warning" },
+  waiting_outline_review: { label: "待大纲审核", color: "warning" },
   drafting: { label: "正文生成中", color: "warning" },
   waiting_manual_action: { label: "待人工处理", color: "warning" },
   assembling: { label: "结果整理中", color: "warning" },
   completed: { label: "已完成", color: "success" },
   cancelled: { label: "已取消", color: "error" },
   failed: { label: "失败", color: "error" },
+  waiting_chapter_review: { label: "待章节审核", color: "warning" },
+  waiting_verification_review: { label: "待验证审核", color: "warning" },
 };
 
 const WORKFLOW_STEPS = [
@@ -61,7 +69,14 @@ const WORKFLOW_STEPS = [
 
 function getStepIndex(status: TaskStatus): number {
   if (status === "completed") return 4;
-  if (status === "waiting_outline_review" || status === "drafting" || status === "assembling") return 2;
+  if (
+    status === "waiting_outline_review" ||
+    status === "waiting_chapter_review" ||
+    status === "waiting_verification_review" ||
+    status === "drafting" ||
+    status === "assembling"
+  )
+    return 2;
   if (status === "planning" || status === "sources_ingested" || status === "waiting_manual_action") return 1;
   return 0;
 }
@@ -250,6 +265,8 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const [error, setError] = useState("");
   const [streamState, setStreamState] = useState("未连接事件流");
   const [activeTab, setActiveTab] = useState(0);
+  const [chapterDialogOpen, setChapterDialogOpen] = useState(false);
+  const [selectedChapter, setSelectedChapter] = useState<{ number: number; title: string; summary: string; content: string } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
@@ -329,6 +346,37 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
       setError(runError instanceof Error ? runError.message : "运行失败");
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function handleChapterClick(chapterNumber: number, chapterTitle: string) {
+    try {
+      const data = await getCurrentChapters(taskId);
+      const chapter = data.chapters?.find((ch) => ch.number === chapterNumber);
+      if (chapter) {
+        setSelectedChapter({
+          number: chapter.number,
+          title: chapter.title || chapterTitle,
+          summary: chapter.summary || "",
+          content: chapter.content || "正文内容暂不可用",
+        });
+      } else {
+        setSelectedChapter({
+          number: chapterNumber,
+          title: chapterTitle,
+          summary: "暂无摘要",
+          content: "该章节正文尚未写入磁盘，请稍后再试。",
+        });
+      }
+      setChapterDialogOpen(true);
+    } catch {
+      setSelectedChapter({
+        number: chapterNumber,
+        title: chapterTitle,
+        summary: "",
+        content: "读取章节内容失败，请稍后再试。",
+      });
+      setChapterDialogOpen(true);
     }
   }
 
@@ -629,18 +677,32 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                 chapterProgress.map((chapter) => (
                   <div key={chapter.number}>
                     <ListItem disableGutters alignItems="flex-start">
-                      <ListItemText
-                        primary={`第 ${chapter.number} 章 · ${chapter.title}`}
-                        secondary={
-                          [
-                            `${chapter.status} · ${formatEventTime(chapter.updatedAt)}`,
-                            chapter.summary || "",
-                          ]
-                            .filter(Boolean)
-                            .join("\n")
-                        }
-                        secondaryTypographyProps={{ sx: { whiteSpace: "pre-line" } }}
-                      />
+                      <ListItemButton
+                        onClick={() => void handleChapterClick(chapter.number, chapter.title)}
+                        sx={{ py: 1 }}
+                      >
+                        <ListItemText
+                          primary={
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Typography>{`第 ${chapter.number} 章 · ${chapter.title}`}</Typography>
+                              <Chip
+                                label={chapter.status}
+                                size="small"
+                                color={chapter.status === "已完成" ? "success" : "default"}
+                              />
+                            </Stack>
+                          }
+                          secondary={
+                            [
+                              formatEventTime(chapter.updatedAt),
+                              chapter.summary || "",
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")
+                          }
+                          secondaryTypographyProps={{ sx: { whiteSpace: "pre-line" } }}
+                        />
+                      </ListItemButton>
                     </ListItem>
                     <LinearProgress
                       variant="determinate"
@@ -714,6 +776,47 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
           )}
         </CardContent>
       </Card>
+      {/* 章节正文弹窗 */}
+      <Dialog
+        open={chapterDialogOpen}
+        onClose={() => setChapterDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        {selectedChapter && (
+          <>
+            <DialogTitle>
+              <Stack direction="row" justifyContent="space-between" alignItems="center">
+                <Typography variant="h5">
+                  第 {selectedChapter.number} 章：{selectedChapter.title}
+                </Typography>
+                <IconButton onClick={() => setChapterDialogOpen(false)}>
+                  <CloseIcon />
+                </IconButton>
+              </Stack>
+              {selectedChapter.summary && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  {selectedChapter.summary}
+                </Typography>
+              )}
+            </DialogTitle>
+            <DialogContent dividers>
+              <Typography
+                component="pre"
+                sx={{
+                  fontFamily: "inherit",
+                  fontSize: 15,
+                  lineHeight: 1.8,
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-word",
+                }}
+              >
+                {selectedChapter.content}
+              </Typography>
+            </DialogContent>
+          </>
+        )}
+      </Dialog>
     </Stack>
     </Container>
   );

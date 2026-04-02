@@ -101,6 +101,78 @@ class StoryEngine:
                 ),
             ]
         )
+        # 大纲修订 prompt
+        self.outline_revision_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "你是一个中文小说策划助手，要输出严格 JSON，不要输出额外解释。"),
+                (
+                    "human",
+                    "用户对当前大纲提出了以下修改意见，请根据意见重新生成大纲，保持 JSON 结构一致。\n"
+                    "修改意见：{revision_comment}\n\n"
+                    "当前大纲：{original_plan_json}\n\n"
+                    "请严格返回 JSON，结构必须包含："
+                    "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
+                    "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n目标字数：{target_words}\n"
+                    "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
+                ),
+            ]
+        )
+        # 章节对修订 prompt
+        self.chapter_pair_revision_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "你是一个中文小说章节起草助手，要输出严格 JSON，不要输出额外解释。"),
+                (
+                    "human",
+                    "用户对当前章节提出了修改意见，请根据意见重新生成这对章节，保持 JSON 数组结构。\n"
+                    "修改意见：{revision_comment}\n\n"
+                    "当前章节内容：{current_chapters_json}\n\n"
+                    "请严格返回 JSON 数组，每个元素结构为："
+                    "{{number:int,title:string,summary:string,content:string}}。\n"
+                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "已完成章节摘要：{completed_summaries}\n"
+                    "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
+                    "要求：内容控制在 250 到 450 字，叙事语气保持一致，保留冷静克制的中文风格。",
+                ),
+            ]
+        )
+        # 全文一致性验证 prompt
+        self.verification_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "你是一个中文小说质量审核助手，要输出严格 JSON，不要输出额外解释。",
+                ),
+                (
+                    "human",
+                    "请对以下小说全文进行一致性验证，检查人物设定、时间线、世界观、情节逻辑等维度。\n"
+                    "输出 JSON 必须包含：\n"
+                    "issues([{{severity:string,location:string,description:string,suggestion:string}}]),\n"
+                    "overall_score(int,0-100), summary(string)。\n\n"
+                    "作品标题：{title}\n"
+                    "章节计划：{chapter_plan}\n"
+                    "已完成正文：\n{full_text}\n\n"
+                    "severity 可选值：critical / warning / info",
+                ),
+            ]
+        )
+        # 修复问题 prompt
+        self.fix_issues_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", "你是一个中文小说修订助手，要输出严格 JSON，不要输出额外解释。"),
+                (
+                    "human",
+                    "请根据以下验证意见修复小说中的问题，返回修复后的章节内容。\n"
+                    "验证意见：{issues_json}\n"
+                    "用户补充意见：{user_comment}\n\n"
+                    "需要修复的章节：\n{chapters_json}\n\n"
+                    "请严格返回 JSON 数组，每个元素为修复后的章节：\n"
+                    "{{number:int,title:string,summary:string,content:string}}。\n"
+                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "要求：只修改有问题的章节，其他章节保持原样。",
+                ),
+            ]
+        )
         if settings.openai_api_key:
             self.gateway_client = OpenAICompatibleGatewayClient(
                 base_url=settings.openai_base_url,
@@ -124,15 +196,49 @@ class StoryEngine:
             return []
         return self.gateway_client.list_models()
 
+    def _require_gateway_client(self) -> OpenAICompatibleGatewayClient:
+        if self.gateway_client is None:
+            raise GatewayClientError("当前没有可用的模型网关，请检查 apps/agent-runtime/.env 中的 LLM_BASE_URL 与 LLM_API_KEY 配置。")
+        return self.gateway_client
+
     def build_story_plan(
         self,
         spec: dict[str, Any],
         reference_text: str,
         context_packet: dict[str, Any] | None = None,
         model: str | None = None,
+        revision_comment: str | None = None,
+        original_plan: dict[str, Any] | None = None,
     ) -> StoryPlan:
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+
+        # 修订模式
+        if revision_comment and original_plan:
+            prompt_value = self.outline_revision_prompt.invoke(
+                {
+                    "revision_comment": revision_comment,
+                    "original_plan_json": json.dumps(original_plan, ensure_ascii=False),
+                    "mode": spec["mode"],
+                    "genre": spec.get("genre", ""),
+                    "style": spec.get("style", ""),
+                    "target_words": spec.get("target_words", 1800),
+                    "context_memory": self._context_memory(context_packet),
+                    "reference_excerpt": self._context_reference(reference_text, context_packet),
+                }
+            )
+            self._require_gateway_client()
+            request_messages = self._prompt_to_messages(prompt_value)
+            payload, _ = self._complete_json_with_cache(
+                request_messages=request_messages,
+                model=resolved_model,
+                stage="planning",
+                exchange_label="outline-revision",
+                exchange_callback=active_exchange_callback,
+            )
+            return StoryPlan.model_validate(payload)
+
+        # 首次生成
         prompt_value = self.outline_prompt.invoke(
             {
                 "mode": spec["mode"],
@@ -144,56 +250,16 @@ class StoryEngine:
                 "reference_excerpt": self._context_reference(reference_text, context_packet),
             }
         )
-        if self.gateway_client is not None:
-            try:
-                request_messages = self._prompt_to_messages(prompt_value)
-                payload, _ = self._complete_json_with_cache(
-                    request_messages=request_messages,
-                    model=resolved_model,
-                    stage="planning",
-                    exchange_label="outline",
-                    exchange_callback=active_exchange_callback,
-                )
-                return StoryPlan.model_validate(payload)
-            except (GatewayClientError, ValueError):
-                pass
-        prompt_text = self._prompt_to_text(prompt_value)
-        title_base = spec.get("title_hint") or spec.get("genre") or "未命名故事"
-        title = f"{title_base}：{self._theme_tail(spec['mode'])}"
-        if spec["mode"] == TaskMode.SHORT_STORY.value:
-            chapters = [
-                ChapterPlan(number=1, title="引子", goal="用一个意外场面快速抓住读者"),
-                ChapterPlan(number=2, title="推进", goal="让主角在压力下做出选择"),
-                ChapterPlan(number=3, title="收束", goal="回收情绪并落下反转或余韵"),
-            ]
-        else:
-            chapters = [
-                ChapterPlan(number=1, title="第一章：异样开局", goal="建立冲突与任务入口"),
-                ChapterPlan(number=2, title="第二章：关系缠绕", goal="让人物关系和代价变得清晰"),
-                ChapterPlan(number=3, title="第三章：逼近真相", goal="推动核心秘密浮出水面"),
-                ChapterPlan(number=4, title="第四章：新的选择", goal="让结局落在新的命运节点上"),
-            ]
-
-        world_notes = [
-            f"故事氛围基于“{spec.get('style') or '有层次的中文叙事'}”推进。",
-            f"题材重心是“{spec.get('genre') or '综合幻想'}”，但冲突要落在人物选择上。",
-        ]
-        if reference_text:
-            world_notes.append("需要吸收参考文本中的世界观质地，但避免直接复刻具体段落。")
-
-        character_notes = [
-            "主角要有明确缺口，并在故事中被迫面对它。",
-            "关键配角不能只做功能人物，要在主角决策上施加真实压力。",
-            "反向力量要有可以自洽的动机，而不是纯粹的脸谱化阻碍。",
-        ]
-
-        return StoryPlan(
-            working_title=title,
-            logline=f"围绕“{spec.get('prompt', '')[:40]}”展开，一路逼近无法回避的选择。",
-            world_notes=world_notes + [f"策划提示：{prompt_text[:120]}"],
-            character_notes=character_notes,
-            chapter_plan=chapters,
+        self._require_gateway_client()
+        request_messages = self._prompt_to_messages(prompt_value)
+        payload, _ = self._complete_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="planning",
+            exchange_label="outline",
+            exchange_callback=active_exchange_callback,
         )
+        return StoryPlan.model_validate(payload)
 
     def generate_draft(
         self,
@@ -229,6 +295,7 @@ class StoryEngine:
             for item in (initial_conversation_history or [])
             if isinstance(item, dict) and str(item.get("content") or "").strip()
         ]
+        self._require_gateway_client()
         for item in story_plan["chapter_plan"]:
             if active_progress_callback is not None:
                 active_progress_callback(
@@ -257,57 +324,18 @@ class StoryEngine:
                     "reference_excerpt": self._context_reference(reference_text, context_packet),
                 }
             )
-            chapter_draft: ChapterDraft | None = None
-            if self.gateway_client is not None:
-                try:
-                    request_messages = self._conversation_request_messages(
-                        conversation_history=conversation_history,
-                        prompt_messages=self._prompt_to_messages(chapter_prompt_value),
-                    )
-                    chapter_payload, conversation_history = self._complete_json_with_cache(
-                        request_messages=request_messages,
-                        model=resolved_model,
-                        stage="drafting",
-                        exchange_label=f"chapter-{item['number']:02d}",
-                        exchange_callback=active_exchange_callback,
-                    )
-                    chapter_draft = ChapterDraft.model_validate(chapter_payload)
-                except (GatewayClientError, ValueError):
-                    chapter_draft = None
-            if chapter_draft is None:
-                request_messages = self._conversation_request_messages(
-                    conversation_history=conversation_history,
-                    prompt_messages=self._prompt_to_messages(chapter_prompt_value),
-                )
-                chapter_draft = ChapterDraft(
-                    number=item["number"],
-                    title=item["title"],
-                    summary=item["goal"],
-                    content=self._chapter_content(
-                        spec,
-                        item["title"],
-                        item["goal"],
-                        reference_text,
-                        context_packet,
-                        draft_prompt_text,
-                        self._prompt_to_text(chapter_prompt_value),
-                    ),
-                )
-                conversation_history = self._append_assistant_message(
-                    request_messages=request_messages,
-                    response_payload=chapter_draft.model_dump(mode="json"),
-                )
-                self._emit_exchange(
-                    callback=active_exchange_callback,
-                    stage="drafting",
-                    exchange_label=f"chapter-{item['number']:02d}",
-                    model=resolved_model,
-                    cache_hit=False,
-                    request_messages=request_messages,
-                    conversation_history=conversation_history,
-                    response_payload=chapter_draft.model_dump(mode="json"),
-                    cache_key=None,
-                )
+            request_messages = self._conversation_request_messages(
+                conversation_history=conversation_history,
+                prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+            )
+            chapter_payload, conversation_history = self._complete_json_with_cache(
+                request_messages=request_messages,
+                model=resolved_model,
+                stage="drafting",
+                exchange_label=f"chapter-{item['number']:02d}",
+                exchange_callback=active_exchange_callback,
+            )
+            chapter_draft = ChapterDraft.model_validate(chapter_payload)
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
             if active_progress_callback is not None:
@@ -339,32 +367,223 @@ class StoryEngine:
             chapters=chapters,
         )
 
-    def _chapter_content(
+    def generate_chapter_pair(
         self,
         spec: dict[str, Any],
-        chapter_title: str,
-        chapter_goal: str,
+        story_plan: dict[str, Any],
+        batch_index: int,
+        completed_chapters: list[dict[str, Any]],
         reference_text: str,
-        context_packet: dict[str, Any] | None,
-        draft_prompt_text: str,
-        prompt_text: str,
-    ) -> str:
-        reference_hint = self._context_reference(reference_text, context_packet)
-        context_memory = self._context_memory(context_packet)
-        style_hint = spec.get("style") or "克制但有张力"
-        genre_hint = spec.get("genre") or "幻想"
-        return (
-            f"{chapter_title}\n\n"
-            f"故事以{genre_hint}的外壳展开，但真正推动情节的是人物在压力下做出的选择。"
-            f"这一段需要完成的任务是：{chapter_goal}。主角先被一个细小但不容忽视的异样牵住目光，"
-            f"随后在对话和行动里逐渐意识到局面已经偏离原来的轨道。"
-            f"叙事语气保持“{style_hint}”，句子要有节奏变化，并在段落末尾留下下一步冲动。"
-            f"{'参考文本给到的气味是：' + reference_hint if reference_text else '这里不依赖外部原文，只围绕用户需求推进。'}"
-            f"策划提示中反复强调“{spec.get('prompt', '')[:24]}”，所以这一段必须把这一点落到具体场面，而不是抽象概念。"
-            f"{' 上下文记忆强调：' + context_memory[:80] if context_memory else ''}"
-            f"为了让 demo 有完整阅读感，本段最后会抛出一个更难回答的问题，把读者推向下一节。"
-            f"\n\n写作基底：{draft_prompt_text[:72]} / {prompt_text[:90]}。"
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> list[ChapterDraft]:
+        """生成一对章节（第 2N-1 章 + 第 2N 章）。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+        chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
+
+        # 取当前章节对
+        ch1_idx = batch_index
+        ch2_idx = batch_index + 1
+        pair_plans = []
+        if ch1_idx < len(chapter_plan):
+            pair_plans.append(chapter_plan[ch1_idx])
+        if ch2_idx < len(chapter_plan):
+            pair_plans.append(chapter_plan[ch2_idx])
+
+        if not pair_plans:
+            return []
+
+        completed_summaries = [
+            f"{ch['title']}:{ch['summary']}" for ch in completed_chapters
+        ]
+        completed_text = "；".join(completed_summaries) if completed_summaries else "无"
+
+        # 构建对话历史
+        conversation_history: list[dict[str, str]] = []
+        title = story_plan.get("working_title", "")
+        summary = story_plan.get("logline", "")
+
+        self._require_gateway_client()
+        drafts: list[ChapterDraft] = []
+        for plan in pair_plans:
+            if active_progress_callback:
+                active_progress_callback({
+                    "event_type": "chapter.started",
+                    "stage": "drafting",
+                    "unit_id": f"chapter-{plan['number']:02d}",
+                    "message": f"正在生成第 {plan['number']} 章：{plan['title']}",
+                    "payload": {
+                        "chapter_number": plan["number"],
+                        "chapter_title": plan["title"],
+                    },
+                })
+
+            chapter_prompt_value = self.chapter_prompt.invoke({
+                "mode": spec["mode"],
+                "title": title,
+                "logline": summary,
+                "chapter_number": plan["number"],
+                "chapter_title": plan["title"],
+                "chapter_goal": plan["goal"],
+                "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
+                "completed_summaries": completed_text,
+                "context_memory": self._context_memory(context_packet),
+                "reference_excerpt": self._context_reference(reference_text, context_packet),
+            })
+
+            request_messages = self._conversation_request_messages(
+                conversation_history=conversation_history,
+                prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+            )
+            payload, conversation_history = self._complete_json_with_cache(
+                request_messages=request_messages,
+                model=resolved_model,
+                stage="drafting",
+                exchange_label=f"chapter-{plan['number']:02d}",
+                exchange_callback=active_exchange_callback,
+            )
+            chapter_draft = ChapterDraft.model_validate(payload)
+
+            drafts.append(chapter_draft)
+            completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
+            completed_text = "；".join(completed_summaries)
+
+            if active_progress_callback:
+                active_progress_callback({
+                    "event_type": "chapter.saved",
+                    "stage": "drafting",
+                    "unit_id": f"chapter-{chapter_draft.number:02d}",
+                    "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
+                    "payload": {
+                        "chapter_number": chapter_draft.number,
+                        "chapter_title": chapter_draft.title,
+                        "chapter_summary": chapter_draft.summary,
+                    },
+                })
+
+        return drafts
+
+    def revise_chapter_pair(
+        self,
+        current_pair: list[dict[str, Any]],
+        revision_comment: str,
+        spec: dict[str, Any],
+        story_plan: dict[str, Any],
+        completed_chapters: list[dict[str, Any]],
+        reference_text: str,
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> list[ChapterDraft]:
+        """根据用户修订意见重新生成章节对。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+        chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
+        title = story_plan.get("working_title", "")
+        summary = story_plan.get("logline", "")
+        completed_summaries = [f"{ch['title']}:{ch['summary']}" for ch in completed_chapters]
+        completed_text = "；".join(completed_summaries) if completed_summaries else "无"
+
+        prompt_value = self.chapter_pair_revision_prompt.invoke({
+            "revision_comment": revision_comment,
+            "current_chapters_json": json.dumps(current_pair, ensure_ascii=False),
+            "mode": spec["mode"],
+            "title": title,
+            "logline": summary,
+            "completed_summaries": completed_text,
+            "context_memory": self._context_memory(context_packet),
+            "reference_excerpt": self._context_reference(reference_text, context_packet),
+        })
+
+        self._require_gateway_client()
+        request_messages = self._prompt_to_messages(prompt_value)
+        payload, _ = self._complete_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="drafting",
+            exchange_label="chapter-pair-revision",
+            exchange_callback=active_exchange_callback,
         )
+        items = payload if isinstance(payload, list) else [payload]
+        return [ChapterDraft.model_validate(item) for item in items]
+
+    def verify_full_story(
+        self,
+        completed_chapters: list[dict[str, Any]],
+        story_plan: dict[str, Any],
+        spec: dict[str, Any],
+        reference_text: str = "",
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """全文一致性验证，返回问题清单和评分。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+        title = story_plan.get("working_title", "")
+        chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
+        full_text = "\n\n".join(
+            f"## 第{ch['number']}章 {ch['title']}\n{ch.get('content', '')}"
+            for ch in completed_chapters
+        )
+
+        prompt_value = self.verification_prompt.invoke({
+            "title": title,
+            "chapter_plan": " / ".join(f"第{ch['number']}章 {ch['title']}" for ch in chapter_plan),
+            "full_text": full_text[:8000],  # 截断避免超长
+        })
+
+        self._require_gateway_client()
+        request_messages = self._prompt_to_messages(prompt_value)
+        payload, _ = self._complete_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="verification",
+            exchange_label="full-story-verification",
+            exchange_callback=active_exchange_callback,
+        )
+        return payload
+
+    def fix_verified_issues(
+        self,
+        completed_chapters: list[dict[str, Any]],
+        verification_report: dict[str, Any],
+        review_comment: str,
+        story_plan: dict[str, Any],
+        spec: dict[str, Any],
+        reference_text: str = "",
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """根据验证意见修复章节问题。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+        title = story_plan.get("working_title", "")
+        summary = story_plan.get("logline", "")
+        chapters_json = json.dumps(completed_chapters, ensure_ascii=False)
+        issues_json = json.dumps(verification_report.get("issues") or [], ensure_ascii=False)
+
+        prompt_value = self.fix_issues_prompt.invoke({
+            "issues_json": issues_json,
+            "user_comment": review_comment,
+            "chapters_json": chapters_json,
+            "mode": spec["mode"],
+            "title": title,
+            "logline": summary,
+        })
+
+        self._require_gateway_client()
+        request_messages = self._prompt_to_messages(prompt_value)
+        payload, _ = self._complete_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="verification",
+            exchange_label="fix-issues",
+            exchange_callback=active_exchange_callback,
+        )
+        items = payload if isinstance(payload, list) else [payload]
+        return [dict(ch) for ch in items]
 
     def _prompt_to_text(self, prompt_value) -> str:
         return "\n".join(str(message.content) for message in prompt_value.messages)

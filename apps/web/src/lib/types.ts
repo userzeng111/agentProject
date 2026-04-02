@@ -9,7 +9,9 @@ export type TaskStatus =
   | "assembling"
   | "completed"
   | "cancelled"
-  | "failed";
+  | "failed"
+  | "waiting_chapter_review"
+  | "waiting_verification_review";
 
 export interface TaskInput {
   prompt: string;
@@ -228,6 +230,20 @@ export interface ReviewHistoryItem {
   created_at?: string;
 }
 
+export interface ReviewChapterItem {
+  number: number;
+  title: string;
+  summary: string;
+  content: string;
+}
+
+export interface VerificationIssue {
+  severity: string;
+  location: string;
+  description: string;
+  suggestion: string;
+}
+
 export interface ReviewResponse {
   meta: WorkspaceMeta;
   review_type: string;
@@ -237,6 +253,19 @@ export interface ReviewResponse {
   outline_markdown?: string;
   outline_md_ref?: string | null;
   review_history?: ReviewHistoryItem[];
+  // 章节对审核
+  chapter_pair?: ReviewChapterItem[];
+  batch_index?: number;
+  completed_count?: number;
+  total_chapters?: number;
+  chapter_pair_revision_count?: number;
+  // 验证审核
+  verification_report?: {
+    issues?: VerificationIssue[];
+    overall_score?: number;
+    summary?: string;
+  };
+  verification_revision_count?: number;
 }
 
 export interface ResultChapterItem {

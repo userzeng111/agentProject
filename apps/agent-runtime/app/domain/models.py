@@ -31,6 +31,8 @@ class TaskStatus(str, Enum):
     DRAFTING = "drafting"
     ASSEMBLING = "assembling"
     WAITING_MANUAL_ACTION = "waiting_manual_action"
+    WAITING_CHAPTER_REVIEW = "waiting_chapter_review"
+    WAITING_VERIFICATION_REVIEW = "waiting_verification_review"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
@@ -79,11 +81,23 @@ class StoryPlan(BaseModel):
 
 
 class ReviewPayload(BaseModel):
+    # 三种审核类型: outline_review | chapter_pair_review | verification_review
     type: str = "outline_review"
     version: str = "v1"
     summary: str
-    story_plan: StoryPlan
+    story_plan: StoryPlan | None = None
     risk_flags: list[str] = Field(default_factory=list)
+    # 大纲修订计数
+    revision_count: int = 0
+    # 章节对审核时
+    batch_index: int | None = None
+    chapter_pair: list[ChapterDraft] | None = None
+    completed_count: int | None = None
+    total_chapters: int | None = None
+    chapter_pair_revision_count: int = 0
+    # 验证审核时
+    verification_report: dict[str, Any] | None = None
+    verification_revision_count: int = 0
 
 
 class ChapterDraft(BaseModel):
@@ -189,6 +203,15 @@ class ReviewResponse(BaseModel):
     outline_markdown: str | None = None
     outline_md_ref: str | None = None
     review_history: list[dict[str, Any]] = Field(default_factory=list)
+    # 章节对审核
+    chapter_pair: list[dict[str, Any]] = Field(default_factory=list)
+    batch_index: int | None = None
+    completed_count: int | None = None
+    total_chapters: int | None = None
+    chapter_pair_revision_count: int = 0
+    # 验证审核
+    verification_report: dict[str, Any] | None = None
+    verification_revision_count: int = 0
 
 
 class ResultResponse(BaseModel):

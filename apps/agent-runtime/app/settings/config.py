@@ -1,11 +1,12 @@
-from pathlib import Path
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_TASKLOG_ROOT = str(Path(__file__).resolve().parents[4] / "tasklog")
+RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -16,19 +17,19 @@ class Settings(BaseSettings):
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(
         default="https://api.lclaitech.com/v1",
-        validation_alias=AliasChoices("LLM_BASE_URL", "OPENAI_BASE_URL"),
+        validation_alias=AliasChoices("LLM_BASE_URL"),
     )
     default_chat_model: str = Field(
-        default="gpt-5.4",
-        validation_alias=AliasChoices("LLM_MODEL", "CHAT_MODEL", "DEFAULT_CHAT_MODEL"),
+        default="glm-5.1",
+        validation_alias=AliasChoices("DEFAULT_CHAT_MODEL"),
     )
     openai_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY"),
+        validation_alias=AliasChoices("LLM_API_KEY"),
     )
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=RUNTIME_ENV_FILE,
         env_file_encoding="utf-8",
         extra="ignore",
     )

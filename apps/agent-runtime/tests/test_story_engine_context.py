@@ -1,6 +1,10 @@
+import datetime
 import tempfile
 import unittest
 from pathlib import Path
+
+if not hasattr(datetime, "UTC"):
+    datetime.UTC = datetime.timezone.utc
 
 from app.llm.story_engine import StoryEngine
 from app.settings.config import Settings

@@ -27,20 +27,26 @@ const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
   sources_ingested: "已入库",
   planning: "规划中",
-  waiting_outline_review: "待审核",
+  waiting_outline_review: "待大纲审核",
   drafting: "正文生成中",
   waiting_manual_action: "待人工处理",
   assembling: "结果整理中",
   completed: "已完成",
   cancelled: "已取消",
   failed: "失败",
+  waiting_chapter_review: "待章节审核",
+  waiting_verification_review: "待验证审核",
 };
 
 function resolveTaskHref(task: TaskCardSummary) {
   if (task.storage_state === "archive") {
     return `/archive/${task.task_id}`;
   }
-  if (task.status === "waiting_outline_review") {
+  if (
+    task.status === "waiting_outline_review" ||
+    task.status === "waiting_chapter_review" ||
+    task.status === "waiting_verification_review"
+  ) {
     return `/review/${task.task_id}`;
   }
   if (task.status === "completed") {
