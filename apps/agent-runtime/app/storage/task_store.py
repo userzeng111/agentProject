@@ -46,6 +46,7 @@ class TaskLogStore:
             mode=payload.mode,
             model_id=(payload.model_id or "").strip(),
             input=payload,
+            auto_review=payload.auto_review,
         )
         self._tasks[task.id] = task
         self.append_event(

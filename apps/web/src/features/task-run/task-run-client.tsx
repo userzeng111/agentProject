@@ -262,6 +262,7 @@ function buildSystemStages(events: WorkspaceEvent[]) {
 export default function TaskRunClient({ taskId }: { taskId: string }) {
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [running, setRunning] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [streamState, setStreamState] = useState("未连接事件流");
   const [activeTab, setActiveTab] = useState(0);
@@ -270,12 +271,15 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
+    setLoading(true);
     try {
       const nextWorkspace = await getWorkspace(taskId);
       setWorkspace(nextWorkspace);
       setError("");
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "读取工作台失败");
+    } finally {
+      setLoading(false);
     }
   }, [taskId]);
 
@@ -380,12 +384,27 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
     }
   }
 
-  if (!workspace) {
+  if (loading && !workspace) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Box sx={{ py: 6 }}>
           <Typography>正在读取工作台...</Typography>
         </Box>
+      </Container>
+    );
+  }
+
+  if (!workspace) {
+    return (
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Stack spacing={2} sx={{ py: 6 }}>
+          <Alert severity="error">{error || "读取工作台失败"}</Alert>
+          <Box>
+            <Button variant="outlined" onClick={() => void refreshWorkspace()}>
+              重新加载
+            </Button>
+          </Box>
+        </Stack>
       </Container>
     );
   }
@@ -398,6 +417,12 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
+
+  const canReview = [
+    "waiting_outline_review",
+    "waiting_chapter_review",
+    "waiting_verification_review",
+  ].includes(workspace.meta.status);
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -493,7 +518,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                     {running ? "启动中..." : "开始执行"}
                   </Button>
                 )}
-                {workspace.meta.status === "waiting_outline_review" && (
+                {canReview && (
                   <Button component={Link} href={`/review/${workspace.meta.task_id}`} variant="contained" size="small">
                     进入审核
                   </Button>

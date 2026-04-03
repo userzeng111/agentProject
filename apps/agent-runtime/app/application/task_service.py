@@ -88,7 +88,11 @@ class TaskService:
             self.engine.set_runtime_default_model(runtime_default)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
-        return self.store.create_task(payload)
+        task = self.store.create_task(payload)
+        if task.auto_review and not task.auto_review_policy:
+            task.auto_review_policy = dict(self.auto_review_policy)
+            task = self.store.save(task)
+        return task
 
     def add_source(self, task_id: str, filename: str, media_type: str, content: str) -> TaskRecord:
         source = SourceAsset(filename=filename, media_type=media_type, content=content)
@@ -189,19 +193,21 @@ class TaskService:
 
     def get_dashboard(self) -> DashboardResponse:
         tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
+        dead_statuses = {
+            TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.CANCELLED,
+            TaskStatus.ASSEMBLING,
+        }
         continue_statuses = {
             TaskStatus.CREATED,
             TaskStatus.SOURCES_INGESTED,
             TaskStatus.WAITING_OUTLINE_REVIEW,
             TaskStatus.WAITING_CHAPTER_REVIEW,
             TaskStatus.WAITING_VERIFICATION_REVIEW,
-            TaskStatus.WAITING_MANUAL_ACTION,
-            TaskStatus.CANCELLED,
         }
         running_statuses = {
             TaskStatus.PLANNING,
             TaskStatus.DRAFTING,
-            TaskStatus.ASSEMBLING,
         }
         running_tasks = [
             self._to_summary(task)
@@ -210,6 +216,7 @@ class TaskService:
         ]
         continue_tasks = [self._to_summary(task) for task in tasks if task.status in continue_statuses]
         failed_tasks = [self._to_summary(task) for task in tasks if task.status is TaskStatus.FAILED]
+        failed_tasks.extend(self._to_summary(task) for task in tasks if task.status in dead_statuses)
         failed_tasks.extend(self._to_stale_run_summary(task) for task in tasks if self._is_stale_running_task(task))
         return DashboardResponse(
             continue_tasks=continue_tasks,
@@ -286,15 +293,17 @@ class TaskService:
         if review is None:
             if task.story_plan is None:
                 raise ValueError("当前任务还没有可审核的内容。")
+            historical_review_type = self._historical_review_type(task)
             outline_ref = self._file_ref(task, "outline.md")
             return ReviewResponse(
                 meta=self._to_summary(task),
-                review_type="outline_review",
+                review_type=historical_review_type,
                 review_version="v1",
                 summary="当前任务已有大纲，可查看历史审核结果。",
                 risk_flags=[],
-                outline_markdown=self._outline_markdown(task.story_plan),
-                outline_md_ref=outline_ref,
+                outline_markdown=self._outline_markdown(task.story_plan) if historical_review_type != "verification_review" else None,
+                outline_md_ref=outline_ref if historical_review_type != "verification_review" else None,
+                revision_count=0,
                 review_history=self._review_history(task),
                 auto_review_trace=auto_review_trace,
             )
@@ -354,6 +363,7 @@ class TaskService:
             risk_flags=review.risk_flags,
             outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
             outline_md_ref=outline_ref,
+            revision_count=review.revision_count,
             review_history=self._review_history(task),
             auto_review_trace=auto_review_trace,
         )
@@ -420,6 +430,8 @@ class TaskService:
             },
             "reference_text": reference_text,
             "source_assets": [source.model_dump(mode="json") for source in task.sources],
+            "auto_review": task.auto_review,
+            "auto_review_policy": task.auto_review_policy or dict(self.auto_review_policy),
         }
 
     def _config(self, task_id: str) -> dict[str, Any]:
@@ -654,6 +666,11 @@ class TaskService:
             updated_at=task.updated_at,
             summary=summary,
             storage_state=task.storage_state,
+            entry_refs={
+                "meta_json": f"tasklog/{task.storage_state}/{task.id}/meta.json",
+                "events_tail_json": f"tasklog/{task.storage_state}/{task.id}/events.tail.json",
+                "result_json": f"tasklog/{task.storage_state}/{task.id}/result.json",
+            },
         )
 
     def _model_summary(self) -> dict[str, Any]:
@@ -773,17 +790,33 @@ class TaskService:
 
     def _artifact_index_item(self, task: TaskRecord, artifact: ArtifactItem) -> dict[str, Any]:
         md_ref = None
+        json_ref = None
         if artifact.type == "story_plan":
             md_ref = self._file_ref(task, "outline.md")
+            json_ref = self._file_ref(task, "outline.json")
         elif artifact.type == "manuscript":
             md_ref = self._file_ref(task, "result.md")
+            json_ref = self._file_ref(task, "result.json")
         return {
             "id": artifact.id,
             "type": artifact.type,
             "name": artifact.name,
             "created_at": artifact.created_at.isoformat(),
             "md_ref": md_ref,
+            "json_ref": json_ref,
         }
+
+    def _historical_review_type(self, task: TaskRecord) -> str:
+        for event in reversed(task.events):
+            if event.event_type != "review.waiting":
+                continue
+            if event.stage == "waiting_verification_review":
+                return "verification_review"
+            if event.stage == "waiting_chapter_review":
+                return "chapter_pair_review"
+            if event.stage == "waiting_outline_review":
+                return "outline_review"
+        return "outline_review"
 
     def _build_progress_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:

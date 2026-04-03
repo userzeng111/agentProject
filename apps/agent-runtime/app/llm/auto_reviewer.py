@@ -130,6 +130,16 @@ _STRUCTURE_AGENT_PROMPT = """你是一个中文小说大纲结构审核专家，
   "reasoning": str
 }}
 
+【特殊审查规则】
+- 模式：{mode}
+- 用户目标字数：{requested_target_words}
+- 最低成稿字数：{target_words}
+- 如果模式为 `short_story`：
+  - 必须按短篇标准审查，不得套用中长篇标准；
+  - 允许 3 到 5 章的短篇反转结构；
+  - 只要能够在 `最低成稿字数` 以上完成完整起承转合和结尾反转，就不能仅因章节少而判定结构不合格；
+  - 严禁动辄要求扩展到 `8-12章`、`8000字以上` 这一类中长篇方案。
+
 【待审核大纲】
 工作标题：{working_title}
 一句话梗概：{logline}
@@ -689,6 +699,7 @@ class AutoReviewManager:
 
         def build_prompt(spec: SubAgentSpec) -> str:
             return spec.prompt_template.format(
+                mode=getattr(payload, "_mode", ""),
                 working_title=story_plan.working_title,
                 logline=story_plan.logline,
                 world_notes="\n".join(story_plan.world_notes) if story_plan.world_notes else "无",
@@ -697,6 +708,7 @@ class AutoReviewManager:
                     f"第{ch.number}章: {ch.title} - 目标: {ch.goal}"
                     for ch in (story_plan.chapter_plan or [])
                 ),
+                requested_target_words=getattr(payload, "_requested_target_words", getattr(payload, "_target_words", "")),
                 user_prompt=getattr(payload, "_user_prompt", ""),
                 genre=getattr(payload, "_genre", ""),
                 style=getattr(payload, "_style", ""),
@@ -899,10 +911,19 @@ class AutoReviewManager:
         revision_scope = parsed.get("revision_scope")
 
         # 升级判断
-        if policy.auto_escalate_on_critical and len(critical_issues) > 0:
+        if policy.should_auto_escalate_on_critical(review_type) and len(critical_issues) > 0:
             auto_escalated = True
         if policy.auto_escalate_on_low_score and adjusted_score < pass_threshold * 0.7:
             auto_escalated = True
+
+        # 放宽章节审核：当章节评分已过线，且该阶段不要求因 critical 直接升级时，继续正文生成。
+        if (
+            review_type in {"outline_review", "chapter_pair_review"}
+            and not policy.should_auto_escalate_on_critical(review_type)
+            and adjusted_score >= pass_threshold
+        ):
+            approved = True
+            auto_escalated = False
 
         # 构建审核意见
         if not approved and not comment:
@@ -942,8 +963,28 @@ class AutoReviewManager:
             {"role": "system", "content": "你是一个中文小说质量审核专家，请严格返回 JSON 格式的审核结果，不要输出额外解释。"},
             {"role": "user", "content": prompt},
         ]
-        response = self.gateway_client.complete_json(messages, model=model or self.default_model)
-        return json.dumps(response, ensure_ascii=False)
+        attempt_messages = messages
+        for attempt in range(2):
+            try:
+                response = self.gateway_client.complete_json(
+                    attempt_messages,
+                    model=model or self.default_model,
+                )
+                return json.dumps(response, ensure_ascii=False)
+            except GatewayClientError:
+                if attempt == 1:
+                    raise
+                attempt_messages = [dict(item) for item in messages] + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次返回结果不是可解析的目标 JSON。"
+                            "请重新输出一个完整、可解析的 JSON 对象。"
+                            "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+                        ),
+                    }
+                ]
+        raise GatewayClientError("自动审核调用失败：重试后仍未拿到有效 JSON。")
 
     def _build_revision_comment(
         self,

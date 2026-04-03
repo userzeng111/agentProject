@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -18,38 +18,42 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { fetchTextRef, getArchiveDetail } from "@/lib/api";
+import { fetchTextRef, getApiBase, getArchiveDetail } from "@/lib/api";
 import { ArchiveDetailResponse } from "@/lib/types";
 
 export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
   const [detail, setDetail] = useState<ArchiveDetailResponse | null>(null);
   const [resultMarkdown, setResultMarkdown] = useState("");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const response = await getArchiveDetail(taskId);
-        setDetail(response);
-        setResultMarkdown(response.result_markdown ?? "");
-        setError("");
-        if (!response.result_markdown && response.result_md_ref) {
-          setResultMarkdown(await fetchTextRef(response.result_md_ref));
-        }
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "读取归档详情失败");
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await getArchiveDetail(taskId);
+      setDetail(response);
+      setResultMarkdown(response.result_markdown ?? "");
+      setError("");
+      if (!response.result_markdown && response.result_md_ref) {
+        setResultMarkdown(await fetchTextRef(response.result_md_ref));
       }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "读取归档详情失败");
+    } finally {
+      setLoading(false);
     }
-
-    void load();
   }, [taskId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const traceEvents = useMemo(
     () => (detail?.recent_events ?? []).filter((event) => event.event_type === "trace.summary"),
     [detail],
   );
 
-  if (!detail) {
+  if (loading && !detail) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Box sx={{ py: 6 }}>
@@ -58,6 +62,28 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
       </Container>
     );
   }
+
+  if (!detail) {
+    return (
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Stack spacing={2} sx={{ py: 6 }}>
+          <Alert severity="error">{error || "读取归档详情失败"}</Alert>
+          <Box>
+            <Button variant="outlined" onClick={() => void load()}>
+              重新加载
+            </Button>
+          </Box>
+        </Stack>
+      </Container>
+    );
+  }
+
+  const resolveRefHref = (ref?: string | null) => {
+    if (!ref) {
+      return undefined;
+    }
+    return ref.startsWith("http") ? ref : `${getApiBase()}${ref}`;
+  };
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -167,10 +193,29 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
               {detail.chapter_index.length ? (
                 detail.chapter_index.map((chapter) => (
                   <ListItem key={`${chapter.number}-${chapter.title}`} disableGutters>
-                    <ListItemText
-                      primary={`第 ${chapter.number} 章 · ${chapter.title}`}
-                      secondary={[chapter.summary, chapter.md_ref ?? ""].filter(Boolean).join(" · ")}
-                    />
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      sx={{ width: "100%" }}
+                    >
+                      <ListItemText
+                        primary={`第 ${chapter.number} 章 · ${chapter.title}`}
+                        secondary={chapter.summary || "暂无摘要"}
+                      />
+                      {chapter.md_ref ? (
+                        <Button
+                          component="a"
+                          href={resolveRefHref(chapter.md_ref)}
+                          target="_blank"
+                          rel="noreferrer"
+                          size="small"
+                        >
+                          查看章节文件
+                        </Button>
+                      ) : null}
+                    </Stack>
                   </ListItem>
                 ))
               ) : (

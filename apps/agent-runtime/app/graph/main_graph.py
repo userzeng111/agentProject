@@ -88,10 +88,63 @@ def build_graph(
     active_model_catalog = model_catalog
     active_history_loader = history_loader
     # 自动审核编排器
-    auto_review_manager: AutoReviewManager | None = None
-    if auto_review:
-        auto_review_manager = AutoReviewManager(
-            gateway_client=engine.gateway_client,
+    auto_review_manager: AutoReviewManager | None = AutoReviewManager(
+        gateway_client=getattr(engine, "gateway_client", None),
+    )
+
+    def _should_interrupt_manual_review(
+        *,
+        approved: bool,
+        policy: AutoReviewPolicy,
+        revision_count: int,
+        review_type: str,
+    ) -> bool:
+        if approved:
+            return False
+        if not policy.allow_self_revisions:
+            return True
+        return revision_count >= max(policy.get_max_auto_revisions(review_type), 0)
+
+    def _interrupt_outline_review(state: WorkflowState):
+        return interrupt(
+            {
+                "type": "outline_review",
+                "version": "v1",
+                "summary": "请确认大纲是否可以进入正文起草。",
+                "story_plan": state["story_plan"],
+                "risk_flags": [
+                    "demo 版本，大纲以稳定展示工作流为优先。",
+                    "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
+                ],
+                "revision_count": state.get("outline_revision_count", 0),
+            }
+        )
+
+    def _interrupt_chapter_pair_review(state: WorkflowState):
+        return interrupt(
+            {
+                "type": "chapter_pair_review",
+                "version": "v1",
+                "summary": "请审核这对章节是否符合大纲要求。",
+                "story_plan": state.get("story_plan"),
+                "batch_index": state.get("batch_index", 0),
+                "chapter_pair": state.get("current_chapter_pair", []),
+                "completed_count": state.get("completed_count", 0),
+                "total_chapters": state.get("total_chapters", 0),
+                "chapter_pair_revision_count": state.get("chapter_pair_revision_count", 0),
+            }
+        )
+
+    def _interrupt_verification_review(state: WorkflowState):
+        return interrupt(
+            {
+                "type": "verification_review",
+                "version": "v1",
+                "summary": "请审核全文一致性验证报告。",
+                "story_plan": state.get("story_plan"),
+                "verification_report": state.get("verification_report", {}),
+                "verification_revision_count": state.get("verification_revision_count", 0),
+            }
         )
 
     # ─────────────────────────────────────────────
@@ -100,14 +153,17 @@ def build_graph(
 
     def normalize_request(state: WorkflowState) -> WorkflowState:
         payload = state["input_payload"]
-        policy = auto_review_policy or {}
+        task_auto_review = bool(state.get("auto_review", auto_review))
+        policy = state.get("auto_review_policy") or auto_review_policy or {}
+        requested_target_words = int(payload.get("target_words", 1800) or 1800)
         return {
             "normalized_spec": {
                 "mode": payload["mode"],
                 "prompt": payload["prompt"].strip(),
                 "genre": payload.get("genre", "").strip(),
                 "style": payload.get("style", "").strip(),
-                "target_words": payload.get("target_words", 1800),
+                "requested_target_words": requested_target_words,
+                "target_words": _normalize_target_words(payload["mode"], requested_target_words),
                 "audience": payload.get("audience", "").strip(),
                 "banned": payload.get("banned", "").strip(),
                 "title_hint": payload.get("title_hint", "").strip(),
@@ -116,7 +172,7 @@ def build_graph(
             "batch_index": 0,
             "chapter_pair_revision_count": 0,
             "verification_revision_count": 0,
-            "auto_review": auto_review,
+            "auto_review": task_auto_review,
             "auto_review_policy": policy,
             "auto_review_trace": [],
         }
@@ -153,8 +209,9 @@ def build_graph(
     def review_outline(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
         if state.get("auto_review") and auto_review_manager is not None:
+            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+            force_manual = False
             try:
-                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
                 story_plan_dict = state.get("story_plan") or {}
                 from app.domain.models import StoryPlan as SP
                 sp = SP.model_validate(story_plan_dict)
@@ -169,39 +226,46 @@ def build_graph(
                     revision_count=state.get("outline_revision_count", 0),
                 )
                 # 注入额外上下文
+                payload._mode = state.get("normalized_spec", {}).get("mode", "")
                 payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
                 payload._genre = state.get("normalized_spec", {}).get("genre", "")
                 payload._style = state.get("normalized_spec", {}).get("style", "")
+                payload._requested_target_words = state.get("normalized_spec", {}).get("requested_target_words", "")
                 payload._target_words = state.get("normalized_spec", {}).get("target_words", "")
 
                 decision = auto_review_manager.review(payload, policy)
                 trace = [a.model_dump() for a in decision.agent_trace]
+            except Exception as e:
+                decision = ReviewDecision(
+                    approved=False,
+                    comment=f"自动审核异常: {e}，请人工介入。",
+                    reasoning=str(e),
+                    auto_escalated=True,
+                    overall_score=0.0,
+                )
+                trace = []
+                force_manual = True
+            if force_manual or _should_interrupt_manual_review(
+                approved=decision.approved,
+                policy=policy,
+                revision_count=state.get("outline_revision_count", 0),
+                review_type="outline_review",
+            ):
+                review = _interrupt_outline_review(state)
+                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
+                comment = review.get("comment", "") if isinstance(review, dict) else ""
                 return {
-                    "approved": decision.approved,
-                    "review_comment": decision.comment,
+                    "approved": approved,
+                    "review_comment": comment,
                     "auto_review_trace": trace,
                 }
-            except Exception as e:
-                # 自动审核失败时，降级为人工审核
-                return {
-                    "approved": False,
-                    "review_comment": f"自动审核异常: {e}，请人工介入。",
-                    "auto_review_trace": [],
-                }
-        # 人工审核模式（保持现有逻辑）
-        review = interrupt(
-            {
-                "type": "outline_review",
-                "version": "v1",
-                "summary": "请确认大纲是否可以进入正文起草。",
-                "story_plan": state["story_plan"],
-                "risk_flags": [
-                    "demo 版本，大纲以稳定展示工作流为优先。",
-                    "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
-                ],
-                "revision_count": state.get("outline_revision_count", 0),
+            return {
+                "approved": decision.approved,
+                "review_comment": decision.comment,
+                "auto_review_trace": trace,
             }
-        )
+        # 人工审核模式（保持现有逻辑）
+        review = _interrupt_outline_review(state)
         approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
         comment = review.get("comment", "") if isinstance(review, dict) else ""
         return {"approved": approved, "review_comment": comment}
@@ -272,8 +336,9 @@ def build_graph(
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
         if state.get("auto_review") and auto_review_manager is not None:
+            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+            force_manual = False
             try:
-                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
                 story_plan_dict = state.get("story_plan")
                 sp = None
                 if story_plan_dict:
@@ -297,31 +362,37 @@ def build_graph(
                 ]
                 decision = auto_review_manager.review(payload, policy)
                 trace = [a.model_dump() for a in decision.agent_trace]
+            except Exception as e:
+                decision = ReviewDecision(
+                    approved=False,
+                    comment=f"自动审核异常: {e}，请人工介入。",
+                    reasoning=str(e),
+                    auto_escalated=True,
+                    overall_score=0.0,
+                )
+                trace = []
+                force_manual = True
+            if force_manual or _should_interrupt_manual_review(
+                approved=decision.approved,
+                policy=policy,
+                revision_count=state.get("chapter_pair_revision_count", 0),
+                review_type="chapter_pair_review",
+            ):
+                review = _interrupt_chapter_pair_review(state)
+                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
+                comment = review.get("comment", "") if isinstance(review, dict) else ""
                 return {
-                    "approved": decision.approved,
-                    "review_comment": decision.comment,
+                    "approved": approved,
+                    "review_comment": comment,
                     "auto_review_trace": trace,
                 }
-            except Exception as e:
-                return {
-                    "approved": False,
-                    "review_comment": f"自动审核异常: {e}，请人工介入。",
-                    "auto_review_trace": [],
-                }
-        # 人工审核模式
-        review = interrupt(
-            {
-                "type": "chapter_pair_review",
-                "version": "v1",
-                "summary": "请审核这对章节是否符合大纲要求。",
-                "story_plan": state.get("story_plan"),
-                "batch_index": state.get("batch_index", 0),
-                "chapter_pair": state.get("current_chapter_pair", []),
-                "completed_count": state.get("completed_count", 0),
-                "total_chapters": state.get("total_chapters", 0),
-                "chapter_pair_revision_count": state.get("chapter_pair_revision_count", 0),
+            return {
+                "approved": decision.approved,
+                "review_comment": decision.comment,
+                "auto_review_trace": trace,
             }
-        )
+        # 人工审核模式
+        review = _interrupt_chapter_pair_review(state)
         approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
         comment = review.get("comment", "") if isinstance(review, dict) else ""
         return {"approved": approved, "review_comment": comment}
@@ -370,8 +441,9 @@ def build_graph(
     def review_verification(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
         if state.get("auto_review") and auto_review_manager is not None:
+            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+            force_manual = False
             try:
-                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
                 story_plan_dict = state.get("story_plan")
                 sp = None
                 if story_plan_dict:
@@ -386,28 +458,37 @@ def build_graph(
                 )
                 decision = auto_review_manager.review(payload, policy)
                 trace = [a.model_dump() for a in decision.agent_trace]
+            except Exception as e:
+                decision = ReviewDecision(
+                    approved=False,
+                    comment=f"自动审核异常: {e}，请人工介入。",
+                    reasoning=str(e),
+                    auto_escalated=True,
+                    overall_score=0.0,
+                )
+                trace = []
+                force_manual = True
+            if force_manual or _should_interrupt_manual_review(
+                approved=decision.approved,
+                policy=policy,
+                revision_count=state.get("verification_revision_count", 0),
+                review_type="verification_review",
+            ):
+                review = _interrupt_verification_review(state)
+                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
+                comment = review.get("comment", "") if isinstance(review, dict) else ""
                 return {
-                    "approved": decision.approved,
-                    "review_comment": decision.comment,
+                    "approved": approved,
+                    "review_comment": comment,
                     "auto_review_trace": trace,
                 }
-            except Exception as e:
-                return {
-                    "approved": False,
-                    "review_comment": f"自动审核异常: {e}，请人工介入。",
-                    "auto_review_trace": [],
-                }
-        # 人工审核模式
-        review = interrupt(
-            {
-                "type": "verification_review",
-                "version": "v1",
-                "summary": "请审核全文一致性验证报告。",
-                "story_plan": state.get("story_plan"),
-                "verification_report": state.get("verification_report", {}),
-                "verification_revision_count": state.get("verification_revision_count", 0),
+            return {
+                "approved": decision.approved,
+                "review_comment": decision.comment,
+                "auto_review_trace": trace,
             }
-        )
+        # 人工审核模式
+        review = _interrupt_verification_review(state)
         approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
         comment = review.get("comment", "") if isinstance(review, dict) else ""
         return {"approved": approved, "review_comment": comment}
@@ -653,6 +734,7 @@ def _outline_instruction(spec: dict[str, Any]) -> str:
         f"模式：{spec.get('mode', '')}\n"
         f"题材：{spec.get('genre', '')}\n"
         f"风格：{spec.get('style', '')}\n"
+        f"用户目标字数：{spec.get('requested_target_words', spec.get('target_words', ''))}\n"
         f"目标字数：{spec.get('target_words', '')}\n"
         f"受众：{spec.get('audience', '')}\n"
         f"禁忌：{spec.get('banned', '')}\n"
@@ -671,10 +753,17 @@ def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] |
         f"模式：{spec.get('mode', '')}\n"
         f"作品标题：{title}\n"
         f"一句话梗概：{logline}\n"
+        f"目标字数：{spec.get('target_words', '')}\n"
         f"风格要求：{spec.get('style', '')}\n"
         f"禁忌要求：{spec.get('banned', '')}\n"
         f"正文任务：基于既定大纲连续起草小说正文，每次生成一对章节。"
     ).strip()
+
+
+def _normalize_target_words(mode: str, requested_target_words: int) -> int:
+    if mode == "short_story":
+        return max(requested_target_words + 100, 600)
+    return requested_target_words
 
 
 def _chapter_pair_memory_items(state: WorkflowState) -> list[str]:

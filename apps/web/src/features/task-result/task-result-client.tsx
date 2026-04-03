@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Alert,
@@ -24,7 +24,7 @@ import {
   PlayArrow as PlayIcon,
   MenuBook as MenuBookIcon,
 } from "@mui/icons-material";
-import { fetchTextRef, getResult } from "@/lib/api";
+import { fetchTextRef, getApiBase, getResult } from "@/lib/api";
 import { ResultResponse } from "@/lib/types";
 
 const WORKFLOW_STEPS = [
@@ -37,29 +37,33 @@ const WORKFLOW_STEPS = [
 export default function TaskResultClient({ taskId }: { taskId: string }) {
   const [result, setResult] = useState<ResultResponse | null>(null);
   const [resultMarkdown, setResultMarkdown] = useState("");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const response = await getResult(taskId);
-        setResult(response);
-        setResultMarkdown(response.result_markdown ?? "");
-        setError("");
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await getResult(taskId);
+      setResult(response);
+      setResultMarkdown(response.result_markdown ?? "");
+      setError("");
 
-        if (!response.result_markdown && response.result_md_ref) {
-          const markdown = await fetchTextRef(response.result_md_ref);
-          setResultMarkdown(markdown);
-        }
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "读取结果失败");
+      if (!response.result_markdown && response.result_md_ref) {
+        const markdown = await fetchTextRef(response.result_md_ref);
+        setResultMarkdown(markdown);
       }
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "读取结果失败");
+    } finally {
+      setLoading(false);
     }
-
-    void load();
   }, [taskId]);
 
-  if (!result) {
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading && !result) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Box sx={{ py: 6 }}>
@@ -68,6 +72,28 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
       </Container>
     );
   }
+
+  if (!result) {
+    return (
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Stack spacing={2} sx={{ py: 6 }}>
+          <Alert severity="error">{error || "读取结果失败"}</Alert>
+          <Box>
+            <Button variant="outlined" onClick={() => void load()}>
+              重新加载
+            </Button>
+          </Box>
+        </Stack>
+      </Container>
+    );
+  }
+
+  const resolveRefHref = (ref?: string | null) => {
+    if (!ref) {
+      return undefined;
+    }
+    return ref.startsWith("http") ? ref : `${getApiBase()}${ref}`;
+  };
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -202,16 +228,29 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
               {result.chapter_index.length ? (
                 result.chapter_index.map((chapter) => (
                   <ListItem key={`${chapter.number}-${chapter.title}`} disableGutters>
-                    <ListItemText
-                      primary={`第 ${chapter.number} 章 · ${chapter.title}`}
-                      secondary={[
-                        chapter.summary,
-                        chapter.content ? "已内联正文" : "",
-                        chapter.md_ref ?? "",
-                      ]
-                        .filter(Boolean)
-                        .join(" · ")}
-                    />
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      sx={{ width: "100%" }}
+                    >
+                      <ListItemText
+                        primary={`第 ${chapter.number} 章 · ${chapter.title}`}
+                        secondary={[chapter.summary, chapter.content ? "已内联正文" : ""].filter(Boolean).join(" · ")}
+                      />
+                      {chapter.md_ref ? (
+                        <Button
+                          component="a"
+                          href={resolveRefHref(chapter.md_ref)}
+                          target="_blank"
+                          rel="noreferrer"
+                          size="small"
+                        >
+                          查看章节文件
+                        </Button>
+                      ) : null}
+                    </Stack>
                   </ListItem>
                 ))
               ) : (
@@ -233,10 +272,39 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
               <List dense>
                 {result.artifact_index.map((artifact) => (
                   <ListItem key={artifact.id} disableGutters>
-                    <ListItemText
-                      primary={artifact.name}
-                      secondary={[artifact.type, artifact.md_ref ?? "", artifact.json_ref ?? ""].filter(Boolean).join(" · ")}
-                    />
+                    <Stack
+                      direction={{ xs: "column", sm: "row" }}
+                      spacing={1}
+                      justifyContent="space-between"
+                      alignItems={{ xs: "flex-start", sm: "center" }}
+                      sx={{ width: "100%" }}
+                    >
+                      <ListItemText primary={artifact.name} secondary={artifact.type} />
+                      <Stack direction="row" spacing={1}>
+                        {artifact.md_ref ? (
+                          <Button
+                            component="a"
+                            href={resolveRefHref(artifact.md_ref)}
+                            target="_blank"
+                            rel="noreferrer"
+                            size="small"
+                          >
+                            查看文本
+                          </Button>
+                        ) : null}
+                        {artifact.json_ref ? (
+                          <Button
+                            component="a"
+                            href={resolveRefHref(artifact.json_ref)}
+                            target="_blank"
+                            rel="noreferrer"
+                            size="small"
+                          >
+                            查看 JSON
+                          </Button>
+                        ) : null}
+                      </Stack>
+                    </Stack>
                   </ListItem>
                 ))}
               </List>

@@ -267,6 +267,104 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(len(first_gateway.calls), 1)
             self.assertEqual(len(second_gateway.calls), 0)
 
+    def test_build_story_plan_retries_once_when_first_structured_response_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="MiniMax-M2.7-highspeed",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    "```json\n{\"working_title\":\"雨夜监控室\",\"world_notes\":[\"服务区位于山区\"]\n```",
+                    {
+                        "working_title": "雨夜监控室",
+                        "logline": "监控员发现异常监控画面并追查真相。",
+                        "world_notes": ["服务区位于山区。"],
+                        "character_notes": ["主角是值班监控员。"],
+                        "chapter_plan": [
+                            {"number": 1, "title": "引子", "goal": "发现异常"},
+                            {"number": 2, "title": "推进", "goal": "继续追查"},
+                        ],
+                    },
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            plan = engine.build_story_plan(
+                spec={
+                    "mode": "short_story",
+                    "prompt": "写一个高速服务区悬疑短篇",
+                    "genre": "悬疑",
+                    "style": "克制冷静",
+                    "target_words": 1200,
+                    "model_id": "MiniMax-M2.7-highspeed",
+                },
+                reference_text="",
+                context_packet=None,
+                model="MiniMax-M2.7-highspeed",
+            )
+
+            self.assertEqual(plan.working_title, "雨夜监控室")
+            self.assertEqual(len(fake_gateway.calls), 2)
+            self.assertIn("请重新输出一个完整、可解析的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+
+    def test_build_story_plan_revision_retries_once_when_first_revision_response_is_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="MiniMax-M2.7-highspeed",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    "结果如下：{\"working_title\":\"修订后标题\",\"chapter_plan\":[{\"number\":1,\"title\":\"引子\"}]}",
+                    {
+                        "working_title": "修订后标题",
+                        "logline": "修订后的梗概。",
+                        "world_notes": ["修订后的世界观。"],
+                        "character_notes": ["修订后的人物。"],
+                        "chapter_plan": [
+                            {"number": 1, "title": "引子", "goal": "发现异常"},
+                            {"number": 2, "title": "推进", "goal": "继续追查"},
+                        ],
+                    },
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            plan = engine.build_story_plan(
+                spec={
+                    "mode": "short_story",
+                    "prompt": "写一个高速服务区悬疑短篇",
+                    "genre": "悬疑",
+                    "style": "克制冷静",
+                    "target_words": 1200,
+                    "model_id": "MiniMax-M2.7-highspeed",
+                },
+                reference_text="",
+                context_packet=None,
+                model="MiniMax-M2.7-highspeed",
+                revision_comment="请加强反转。",
+                original_plan={
+                    "working_title": "原始标题",
+                    "logline": "原始梗概。",
+                    "world_notes": ["原始世界观。"],
+                    "character_notes": ["原始人物。"],
+                    "chapter_plan": [
+                        {"number": 1, "title": "引子", "goal": "发现异常"},
+                    ],
+                },
+            )
+
+            self.assertEqual(plan.working_title, "修订后标题")
+            self.assertEqual(len(fake_gateway.calls), 2)
+            self.assertIn("请重新输出一个完整、可解析的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

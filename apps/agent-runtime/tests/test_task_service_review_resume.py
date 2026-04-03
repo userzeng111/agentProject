@@ -7,7 +7,7 @@ if not hasattr(datetime, "UTC"):
     datetime.UTC = datetime.timezone.utc
 
 from app.application.task_service import TaskService
-from app.domain.models import ReviewPayload, TaskCreateRequest, TaskMode
+from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
@@ -148,6 +148,82 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
             service._resume_task_sync(task.id, approved=False, comment="打回")
         except ValueError as exc:  # pragma: no cover - 红灯断言
             self.fail(f"_resume_task_sync 不应拒绝 planning 状态: {exc}")
+
+    def test_get_review_preserves_outline_revision_count(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            revision_count=3,
+        )
+        task = store.get(task.id)
+        task.pending_review = review
+        task.status = task.status.WAITING_OUTLINE_REVIEW
+        task.current_stage = "waiting_outline_review"
+        store.save(task)
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.review_type, "outline_review")
+        self.assertEqual(response.revision_count, 3)
+
+    def test_get_review_without_pending_review_uses_last_waiting_review_type(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "章节摘要",
+                    "content": "章节正文",
+                }
+            ],
+            completed_count=0,
+            total_chapters=2,
+        )
+        store.set_waiting_chapter_review(task.id, review)
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+            ],
+        )
+        task.pending_review = None
+        task.status = task.status.COMPLETED
+        task.current_stage = "completed"
+        store.save(task)
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.review_type, "chapter_pair_review")
 
 
 if __name__ == "__main__":

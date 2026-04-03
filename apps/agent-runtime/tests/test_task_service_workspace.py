@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from app.application.task_service import TaskService
-from app.domain.models import TaskCreateRequest, TaskMode
+from app.domain.models import TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
@@ -53,6 +53,55 @@ class FakeEngine:
 
 
 class TaskServiceWorkspaceTests(unittest.TestCase):
+    def test_create_task_persists_task_level_auto_review_and_initial_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                auto_review=False,
+                auto_review_policy={
+                    "auditor_model": "auditor-x",
+                    "synthesis_model": "synthesis-y",
+                },
+            )
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                    auto_review=True,
+                )
+            )
+            stored = service.get_task(task.id)
+            initial_state = service._initial_state(stored)
+
+            self.assertTrue(stored.auto_review)
+            self.assertEqual(
+                stored.auto_review_policy,
+                {
+                    "auditor_model": "auditor-x",
+                    "synthesis_model": "synthesis-y",
+                },
+            )
+            self.assertTrue(initial_state["auto_review"])
+            self.assertEqual(
+                initial_state["auto_review_policy"],
+                {
+                    "auditor_model": "auditor-x",
+                    "synthesis_model": "synthesis-y",
+                },
+            )
+
     def test_workspace_contains_model_capabilities_and_context_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
@@ -97,6 +146,67 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertEqual(workspace.context_status["cache_scope"], "runtime_context")
             self.assertEqual(workspace.response_cache_status, {})
             self.assertEqual(workspace.request_preview["model_capabilities"]["cache"]["runtime_context_cache"], True)
+
+    def test_dashboard_treats_dead_statuses_as_failed_attention_items(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            waiting_manual = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="任务一",
+                    model_id="gpt-5.4",
+                )
+            )
+            assembling = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="任务二",
+                    model_id="gpt-5.4",
+                )
+            )
+            cancelled = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="任务三",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            waiting_manual_task = store.get(waiting_manual.id)
+            waiting_manual_task.status = TaskStatus.WAITING_MANUAL_ACTION
+            waiting_manual_task.current_stage = "waiting_manual_action"
+            store.save(waiting_manual_task)
+
+            assembling_task = store.get(assembling.id)
+            assembling_task.status = TaskStatus.ASSEMBLING
+            assembling_task.current_stage = "assembling"
+            store.save(assembling_task)
+
+            cancelled_task = store.get(cancelled.id)
+            cancelled_task.status = TaskStatus.CANCELLED
+            cancelled_task.current_stage = "cancelled"
+            store.save(cancelled_task)
+
+            dashboard = service.get_dashboard()
+            failed_ids = {item.task_id for item in dashboard.failed_tasks}
+            continue_ids = {item.task_id for item in dashboard.continue_tasks}
+            running_ids = {item.task_id for item in dashboard.running_tasks}
+
+            self.assertIn(waiting_manual.id, failed_ids)
+            self.assertIn(assembling.id, failed_ids)
+            self.assertIn(cancelled.id, failed_ids)
+            self.assertNotIn(waiting_manual.id, continue_ids)
+            self.assertNotIn(assembling.id, running_ids)
+            self.assertNotIn(cancelled.id, continue_ids)
 
     def test_second_equivalent_task_hits_context_and_response_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

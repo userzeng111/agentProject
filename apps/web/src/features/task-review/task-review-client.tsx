@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -433,7 +433,7 @@ function OutlineReview({
   onDecision: (approved: boolean) => void;
   error: string;
 }) {
-  const revisionCount = (review as ReviewResponse & { revision_count?: number }).revision_count ?? 0;
+  const revisionCount = review.revision_count ?? 0;
   return (
     <>
       <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
@@ -778,27 +778,31 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
   const [outlineMarkdown, setOutlineMarkdown] = useState("");
   const [comment, setComment] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    async function loadReview() {
-      try {
-        const nextReview = await getReview(taskId);
-        setReview(nextReview);
-        setOutlineMarkdown(nextReview.outline_markdown ?? "");
-        setError("");
+  const loadReview = useCallback(async () => {
+    setLoading(true);
+    try {
+      const nextReview = await getReview(taskId);
+      setReview(nextReview);
+      setOutlineMarkdown(nextReview.outline_markdown ?? "");
+      setError("");
 
-        if (!nextReview.outline_markdown && nextReview.outline_md_ref) {
-          const markdown = await fetchTextRef(nextReview.outline_md_ref);
-          setOutlineMarkdown(markdown);
-        }
-      } catch (reason) {
-        setError(reason instanceof Error ? reason.message : "读取审核信息失败");
+      if (!nextReview.outline_markdown && nextReview.outline_md_ref) {
+        const markdown = await fetchTextRef(nextReview.outline_md_ref);
+        setOutlineMarkdown(markdown);
       }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "读取审核信息失败");
+    } finally {
+      setLoading(false);
     }
-
-    void loadReview();
   }, [taskId]);
+
+  useEffect(() => {
+    void loadReview();
+  }, [loadReview]);
 
   async function handleDecision(approved: boolean) {
     try {
@@ -812,8 +816,8 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
         nextTask.status === "waiting_chapter_review" ||
         nextTask.status === "waiting_verification_review"
       ) {
-        // 刷新审核页
-        router.push(`/review/${taskId}`);
+        await loadReview();
+        router.refresh();
       } else {
         router.push(`/tasks/${taskId}`);
       }
@@ -824,12 +828,27 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
     }
   }
 
-  if (!review) {
+  if (loading && !review) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Box sx={{ py: 6 }}>
           <Typography>正在载入审核信息...</Typography>
         </Box>
+      </Container>
+    );
+  }
+
+  if (!review) {
+    return (
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Stack spacing={2} sx={{ py: 6 }}>
+          <Alert severity="error">{error || "读取审核信息失败"}</Alert>
+          <Box>
+            <Button variant="outlined" onClick={() => void loadReview()}>
+              重新加载
+            </Button>
+          </Box>
+        </Stack>
       </Container>
     );
   }

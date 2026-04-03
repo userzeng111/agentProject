@@ -16,6 +16,12 @@ model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gat
 auto_review_policy = {
     "auditor_model": settings.auto_review_auditor_model,
     "synthesis_model": settings.auto_review_synthesis_model,
+    "outline_pass_threshold": 60.0,
+    "outline_auto_escalate_on_critical": False,
+    "outline_max_auto_revisions": 3,
+    "chapter_pass_threshold": 65.0,
+    "chapter_auto_escalate_on_critical": False,
+    "chapter_max_auto_revisions": 3,
 }
 task_service = TaskService(
     store=store,

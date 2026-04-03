@@ -198,6 +198,7 @@ class TaskSummary(BaseModel):
     updated_at: datetime
     summary: str
     storage_state: str
+    entry_refs: dict[str, str] | None = None
 
 
 class DashboardResponse(BaseModel):
@@ -230,6 +231,7 @@ class ReviewResponse(BaseModel):
     risk_flags: list[str] = Field(default_factory=list)
     outline_markdown: str | None = None
     outline_md_ref: str | None = None
+    revision_count: int = 0
     review_history: list[dict[str, Any]] = Field(default_factory=list)
     # 自动审核追踪 [NEW]
     auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
@@ -307,6 +309,8 @@ class AutoReviewPolicy(BaseModel):
     # 升级规则
     auto_escalate_on_critical: bool = True  # 遇到 critical 问题时升级人工
     auto_escalate_on_low_score: bool = True  # 低于阈值时升级人工
+    outline_auto_escalate_on_critical: bool | None = None
+    chapter_auto_escalate_on_critical: bool | None = None
     # Agent 模型选择
     auditor_model: str = "MiniMax-M2.7-highspeed"
     synthesis_model: str = "MiniMax-M2.7-highspeed"
@@ -316,6 +320,8 @@ class AutoReviewPolicy(BaseModel):
     # 修订策略
     allow_self_revisions: bool = True  # 是否允许自动修订（不打回主流程）
     max_auto_revisions: int = 2  # 自动修订次数上限
+    outline_max_auto_revisions: int | None = None
+    chapter_max_auto_revisions: int | None = None
     # 审核严格度
     strictness: Strictness = Strictness.BALANCED
 
@@ -327,6 +333,20 @@ class AutoReviewPolicy(BaseModel):
             "verification_review": self.verification_pass_threshold,
         }
         return thresholds.get(review_type, 70.0)
+
+    def get_max_auto_revisions(self, review_type: str) -> int:
+        if review_type == "outline_review" and self.outline_max_auto_revisions is not None:
+            return self.outline_max_auto_revisions
+        if review_type == "chapter_pair_review" and self.chapter_max_auto_revisions is not None:
+            return self.chapter_max_auto_revisions
+        return self.max_auto_revisions
+
+    def should_auto_escalate_on_critical(self, review_type: str) -> bool:
+        if review_type == "outline_review" and self.outline_auto_escalate_on_critical is not None:
+            return self.outline_auto_escalate_on_critical
+        if review_type == "chapter_pair_review" and self.chapter_auto_escalate_on_critical is not None:
+            return self.chapter_auto_escalate_on_critical
+        return self.auto_escalate_on_critical
 
 
 class AgentResult(BaseModel):

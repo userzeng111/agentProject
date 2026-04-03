@@ -3,15 +3,15 @@ import unittest
 from langgraph.types import Command
 
 from app.context.manager import ContextManager
-from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan
+from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
 from app.graph.main_graph import build_graph
 
 
 class FakeEngine:
     def __init__(self) -> None:
+        self.gateway_client = None
         self.outline_contexts = []
-        self.draft_contexts = []
-        self.draft_histories = []
+        self.chapter_pair_contexts = []
 
     def build_story_plan(self, spec, reference_text, context_packet=None, model=None):
         self.outline_contexts.append(context_packet)
@@ -23,31 +23,37 @@ class FakeEngine:
             chapter_plan=[ChapterPlan(number=1, title="第一章", goal="建立冲突")],
         )
 
-    def generate_draft(
+    def generate_chapter_pair(
         self,
         spec,
         story_plan,
+        batch_index,
+        completed_chapters,
         reference_text,
         context_packet=None,
         model=None,
         progress_callback=None,
-        initial_conversation_history=None,
     ):
-        self.draft_contexts.append(context_packet)
-        self.draft_histories.append(initial_conversation_history)
-        return DraftResult(
-            title="测试标题",
-            summary="测试梗概",
-            body="测试正文",
-            chapters=[
-                ChapterDraft(
-                    number=1,
-                    title="第一章",
-                    summary="建立冲突",
-                    content="测试正文",
-                )
-            ],
-        )
+        self.chapter_pair_contexts.append(context_packet)
+        return [
+            ChapterDraft(
+                number=1,
+                title="第一章",
+                summary="建立冲突",
+                content="测试正文",
+            )
+        ]
+
+    def verify_full_story(
+        self,
+        completed_chapters,
+        story_plan,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+    ):
+        return {"overall_score": 100, "issues": []}
 
 
 class FakeModelCatalog:
@@ -65,29 +71,12 @@ class FakeModelCatalog:
 
 
 class GraphContextIntegrationTests(unittest.TestCase):
-    def test_graph_builds_outline_and_draft_context_snapshots(self) -> None:
+    def test_graph_builds_outline_and_chapter_pair_context_snapshots(self) -> None:
         engine = FakeEngine()
-        planning_history = [
-            {"role": "system", "content": "真实 planning system 提示词"},
-            {
-                "role": "user",
-                "content": "真实 planning user，包含目标字数 1800、受众 成年读者、禁忌 血腥。",
-            },
-            {"role": "assistant", "content": "真实 planning assistant 返回的大纲 JSON"},
-        ]
-        loader_calls = []
-
-        def history_loader(task_id: str, stage: str, filename: str):
-            loader_calls.append((task_id, stage, filename))
-            if stage == "planning" and filename == "outline-history":
-                return planning_history
-            return []
-
         graph = build_graph(
             engine,
             context_manager=ContextManager(),
             model_catalog=FakeModelCatalog(),
-            history_loader=history_loader,
         )
         config = {"configurable": {"thread_id": "task-graph-1"}}
         initial_state = {
@@ -117,13 +106,9 @@ class GraphContextIntegrationTests(unittest.TestCase):
         graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
 
         final_snapshot = graph.get_state(config).values
-        self.assertIn("draft_context_snapshot", final_snapshot)
-        self.assertTrue(engine.draft_contexts)
-        self.assertIsNotNone(engine.draft_contexts[0])
-        self.assertTrue(engine.draft_histories)
-        self.assertEqual(loader_calls, [("task-graph-1", "planning", "outline-history")])
-        self.assertEqual(engine.draft_histories[0][:3], planning_history)
-        self.assertTrue(any("继续" in item["content"] for item in engine.draft_histories[0] if item["role"] == "user"))
+        self.assertIn("chapter_pair_context_packet", final_snapshot)
+        self.assertTrue(engine.chapter_pair_contexts)
+        self.assertIsNotNone(engine.chapter_pair_contexts[0])
 
 
 if __name__ == "__main__":

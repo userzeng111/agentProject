@@ -268,6 +268,7 @@ export interface ReviewResponse {
   risk_flags: string[];
   outline_markdown?: string;
   outline_md_ref?: string | null;
+  revision_count?: number;
   review_history?: ReviewHistoryItem[];
   // 自动审核追踪 [NEW]
   auto_review_trace?: AgentTraceItem[];
@@ -378,8 +379,7 @@ export interface ArchiveDetailResponse {
     banned?: string;
     title_hint?: string;
   };
-  context_status?: ContextStatus;
-  context_snapshot?: ContextStatus;
+  sources?: SourceAsset[];
   recent_events: WorkspaceEvent[];
   result_summary?: string;
   result_markdown?: string;

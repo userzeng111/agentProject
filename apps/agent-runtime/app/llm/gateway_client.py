@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from time import sleep
 from typing import Any
 
@@ -41,18 +42,70 @@ class OpenAICompatibleGatewayClient:
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         raw = self.complete(messages=messages, model=model)
-        cleaned = raw.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned.removeprefix("```json").removesuffix("```").strip()
-        elif cleaned.startswith("```"):
-            cleaned = cleaned.removeprefix("```").removesuffix("```").strip()
+        cleaned = self._strip_markdown_fences(raw)
 
         try:
             return json.loads(cleaned)
-        except json.JSONDecodeError as exc:  # pragma: no cover
+        except json.JSONDecodeError as exc:
+            extracted = self._extract_first_json_value(cleaned)
+            if extracted is not None:
+                return extracted
             raise GatewayClientError(f"模型返回的 JSON 无法解析：{raw[:240]}") from exc
+
+    def _strip_markdown_fences(self, raw: str) -> str:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned, count=1)
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+        return cleaned.strip()
+
+    def _extract_first_json_value(self, text: str) -> Any | None:
+        start = -1
+        opening = ""
+        for index, char in enumerate(text):
+            if char in "{[":
+                start = index
+                opening = char
+                break
+        if start < 0:
+            return None
+
+        closing = "}" if opening == "{" else "]"
+        depth = 0
+        in_string = False
+        escaping = False
+
+        for index in range(start, len(text)):
+            char = text[index]
+            if in_string:
+                if escaping:
+                    escaping = False
+                    continue
+                if char == "\\":
+                    escaping = True
+                    continue
+                if char == '"':
+                    in_string = False
+                continue
+
+            if char == '"':
+                in_string = True
+                continue
+            if char == opening:
+                depth += 1
+                continue
+            if char == closing:
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : index + 1]
+                    try:
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        return None
+        return None
 
     def _ensure_success(self, response: httpx.Response, message: str) -> None:
         if response.status_code >= 400:

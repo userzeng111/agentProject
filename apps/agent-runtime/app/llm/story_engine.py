@@ -9,6 +9,7 @@ from typing import Any
 
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from langchain_core.prompts import ChatPromptTemplate
+from pydantic import ValidationError
 
 from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan, TaskMode
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
@@ -63,7 +64,9 @@ class StoryEngine:
                     "请基于以下信息生成小说大纲，并严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n目标字数：{target_words}\n用户要求：{prompt}\n"
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n"
+                    "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
+                    "{structure_hint}\n用户要求：{prompt}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
             ]
@@ -94,10 +97,11 @@ class StoryEngine:
                     "请只生成当前章节，并严格返回 JSON，结构必须包含："
                     "number(int), title(string), summary(string), content(string)。\n"
                     "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
                     "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
-                    "要求：当前章节内容控制在 250 到 450 字，保留冷静克制的中文叙事风格。",
+                    "要求：当前章节内容控制在 {chapter_word_range} 字，保留冷静克制的中文叙事风格。",
                 ),
             ]
         )
@@ -113,7 +117,9 @@ class StoryEngine:
                     "请严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n目标字数：{target_words}\n"
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n"
+                    "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
+                    "{structure_hint}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
             ]
@@ -130,9 +136,10 @@ class StoryEngine:
                     "请严格返回 JSON 数组，每个元素结构为："
                     "{{number:int,title:string,summary:string,content:string}}。\n"
                     "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
                     "已完成章节摘要：{completed_summaries}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
-                    "要求：内容控制在 250 到 450 字，叙事语气保持一致，保留冷静克制的中文风格。",
+                    "要求：内容控制在 {chapter_word_range} 字，叙事语气保持一致，保留冷静克制的中文风格。",
                 ),
             ]
         )
@@ -222,21 +229,22 @@ class StoryEngine:
                     "mode": spec["mode"],
                     "genre": spec.get("genre", ""),
                     "style": spec.get("style", ""),
+                    "requested_target_words": self._requested_target_words(spec),
                     "target_words": spec.get("target_words", 1800),
+                    "structure_hint": self._structure_hint(spec),
                     "context_memory": self._context_memory(context_packet),
                     "reference_excerpt": self._context_reference(reference_text, context_packet),
                 }
             )
             self._require_gateway_client()
             request_messages = self._prompt_to_messages(prompt_value)
-            payload, _ = self._complete_json_with_cache(
+            return self._build_story_plan_with_retry(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="planning",
                 exchange_label="outline-revision",
                 exchange_callback=active_exchange_callback,
             )
-            return StoryPlan.model_validate(payload)
 
         # 首次生成
         prompt_value = self.outline_prompt.invoke(
@@ -244,7 +252,9 @@ class StoryEngine:
                 "mode": spec["mode"],
                 "genre": spec.get("genre", ""),
                 "style": spec.get("style", ""),
+                "requested_target_words": self._requested_target_words(spec),
                 "target_words": spec.get("target_words", 1800),
+                "structure_hint": self._structure_hint(spec),
                 "prompt": spec.get("prompt", ""),
                 "context_memory": self._context_memory(context_packet),
                 "reference_excerpt": self._context_reference(reference_text, context_packet),
@@ -252,14 +262,13 @@ class StoryEngine:
         )
         self._require_gateway_client()
         request_messages = self._prompt_to_messages(prompt_value)
-        payload, _ = self._complete_json_with_cache(
+        return self._build_story_plan_with_retry(
             request_messages=request_messages,
             model=resolved_model,
             stage="planning",
             exchange_label="outline",
             exchange_callback=active_exchange_callback,
         )
-        return StoryPlan.model_validate(payload)
 
     def generate_draft(
         self,
@@ -276,12 +285,14 @@ class StoryEngine:
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         title = story_plan["working_title"]
         summary = story_plan["logline"]
+        chapter_plan = story_plan["chapter_plan"]
+        chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
         draft_prompt_value = self.draft_prompt.invoke(
             {
                 "mode": spec["mode"],
                 "title": title,
                 "logline": summary,
-                "chapter_titles": " / ".join(ch["title"] for ch in story_plan["chapter_plan"]),
+                "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
                 "context_memory": self._context_memory(context_packet),
                 "reference_excerpt": self._context_reference(reference_text, context_packet),
             }
@@ -315,10 +326,12 @@ class StoryEngine:
                     "mode": spec["mode"],
                     "title": title,
                     "logline": summary,
+                    "target_words": spec.get("target_words", 1800),
+                    "chapter_word_range": chapter_word_range,
                     "chapter_number": item["number"],
                     "chapter_title": item["title"],
                     "chapter_goal": item["goal"],
-                    "chapter_titles": " / ".join(ch["title"] for ch in story_plan["chapter_plan"]),
+                    "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
                     "completed_summaries": "；".join(completed_summaries) if completed_summaries else "无",
                     "context_memory": self._context_memory(context_packet),
                     "reference_excerpt": self._context_reference(reference_text, context_packet),
@@ -383,6 +396,7 @@ class StoryEngine:
         active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
+        chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
 
         # 取当前章节对
         ch1_idx = batch_index
@@ -425,6 +439,8 @@ class StoryEngine:
                 "mode": spec["mode"],
                 "title": title,
                 "logline": summary,
+                "target_words": spec.get("target_words", 1800),
+                "chapter_word_range": chapter_word_range,
                 "chapter_number": plan["number"],
                 "chapter_title": plan["title"],
                 "chapter_goal": plan["goal"],
@@ -483,6 +499,7 @@ class StoryEngine:
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         title = story_plan.get("working_title", "")
         summary = story_plan.get("logline", "")
+        chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
         completed_summaries = [f"{ch['title']}:{ch['summary']}" for ch in completed_chapters]
         completed_text = "；".join(completed_summaries) if completed_summaries else "无"
 
@@ -492,6 +509,8 @@ class StoryEngine:
             "mode": spec["mode"],
             "title": title,
             "logline": summary,
+            "target_words": spec.get("target_words", 1800),
+            "chapter_word_range": chapter_word_range,
             "completed_summaries": completed_text,
             "context_memory": self._context_memory(context_packet),
             "reference_excerpt": self._context_reference(reference_text, context_packet),
@@ -663,6 +682,39 @@ class StoryEngine:
         )
         return payload, conversation_history
 
+    def _build_story_plan_with_retry(
+        self,
+        request_messages: list[dict[str, str]],
+        model: str,
+        stage: str,
+        exchange_label: str,
+        exchange_callback: Callable[[dict[str, Any]], None] | None,
+    ) -> StoryPlan:
+        attempt_messages = request_messages
+        for attempt in range(2):
+            try:
+                payload, _ = self._complete_json_with_cache(
+                    request_messages=attempt_messages,
+                    model=model,
+                    stage=stage,
+                    exchange_label=exchange_label if attempt == 0 else f"{exchange_label}-retry",
+                    exchange_callback=exchange_callback,
+                )
+                return StoryPlan.model_validate(payload)
+            except (GatewayClientError, ValidationError) as exc:
+                if attempt == 1:
+                    raise
+                attempt_messages = [dict(item) for item in request_messages] + [
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一次返回结果不是可解析的目标 JSON。"
+                            "请重新输出一个完整、可解析的 JSON 对象。"
+                            "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+                        ),
+                    }
+                ]
+
     def _emit_exchange(
         self,
         *,
@@ -728,3 +780,30 @@ class StoryEngine:
         if mode == TaskMode.STYLE_REMIX.value:
             return "风格折返"
         return "短篇初稿"
+
+    def _requested_target_words(self, spec: dict[str, Any]) -> int:
+        return int(spec.get("requested_target_words", spec.get("target_words", 1800)) or 1800)
+
+    def _structure_hint(self, spec: dict[str, Any]) -> str:
+        if spec.get("mode") == TaskMode.SHORT_STORY.value:
+            requested = self._requested_target_words(spec)
+            target = int(spec.get("target_words", requested) or requested)
+            return (
+                f"短篇模式规则：最低成稿字数必须达到 {target} 字，"
+                f"该值基于用户目标 {requested} 字上浮 100 字。"
+                "请按短篇悬疑结构规划，优先控制在 3 到 5 章，"
+                "不要按中长篇思路强行扩章。"
+            )
+        return "请按当前模式输出与目标字数匹配的章节结构。"
+
+    def _chapter_word_range_text(
+        self,
+        spec: dict[str, Any],
+        chapter_plan: list[dict[str, Any]] | list[ChapterPlan],
+    ) -> str:
+        chapter_count = max(len(chapter_plan), 1)
+        total_target_words = int(spec.get("target_words", 1800) or 1800)
+        average_words = max(total_target_words // chapter_count, 220)
+        minimum_words = max(int(average_words * 0.85), 220)
+        maximum_words = max(int(average_words * 1.2), minimum_words + 80)
+        return f"{minimum_words} 到 {maximum_words}"

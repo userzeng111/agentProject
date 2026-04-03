@@ -7,7 +7,7 @@ if not hasattr(datetime, "UTC"):
     datetime.UTC = datetime.timezone.utc
 
 from app.application.task_service import TaskService
-from app.llm.gateway_client import GatewayClientError
+from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.settings import config as settings_config
@@ -24,7 +24,42 @@ class FailingGatewayClient:
         raise GatewayClientError("模拟网关请求失败")
 
 
+class StubRawGatewayClient(OpenAICompatibleGatewayClient):
+    def __init__(self, raw_response: str) -> None:
+        super().__init__(base_url="http://example.com", api_key="test-key", model="test-model")
+        self.raw_response = raw_response
+
+    def complete(self, messages, model=None):
+        return self.raw_response
+
+
 class SettingsAndGatewayFailFastTests(unittest.TestCase):
+    def test_complete_json_extracts_json_from_fenced_response_with_extra_text(self) -> None:
+        client = StubRawGatewayClient(
+            "下面是结果：\n```json\n{\"working_title\":\"雨夜监控室\",\"chapter_plan\":[]}\n```\n请查收。"
+        )
+
+        payload = client.complete_json([{"role": "user", "content": "test"}], model="test-model")
+
+        self.assertEqual(payload["working_title"], "雨夜监控室")
+
+    def test_complete_json_extracts_first_json_value_from_plain_text_wrapper(self) -> None:
+        client = StubRawGatewayClient(
+            "结果如下：{\"working_title\":\"雨站回声\",\"chapter_plan\":[]} 以上是最终答案。"
+        )
+
+        payload = client.complete_json([{"role": "user", "content": "test"}], model="test-model")
+
+        self.assertEqual(payload["working_title"], "雨站回声")
+
+    def test_complete_json_does_not_fall_through_to_nested_array_when_outer_object_is_invalid(self) -> None:
+        client = StubRawGatewayClient(
+            "```json\n{\"working_title\":\"雨夜监控室\",\"world_notes\":[\"高速服务区位于山区\"],\n```"
+        )
+
+        with self.assertRaisesRegex(GatewayClientError, "模型返回的 JSON 无法解析"):
+            client.complete_json([{"role": "user", "content": "test"}], model="test-model")
+
     def test_settings_use_fixed_runtime_env_file_path(self) -> None:
         env_file = settings_config.Settings.model_config.get("env_file")
 

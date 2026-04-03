@@ -45,16 +45,27 @@ curl http://127.0.0.1:8001/api/health
 cd apps/web
 
 # 安装依赖
-pnpm install
+npm install
 
 # 配置前端 API 地址（如需修改）
-# 编辑 .env.local，设置 NEXT_PUBLIC_API_BASE_URL
+# 当前默认会连接 http://127.0.0.1:8001
+# 如需修改，编辑 .env.local 并设置 NEXT_PUBLIC_API_BASE_URL
 
 # 启动前端开发服务器
 npm run dev
 ```
 
 浏览器访问 `http://localhost:3000`（或终端显示的端口）。
+
+### 2.1 前端构建校验
+
+```bash
+npm run build
+```
+
+说明：
+- 当前仓库执行 `npm run lint` 时会进入 Next.js ESLint 初始化交互，不适合作为现成校验命令。
+- 需要做前端基础校验时，优先使用 `npm run build`。
 
 ### 3. 验证接口
 
