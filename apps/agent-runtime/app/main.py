@@ -46,4 +46,4 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(build_router(task_service), prefix="/api")
+app.include_router(build_router(task_service, engine=engine), prefix="/api")

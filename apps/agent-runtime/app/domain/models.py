@@ -387,3 +387,23 @@ class ReviewDecision(BaseModel):
     suggestions: list[str] = Field(default_factory=list)  # 改进建议
     revision_needed: bool = False  # 是否需要修订
     revision_scope: str | None = None  # 修订范围，如 "outline", "chapter_3", "full_story"
+
+
+# ─────────────────────────────────────────────
+# 流式聊天相关模型
+# ─────────────────────────────────────────────
+
+
+class ChatMessage(BaseModel):
+    """单条聊天消息。"""
+
+    role: str  # system | user | assistant
+    content: str
+
+
+class ChatRequest(BaseModel):
+    """流式聊天请求。"""
+
+    messages: list[ChatMessage]
+    model: str | None = None
+    stream: bool = True

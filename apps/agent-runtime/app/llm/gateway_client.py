@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncGenerator
 from time import sleep
 from typing import Any
 
@@ -10,6 +11,27 @@ import httpx
 
 class GatewayClientError(Exception):
     pass
+
+
+class StreamChunk:
+    """流式响应的单个 chunk。"""
+
+    __slots__ = ("content", "reasoning_content", "finish_reason", "model", "usage")
+
+    def __init__(
+        self,
+        *,
+        content: str = "",
+        reasoning_content: str = "",
+        finish_reason: str | None = None,
+        model: str = "",
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        self.content = content
+        self.reasoning_content = reasoning_content
+        self.finish_reason = finish_reason
+        self.model = model
+        self.usage = usage or {}
 
 
 class OpenAICompatibleGatewayClient:
@@ -130,3 +152,58 @@ class OpenAICompatibleGatewayClient:
                 if attempt < 2:
                     sleep(1.5 * (attempt + 1))
         raise GatewayClientError(f"网关请求失败：{last_error}") from last_error
+
+    async def complete_stream(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        """流式调用 /chat/completions，逐 chunk yield StreamChunk。"""
+        payload = {
+            "model": model or self.model,
+            "messages": messages,
+            "stream": True,
+        }
+        timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
+        async with httpx.AsyncClient(timeout=timeout_cfg, trust_env=False) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise GatewayClientError(
+                        f"流式调用失败，状态码 {response.status_code}，响应：{body.decode('utf-8', errors='replace')[:240]}"
+                    )
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        return
+                    try:
+                        chunk_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk_data.get("choices") or []
+                    if not choices:
+                        # 最后一个 usage chunk 可能 choices 为空
+                        usage = chunk_data.get("usage")
+                        if usage:
+                            yield StreamChunk(usage=usage)
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or ""
+                    reasoning = delta.get("reasoning_content") or ""
+                    finish_reason = choice.get("finish_reason")
+                    chunk_model = chunk_data.get("model", "")
+                    yield StreamChunk(
+                        content=content,
+                        reasoning_content=reasoning,
+                        finish_reason=finish_reason,
+                        model=chunk_model,
+                    )
