@@ -131,7 +131,7 @@ class TaskLogStore:
         )
         return self.save(task)
 
-    def set_waiting_review(self, task_id: str, review: ReviewPayload, story_plan: StoryPlan) -> TaskRecord:
+    def set_waiting_review(self, task_id: str, review: ReviewPayload, story_plan: StoryPlan, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
         task = self.get(task_id)
         task.story_plan = story_plan
         task.pending_review = review
@@ -139,6 +139,8 @@ class TaskLogStore:
         task.current_stage = "waiting_outline_review"
         task.current_unit = "outline"
         task.progress = 55
+        if auto_review_trace is not None:
+            task.auto_review_trace = auto_review_trace
         self.append_event(
             task_id,
             stage="waiting_outline_review",
@@ -151,7 +153,7 @@ class TaskLogStore:
         )
         return self.save(task)
 
-    def set_waiting_chapter_review(self, task_id: str, review: ReviewPayload) -> TaskRecord:
+    def set_waiting_chapter_review(self, task_id: str, review: ReviewPayload, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
         task = self.get(task_id)
         task.pending_review = review
         task.status = TaskStatus.WAITING_CHAPTER_REVIEW
@@ -161,6 +163,8 @@ class TaskLogStore:
         total = review.total_chapters or 0
         completed = review.completed_count or 0
         task.progress = 55 + int(35 * completed / total) if total > 0 else 60
+        if auto_review_trace is not None:
+            task.auto_review_trace = auto_review_trace
         self.append_event(
             task_id,
             stage="waiting_chapter_review",
@@ -171,13 +175,15 @@ class TaskLogStore:
         )
         return self.save(task)
 
-    def set_waiting_verification_review(self, task_id: str, review: ReviewPayload) -> TaskRecord:
+    def set_waiting_verification_review(self, task_id: str, review: ReviewPayload, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
         task = self.get(task_id)
         task.pending_review = review
         task.status = TaskStatus.WAITING_VERIFICATION_REVIEW
         task.current_stage = "waiting_verification_review"
         task.current_unit = "verification"
         task.progress = 92
+        if auto_review_trace is not None:
+            task.auto_review_trace = auto_review_trace
         self.append_event(
             task_id,
             stage="waiting_verification_review",

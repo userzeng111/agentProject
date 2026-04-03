@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 
 def utc_now() -> datetime:
@@ -51,6 +51,7 @@ class TaskInput(BaseModel):
 class TaskCreateRequest(TaskInput):
     mode: TaskMode
     model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
+    auto_review: bool = False  # 是否开启自动审核 [NEW]
 
 
 class ResumeRequest(BaseModel):
@@ -78,6 +79,29 @@ class StoryPlan(BaseModel):
     world_notes: list[str] = Field(default_factory=list)
     character_notes: list[str] = Field(default_factory=list)
     chapter_plan: list[ChapterPlan] = Field(default_factory=list)
+
+    @field_validator("world_notes", "character_notes", mode="before")
+    @classmethod
+    def _normalize_notes(cls, v: Any) -> list[str]:
+        """容错处理：允许 LLM 返回字典数组，将字典转为字符串"""
+        if not isinstance(v, list):
+            return []
+        result = []
+        for item in v:
+            if isinstance(item, str):
+                result.append(item)
+            elif isinstance(item, dict):
+                # 将字典转为格式化字符串
+                parts = []
+                for k, val in item.items():
+                    if isinstance(val, str):
+                        parts.append(f"{k}: {val}")
+                    else:
+                        parts.append(f"{k}: {val}")
+                result.append("; ".join(parts))
+            else:
+                result.append(str(item))
+        return result
 
 
 class ReviewPayload(BaseModel):
@@ -155,6 +179,10 @@ class TaskRecord(BaseModel):
     storage_state: str = "runs"
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    # 自动审核配置 [NEW]
+    auto_review: bool = False
+    auto_review_policy: dict[str, Any] = Field(default_factory=dict)
+    auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TaskSummary(BaseModel):
@@ -203,6 +231,8 @@ class ReviewResponse(BaseModel):
     outline_markdown: str | None = None
     outline_md_ref: str | None = None
     review_history: list[dict[str, Any]] = Field(default_factory=list)
+    # 自动审核追踪 [NEW]
+    auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
     # 章节对审核
     chapter_pair: list[dict[str, Any]] = Field(default_factory=list)
     batch_index: int | None = None
@@ -243,3 +273,97 @@ class ArchiveTaskDetailResponse(BaseModel):
     chapter_index: list[dict[str, Any]] = Field(default_factory=list)
     artifact_index: list[dict[str, Any]] = Field(default_factory=list)
     history_index: list[dict[str, Any]] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────────
+# 自动审核相关模型
+# ─────────────────────────────────────────────
+
+
+class ReviewMode(str, Enum):
+    """审核模式"""
+
+    FULL_AUTO = "full_auto"  # 完全自动，Agent 决策即最终决策
+    ADVISORY = "advisory"  # Agent 提供审核意见，最终决策仍由人工
+    SEMI_AUTO = "semi_auto"  # 自动过审，驳回时升级人工
+
+
+class Strictness(str, Enum):
+    """审核严格度"""
+
+    LENIENT = "lenient"  # 宽松
+    BALANCED = "balanced"  # 平衡
+    STRICT = "strict"  # 严格
+
+
+class AutoReviewPolicy(BaseModel):
+    """自动审核策略配置"""
+
+    mode: ReviewMode = ReviewMode.FULL_AUTO
+    # 评分阈值
+    outline_pass_threshold: float = 70.0
+    chapter_pass_threshold: float = 65.0
+    verification_pass_threshold: float = 80.0
+    # 升级规则
+    auto_escalate_on_critical: bool = True  # 遇到 critical 问题时升级人工
+    auto_escalate_on_low_score: bool = True  # 低于阈值时升级人工
+    # Agent 模型选择
+    auditor_model: str = "MiniMax-M2.7-highspeed"
+    synthesis_model: str = "MiniMax-M2.7-highspeed"
+    # 多 Agent 并行
+    parallel_sub_agents: bool = True  # 子 Agent 是否并行执行
+    max_sub_agents: int = 3  # 最大并行子 Agent 数
+    # 修订策略
+    allow_self_revisions: bool = True  # 是否允许自动修订（不打回主流程）
+    max_auto_revisions: int = 2  # 自动修订次数上限
+    # 审核严格度
+    strictness: Strictness = Strictness.BALANCED
+
+    def get_pass_threshold(self, review_type: str) -> float:
+        """根据审核类型获取对应的通过阈值"""
+        thresholds = {
+            "outline_review": self.outline_pass_threshold,
+            "chapter_pair_review": self.chapter_pass_threshold,
+            "verification_review": self.verification_pass_threshold,
+        }
+        return thresholds.get(review_type, 70.0)
+
+
+class AgentResult(BaseModel):
+    """单个 Agent 的执行结果"""
+
+    agent_id: str = Field(default_factory=lambda: new_id("agent"))
+    agent_name: str  # 如 "OutlineAuditor", "StructureAgent"
+    role: str  # 如 "structure", "consistency", "creativity", "synthesis"
+    status: str = "pending"  # pending | running | completed | failed
+    score: float | None = None  # 评分 0-100
+    issues: list[dict[str, Any]] = Field(default_factory=list)  # 发现的问题列表
+    highlights: list[str] = Field(default_factory=list)  # 亮点列表
+    reasoning: str = ""  # 分析推理过程
+    error: str | None = None  # 错误信息
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+    @property
+    def duration_ms(self) -> int | None:
+        """计算执行耗时（毫秒）"""
+        if self.started_at and self.completed_at:
+            return int((self.completed_at - self.started_at).total_seconds() * 1000)
+        return None
+
+
+class ReviewDecision(BaseModel):
+    """自动审核的最终决策结果"""
+
+    approved: bool  # 是否通过
+    comment: str = ""  # 审核意见（注入到 workflow state）
+    reasoning: str = ""  # 决策依据摘要
+    agent_trace: list[AgentResult] = Field(default_factory=list)  # 各子 Agent 执行追踪
+    auto_escalated: bool = False  # 是否升级（超过阈值需人工介入）
+    overall_score: float | None = None  # 整体评分（0-100）
+    # 扩展信息
+    critical_issues: list[dict[str, Any]] = Field(default_factory=list)  # 严重问题列表
+    warnings: list[dict[str, Any]] = Field(default_factory=list)  # 警告列表
+    suggestions: list[str] = Field(default_factory=list)  # 改进建议
+    revision_needed: bool = False  # 是否需要修订
+    revision_scope: str | None = None  # 修订范围，如 "outline", "chapter_3", "full_story"

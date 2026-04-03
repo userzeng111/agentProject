@@ -244,6 +244,22 @@ export interface VerificationIssue {
   suggestion: string;
 }
 
+/** 自动审核 Agent 执行追踪项 [NEW] */
+export interface AgentTraceItem {
+  agent_id: string;
+  agent_name: string;  // 显示名称，如 "结构分析师"
+  role: string;  // internal role
+  status: "pending" | "running" | "completed" | "failed";
+  score?: number;  // 评分 0-100
+  issues?: VerificationIssue[];
+  highlights?: string[];
+  reasoning?: string;
+  error?: string;
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+}
+
 export interface ReviewResponse {
   meta: WorkspaceMeta;
   review_type: string;
@@ -253,6 +269,8 @@ export interface ReviewResponse {
   outline_markdown?: string;
   outline_md_ref?: string | null;
   review_history?: ReviewHistoryItem[];
+  // 自动审核追踪 [NEW]
+  auto_review_trace?: AgentTraceItem[];
   // 章节对审核
   chapter_pair?: ReviewChapterItem[];
   batch_index?: number;

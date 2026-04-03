@@ -51,6 +51,8 @@ class TaskService:
         engine: StoryEngine,
         model_catalog: ModelCatalogService | None = None,
         context_manager: ContextManager | None = None,
+        auto_review: bool = False,
+        auto_review_policy: dict[str, Any] | None = None,
     ) -> None:
         self.store = store
         self.engine = engine
@@ -66,6 +68,8 @@ class TaskService:
                 ]
             )
         )
+        self.auto_review = auto_review
+        self.auto_review_policy = auto_review_policy or {}
         checkpoint_db_path = str(Path(self.store.root_dir) / "checkpoints.db")
         self.graph = build_graph(
             engine,
@@ -73,6 +77,8 @@ class TaskService:
             model_catalog=self.model_catalog,
             history_loader=self._load_message_history,
             checkpoint_db_path=checkpoint_db_path,
+            auto_review=auto_review,
+            auto_review_policy=self.auto_review_policy,
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
@@ -276,6 +282,7 @@ class TaskService:
     def get_review(self, task_id: str) -> ReviewResponse:
         task = self.store.get(task_id)
         review = task.pending_review
+        auto_review_trace = task.auto_review_trace or []
         if review is None:
             if task.story_plan is None:
                 raise ValueError("当前任务还没有可审核的内容。")
@@ -289,6 +296,7 @@ class TaskService:
                 outline_markdown=self._outline_markdown(task.story_plan),
                 outline_md_ref=outline_ref,
                 review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
             )
 
         review_type = review.type
@@ -314,6 +322,7 @@ class TaskService:
                 outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
                 outline_md_ref=outline_ref,
                 review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
                 chapter_pair=chapter_index,
                 batch_index=review.batch_index,
                 completed_count=review.completed_count,
@@ -331,6 +340,7 @@ class TaskService:
                 outline_markdown=None,
                 outline_md_ref=None,
                 review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
                 verification_report=review.verification_report,
                 verification_revision_count=review.verification_revision_count,
             )
@@ -345,6 +355,7 @@ class TaskService:
             outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
             outline_md_ref=outline_ref,
             review_history=self._review_history(task),
+            auto_review_trace=auto_review_trace,
         )
 
     def get_result(self, task_id: str) -> ResultResponse:
@@ -412,7 +423,7 @@ class TaskService:
         }
 
     def _config(self, task_id: str) -> dict[str, Any]:
-        return {"configurable": {"thread_id": task_id}}
+        return {"configurable": {"thread_id": task_id}, "recursion_limit": 100}
 
     def _sync_result(
         self,
@@ -452,12 +463,13 @@ class TaskService:
             story_plan_data = values.get("story_plan")
             review = ReviewPayload.model_validate(result["__interrupt__"][0].value)
             review_type = review.type
+            auto_review_trace = values.get("auto_review_trace") or []
 
             if review_type == "outline_review":
                 if not story_plan_data:
                     raise RuntimeError("工作流进入审核前未生成可用大纲。")
                 story_plan = StoryPlan.model_validate(story_plan_data)
-                record = self.store.set_waiting_review(task_id, review, story_plan)
+                record = self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
                 self._emit_trace_summary(
                     task_id,
                     kind="outline",
@@ -476,7 +488,7 @@ class TaskService:
                 review.batch_index = batch_index
                 review.completed_count = len(completed)
                 review.total_chapters = len(chapter_plan)
-                record = self.store.set_waiting_chapter_review(task_id, review)
+                record = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",
@@ -489,7 +501,7 @@ class TaskService:
             elif review_type == "verification_review":
                 verification_report = values.get("verification_report") or {}
                 review.verification_report = verification_report
-                record = self.store.set_waiting_verification_review(task_id, review)
+                record = self.store.set_waiting_verification_review(task_id, review, auto_review_trace)
                 self._emit_trace_summary(
                     task_id,
                     kind="verification",
@@ -503,7 +515,7 @@ class TaskService:
             if not story_plan_data:
                 raise RuntimeError("工作流进入审核前未生成可用大纲。")
             story_plan = StoryPlan.model_validate(story_plan_data)
-            return self.store.set_waiting_review(task_id, review, story_plan)
+            return self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
 
         # 工作流正常结束
         story_plan_data = values.get("story_plan")

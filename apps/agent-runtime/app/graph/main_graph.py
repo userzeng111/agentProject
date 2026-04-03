@@ -10,6 +10,8 @@ from langgraph.types import interrupt
 
 from app.context.manager import ContextManager
 from app.context.models import ModelContextProfile, ReferenceMaterial
+from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewMode, ReviewPayload
+from app.llm.auto_reviewer import AutoReviewManager
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 
@@ -62,6 +64,10 @@ class WorkflowState(TypedDict, total=False):
     cancelled: bool
     # 最终结果
     draft_result: dict[str, Any]
+    # 自动审核 [NEW]
+    auto_review: bool
+    auto_review_policy: dict[str, Any]
+    auto_review_trace: list[dict[str, Any]]
 
 
 MAX_OUTLINE_REVISIONS = 5
@@ -75,10 +81,18 @@ def build_graph(
     model_catalog: ModelCatalogService | None = None,
     history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
     checkpoint_db_path: str | Path | None = None,
+    auto_review: bool = False,
+    auto_review_policy: dict[str, Any] | None = None,
 ):
     active_context_manager = context_manager or ContextManager()
     active_model_catalog = model_catalog
     active_history_loader = history_loader
+    # 自动审核编排器
+    auto_review_manager: AutoReviewManager | None = None
+    if auto_review:
+        auto_review_manager = AutoReviewManager(
+            gateway_client=engine.gateway_client,
+        )
 
     # ─────────────────────────────────────────────
     # 节点定义
@@ -86,6 +100,7 @@ def build_graph(
 
     def normalize_request(state: WorkflowState) -> WorkflowState:
         payload = state["input_payload"]
+        policy = auto_review_policy or {}
         return {
             "normalized_spec": {
                 "mode": payload["mode"],
@@ -101,6 +116,9 @@ def build_graph(
             "batch_index": 0,
             "chapter_pair_revision_count": 0,
             "verification_revision_count": 0,
+            "auto_review": auto_review,
+            "auto_review_policy": policy,
+            "auto_review_trace": [],
         }
 
     def prepare_outline_context(state: WorkflowState) -> WorkflowState:
@@ -133,6 +151,44 @@ def build_graph(
         }
 
     def review_outline(state: WorkflowState) -> WorkflowState:
+        # 自动审核模式
+        if state.get("auto_review") and auto_review_manager is not None:
+            try:
+                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+                story_plan_dict = state.get("story_plan") or {}
+                from app.domain.models import StoryPlan as SP
+                sp = SP.model_validate(story_plan_dict)
+                payload = ReviewPayload(
+                    type="outline_review",
+                    summary="请确认大纲是否可以进入正文起草。",
+                    story_plan=sp,
+                    risk_flags=[
+                        "demo 版本，大纲以稳定展示工作流为优先。",
+                        "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
+                    ],
+                    revision_count=state.get("outline_revision_count", 0),
+                )
+                # 注入额外上下文
+                payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
+                payload._genre = state.get("normalized_spec", {}).get("genre", "")
+                payload._style = state.get("normalized_spec", {}).get("style", "")
+                payload._target_words = state.get("normalized_spec", {}).get("target_words", "")
+
+                decision = auto_review_manager.review(payload, policy)
+                trace = [a.model_dump() for a in decision.agent_trace]
+                return {
+                    "approved": decision.approved,
+                    "review_comment": decision.comment,
+                    "auto_review_trace": trace,
+                }
+            except Exception as e:
+                # 自动审核失败时，降级为人工审核
+                return {
+                    "approved": False,
+                    "review_comment": f"自动审核异常: {e}，请人工介入。",
+                    "auto_review_trace": [],
+                }
+        # 人工审核模式（保持现有逻辑）
         review = interrupt(
             {
                 "type": "outline_review",
@@ -214,6 +270,45 @@ def build_graph(
         }
 
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
+        # 自动审核模式
+        if state.get("auto_review") and auto_review_manager is not None:
+            try:
+                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+                story_plan_dict = state.get("story_plan")
+                sp = None
+                if story_plan_dict:
+                    from app.domain.models import StoryPlan as SP
+                    sp = SP.model_validate(story_plan_dict)
+                chapters = state.get("current_chapter_pair") or []
+                payload = ReviewPayload(
+                    type="chapter_pair_review",
+                    summary="请审核这对章节是否符合大纲要求。",
+                    story_plan=sp,
+                    batch_index=state.get("batch_index", 0),
+                    chapter_pair=chapters,
+                    completed_count=state.get("completed_count", 0),
+                    total_chapters=state.get("total_chapters", 0),
+                    chapter_pair_revision_count=state.get("chapter_pair_revision_count", 0),
+                )
+                payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
+                payload._completed_summaries = [
+                    f"{ch.get('title', '')}:{ch.get('summary', '')}"
+                    for ch in (state.get("completed_chapters") or [])
+                ]
+                decision = auto_review_manager.review(payload, policy)
+                trace = [a.model_dump() for a in decision.agent_trace]
+                return {
+                    "approved": decision.approved,
+                    "review_comment": decision.comment,
+                    "auto_review_trace": trace,
+                }
+            except Exception as e:
+                return {
+                    "approved": False,
+                    "review_comment": f"自动审核异常: {e}，请人工介入。",
+                    "auto_review_trace": [],
+                }
+        # 人工审核模式
         review = interrupt(
             {
                 "type": "chapter_pair_review",
@@ -273,6 +368,36 @@ def build_graph(
         return {"verification_report": report}
 
     def review_verification(state: WorkflowState) -> WorkflowState:
+        # 自动审核模式
+        if state.get("auto_review") and auto_review_manager is not None:
+            try:
+                policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
+                story_plan_dict = state.get("story_plan")
+                sp = None
+                if story_plan_dict:
+                    from app.domain.models import StoryPlan as SP
+                    sp = SP.model_validate(story_plan_dict)
+                payload = ReviewPayload(
+                    type="verification_review",
+                    summary="请审核全文一致性验证报告。",
+                    story_plan=sp,
+                    verification_report=state.get("verification_report", {}),
+                    verification_revision_count=state.get("verification_revision_count", 0),
+                )
+                decision = auto_review_manager.review(payload, policy)
+                trace = [a.model_dump() for a in decision.agent_trace]
+                return {
+                    "approved": decision.approved,
+                    "review_comment": decision.comment,
+                    "auto_review_trace": trace,
+                }
+            except Exception as e:
+                return {
+                    "approved": False,
+                    "review_comment": f"自动审核异常: {e}，请人工介入。",
+                    "auto_review_trace": [],
+                }
+        # 人工审核模式
         review = interrupt(
             {
                 "type": "verification_review",

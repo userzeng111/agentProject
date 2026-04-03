@@ -27,6 +27,19 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("LLM_API_KEY"),
     )
+    # 自动审核配置
+    auto_review: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("AUTO_REVIEW"),
+    )
+    auto_review_auditor_model: str = Field(
+        default="MiniMax-M2.7-highspeed",
+        validation_alias=AliasChoices("AUTO_REVIEW_AUDITOR_MODEL"),
+    )
+    auto_review_synthesis_model: str = Field(
+        default="MiniMax-M2.7-highspeed",
+        validation_alias=AliasChoices("AUTO_REVIEW_SYNTHESIS_MODEL"),
+    )
 
     model_config = SettingsConfigDict(
         env_file=RUNTIME_ENV_FILE,

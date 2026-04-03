@@ -13,7 +13,17 @@ settings = get_settings()
 store = TaskLogStore(root_dir=settings.tasklog_root)
 engine = StoryEngine(settings)
 model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
-task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+auto_review_policy = {
+    "auditor_model": settings.auto_review_auditor_model,
+    "synthesis_model": settings.auto_review_synthesis_model,
+}
+task_service = TaskService(
+    store=store,
+    engine=engine,
+    model_catalog=model_catalog,
+    auto_review=settings.auto_review,
+    auto_review_policy=auto_review_policy,
+)
 
 app = FastAPI(title=settings.app_name)
 app.add_middleware(
