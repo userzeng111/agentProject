@@ -95,7 +95,6 @@ doc/
 .codex/
 .venv/
 __pycache__/
-worklog/
 node_modules/
 .next/
 apps/web/node_modules/

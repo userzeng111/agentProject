@@ -11,17 +11,21 @@ import {
   Card,
   CardContent,
   Chip,
+  Collapse,
   Container,
   Divider,
+  IconButton,
   List,
   ListItem,
   ListItemText,
   LinearProgress,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
+  ExpandMore as ExpandMoreIcon,
   NavigateNext as NavigateNextIcon,
   CheckCircle as CheckCircleIcon,
   Edit as EditIcon,
@@ -29,9 +33,13 @@ import {
   MenuBook as MenuBookIcon,
   Article as ArticleIcon,
   Verified as VerifiedIcon,
+  AutoAwesome as AutoAwesomeIcon,
+  Warning as WarningIcon,
+  Error as ErrorIcon,
+  Check as CheckIcon,
 } from "@mui/icons-material";
 import { fetchTextRef, getReview, resumeTask } from "@/lib/api";
-import { ReviewResponse } from "@/lib/types";
+import { AgentTraceItem, ReviewResponse } from "@/lib/types";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -144,6 +152,270 @@ function ReviewHistory({ history }: { history: ReviewResponse["review_history"] 
   );
 }
 
+/** Agent 执行追踪面板 [NEW] */
+function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  if (!trace || trace.length === 0) return null;
+
+  const visibleAgents = showAll ? trace : trace.slice(0, 3);
+  const hasMore = trace.length > 3;
+
+  // 统计汇总
+  const totalScore = trace.reduce((sum, a) => sum + (a.score ?? 0), 0);
+  const avgScore = trace.length > 0 ? Math.round(totalScore / trace.length) : 0;
+  const completedCount = trace.filter((a) => a.status === "completed").length;
+  const failedCount = trace.filter((a) => a.status === "failed").length;
+
+  function getScoreColor(score: number | undefined) {
+    if (score === undefined) return "default";
+    if (score >= 80) return "success";
+    if (score >= 60) return "warning";
+    return "error";
+  }
+
+  function getStatusIcon(status: string) {
+    if (status === "completed") return <CheckCircleIcon fontSize="small" color="success" />;
+    if (status === "failed") return <ErrorIcon fontSize="small" color="error" />;
+    if (status === "running") return <AutoAwesomeIcon fontSize="small" color="info" />;
+    return <WarningIcon fontSize="small" color="disabled" />;
+  }
+
+  return (
+    <Card sx={{ border: "1px solid", borderColor: "divider" }}>
+      <CardContent sx={{ pb: 1 }}>
+        {/* 头部 */}
+        <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <AutoAwesomeIcon fontSize="small" color="primary" />
+            <Typography variant="subtitle1" fontWeight={600}>
+              Agent 审核追踪
+            </Typography>
+            <Chip
+              label={`${trace.length} 个 Agent`}
+              size="small"
+              color="primary"
+              variant="outlined"
+            />
+            {failedCount > 0 && (
+              <Chip label={`${failedCount} 个失败`} size="small" color="error" variant="outlined" />
+            )}
+          </Stack>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <Chip
+              label={`平均 ${avgScore} 分`}
+              size="small"
+              color={getScoreColor(avgScore)}
+              variant="filled"
+            />
+            <Chip
+              label={`${completedCount}/${trace.length} 完成`}
+              size="small"
+              variant="outlined"
+            />
+            <Tooltip title={expanded ? "收起详情" : "展开详情"}>
+              <IconButton
+                size="small"
+                onClick={() => setExpanded(expanded ? null : "all")}
+              >
+                <ExpandMoreIcon
+                  sx={{
+                    transform: expanded === "all" ? "rotate(180deg)" : "rotate(0deg)",
+                    transition: "0.2s",
+                  }}
+                />
+              </IconButton>
+            </Tooltip>
+          </Stack>
+        </Stack>
+
+        {/* Agent 列表 */}
+        {visibleAgents.map((agent, index) => {
+          const isExpanded = expanded === `agent-${index}`;
+          const issues = agent.issues ?? [];
+          const criticalIssues = issues.filter((i: any) => i.severity === "critical");
+          const warnings = issues.filter((i: any) => i.severity === "warning");
+
+          return (
+            <Box key={agent.agent_id || index} sx={{ mb: 1 }}>
+              {/* Agent 行 */}
+              <Box
+                sx={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 1,
+                  px: 1.5,
+                  py: 1,
+                  borderRadius: 1,
+                  bgcolor: "background.default",
+                  cursor: "pointer",
+                  "&:hover": { bgcolor: "action.hover" },
+                }}
+                onClick={() => setExpanded(isExpanded ? null : `agent-${index}`)}
+              >
+                {getStatusIcon(agent.status)}
+                <Typography variant="body2" fontWeight={500} sx={{ flex: 1 }}>
+                  {agent.agent_name}
+                </Typography>
+                {agent.score !== undefined && agent.score !== null && (
+                  <Chip
+                    label={`${agent.score} 分`}
+                    size="small"
+                    color={getScoreColor(agent.score)}
+                    sx={{ minWidth: 52 }}
+                  />
+                )}
+                {criticalIssues.length > 0 && (
+                  <Chip
+                    label={`${criticalIssues.length} 严重`}
+                    size="small"
+                    color="error"
+                    variant="outlined"
+                  />
+                )}
+                {warnings.length > 0 && (
+                  <Chip
+                    label={`${warnings.length} 警告`}
+                    size="small"
+                    color="warning"
+                    variant="outlined"
+                  />
+                )}
+                <IconButton size="small">
+                  <ExpandMoreIcon
+                    sx={{
+                      fontSize: 18,
+                      transform: isExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                      transition: "0.2s",
+                    }}
+                  />
+                </IconButton>
+              </Box>
+
+              {/* 展开详情 */}
+              <Collapse in={isExpanded}>
+                <Box sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
+                  {/* 维度标签 */}
+                  <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
+                    <Chip label={agent.role} size="small" variant="outlined" />
+                    <Chip label={agent.status} size="small" variant="outlined" />
+                    {agent.duration_ms && (
+                      <Chip label={`${Math.round(agent.duration_ms / 1000)}s`} size="small" variant="outlined" />
+                    )}
+                  </Stack>
+
+                  {/* 推理过程 */}
+                  {agent.reasoning && (
+                    <Box sx={{ mb: 1 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+                        推理过程
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        sx={{ fontSize: 13, color: "text.secondary", lineHeight: 1.6 }}
+                      >
+                        {agent.reasoning.length > 300
+                          ? agent.reasoning.slice(0, 300) + "…"
+                          : agent.reasoning}
+                      </Typography>
+                    </Box>
+                  )}
+
+                  {/* 严重问题 */}
+                  {criticalIssues.length > 0 && (
+                    <Box sx={{ mb: 1 }}>
+                      <Typography variant="caption" color="error.main" sx={{ display: "block", mb: 0.25 }}>
+                        严重问题
+                      </Typography>
+                      <Stack spacing={0.5}>
+                        {criticalIssues.map((issue: any, i: number) => (
+                          <Alert severity="error" key={i} sx={{ py: 0.5, fontSize: 12 }}>
+                            <Typography variant="body2" fontSize={12}>
+                              [{issue.location || issue.dimension || "general"}] {issue.description}
+                            </Typography>
+                            {issue.suggestion && (
+                              <Typography variant="caption" color="text.secondary" fontSize={11}>
+                                建议：{issue.suggestion}
+                              </Typography>
+                            )}
+                          </Alert>
+                        ))}
+                      </Stack>
+                    </Box>
+                  )}
+
+                  {/* 警告项 */}
+                  {warnings.length > 0 && (
+                    <Box sx={{ mb: 1 }}>
+                      <Typography variant="caption" color="warning.main" sx={{ display: "block", mb: 0.25 }}>
+                        警告项
+                      </Typography>
+                      <Stack spacing={0.5}>
+                        {warnings.map((warning: any, i: number) => (
+                          <Alert severity="warning" key={i} sx={{ py: 0.5, fontSize: 12 }}>
+                            <Typography variant="body2" fontSize={12}>
+                              {warning.description}
+                            </Typography>
+                            {warning.suggestion && (
+                              <Typography variant="caption" color="text.secondary" fontSize={11}>
+                                建议：{warning.suggestion}
+                              </Typography>
+                            )}
+                          </Alert>
+                        ))}
+                      </Stack>
+                    </Box>
+                  )}
+
+                  {/* 亮点 */}
+                  {agent.highlights && agent.highlights.length > 0 && (
+                    <Box>
+                      <Typography variant="caption" color="success.main" sx={{ display: "block", mb: 0.25 }}>
+                        亮点
+                      </Typography>
+                      <Stack spacing={0.5}>
+                        {agent.highlights.map((h: string, i: number) => (
+                          <Box key={i} sx={{ display: "flex", alignItems: "flex-start", gap: 0.5 }}>
+                            <CheckIcon sx={{ fontSize: 14, color: "success.main", mt: 0.3 }} />
+                            <Typography variant="body2" fontSize={12} color="text.secondary">
+                              {h}
+                            </Typography>
+                          </Box>
+                        ))}
+                      </Stack>
+                    </Box>
+                  )}
+
+                  {/* 错误信息 */}
+                  {agent.error && (
+                    <Alert severity="error" sx={{ mt: 1 }}>
+                      <Typography variant="body2" fontSize={12}>
+                        错误：{agent.error}
+                      </Typography>
+                    </Alert>
+                  )}
+                </Box>
+              </Collapse>
+            </Box>
+          );
+        })}
+
+        {/* 查看更多 */}
+        {hasMore && !showAll && (
+          <Button
+            size="small"
+            onClick={() => setShowAll(true)}
+            sx={{ ml: 2, mt: 0.5 }}
+          >
+            查看全部 {trace.length} 个 Agent
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function OutlineReview({
   review,
   outlineMarkdown,
@@ -173,6 +445,9 @@ function OutlineReview({
         <Chip label={`审核第 ${revisionCount + 1} 轮`} size="small" variant="outlined" />
         <Chip label={review.review_type} size="small" variant="outlined" />
       </Stack>
+
+      {/* Agent 审核追踪面板 */}
+      <AgentTracePanel trace={review.auto_review_trace ?? []} />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
@@ -288,6 +563,9 @@ function ChapterPairReview({
         )}
       </Stack>
 
+      {/* Agent 审核追踪面板 */}
+      <AgentTracePanel trace={review.auto_review_trace ?? []} />
+
       {error ? <Alert severity="error">{error}</Alert> : null}
 
       <Card>
@@ -399,6 +677,9 @@ function VerificationReview({
           <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
         )}
       </Stack>
+
+      {/* Agent 审核追踪面板 */}
+      <AgentTracePanel trace={review.auto_review_trace ?? []} />
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
