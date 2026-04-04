@@ -954,7 +954,7 @@ class AutoReviewManager:
         )
 
     def _call_llm(self, prompt: str, model: str | None) -> str:
-        """调用 LLM"""
+        """调用 LLM（流式），同时支持思考链透传。"""
         if self.gateway_client is None:
             raise GatewayClientError(
                 "AutoReviewManager 需要有效的 gateway_client 才能执行自动审核。"
@@ -966,10 +966,24 @@ class AutoReviewManager:
         attempt_messages = messages
         for attempt in range(2):
             try:
-                response = self.gateway_client.complete_json(
+                # 流式调用，累积 content 后解析 JSON
+                full_content = ""
+                for chunk in self.gateway_client.complete_stream_sync(
                     attempt_messages,
                     model=model or self.default_model,
-                )
+                ):
+                    if chunk.content:
+                        full_content += chunk.content
+                # 解析 JSON
+                cleaned = self.gateway_client._strip_markdown_fences(full_content)
+                try:
+                    response = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    extracted = self.gateway_client._extract_first_json_value(cleaned)
+                    if extracted is not None:
+                        response = extracted
+                    else:
+                        raise GatewayClientError(f"自动审核返回的 JSON 无法解析：{full_content[:240]}")
                 return json.dumps(response, ensure_ascii=False)
             except GatewayClientError:
                 if attempt == 1:
