@@ -210,41 +210,61 @@ export async function streamChat(
     return;
   }
 
-  const reader = response.body!.getReader();
+  if (!response.body) {
+    onError("响应体为空");
+    return;
+  }
+
+  const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
 
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      if (trimmed.startsWith("event:")) continue;
-      if (trimmed.startsWith("data:")) {
-        const jsonStr = trimmed.slice(5).trim();
-        try {
-          const data = JSON.parse(jsonStr);
-          if (data.content !== undefined || data.reasoning_content !== undefined) {
-            onChunk(data);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("event:")) {
+          // 检查错误事件类型
+          const eventType = trimmed.slice(6).trim();
+          if (eventType === "chat.error") {
+            // 下一个 data: 行包含错误信息
           }
-          if (data.finish_reason) {
-            onChunk(data);
+          continue;
+        }
+        if (trimmed.startsWith("data:")) {
+          const jsonStr = trimmed.slice(5).trim();
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.error) {
+              onError(typeof data.error === "string" ? data.error : JSON.stringify(data.error));
+              return;
+            }
+            if (data.content !== undefined || data.reasoning_content !== undefined) {
+              onChunk(data);
+            }
+            if (data.finish_reason) {
+              onChunk(data);
+            }
+            if (data.usage) {
+              onChunk(data);
+            }
+          } catch {
+            // 忽略解析失败的行
           }
-          if (data.usage) {
-            onChunk(data);
-          }
-        } catch {
-          // 忽略解析失败的行
         }
       }
     }
-  }
 
-  onDone({ model: model ?? "" });
+    onDone({ model: model ?? "" });
+  } catch (err) {
+    onError(err instanceof Error ? err.message : "流式读取中断");
+  }
 }
