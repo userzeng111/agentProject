@@ -497,6 +497,7 @@ class StoryEngine:
     ) -> list[ChapterDraft]:
         """根据用户修订意见重新生成章节对。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         title = story_plan.get("working_title", "")
@@ -542,6 +543,7 @@ class StoryEngine:
     ) -> dict[str, Any]:
         """全文一致性验证，返回问题清单和评分。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         title = story_plan.get("working_title", "")
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
@@ -581,6 +583,7 @@ class StoryEngine:
     ) -> list[dict[str, Any]]:
         """根据验证意见修复章节问题。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         title = story_plan.get("working_title", "")
         summary = story_plan.get("logline", "")

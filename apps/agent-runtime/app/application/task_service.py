@@ -1185,8 +1185,13 @@ class TaskService:
         def runner() -> None:
             try:
                 target(*args)
-            except Exception:
-                return
+            except Exception as exc:
+                # 尝试标记任务为失败，防止永久卡在运行状态
+                try:
+                    self.store.set_failed(task_id, f"后台任务异常：{exc}")
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
 
         threading.Thread(
             target=runner,

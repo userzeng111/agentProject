@@ -421,7 +421,11 @@ def build_graph(
         current_pair = state.get("current_chapter_pair") or []
         completed_chapters = list(state.get("completed_chapters") or [])
         completed_chapters.extend(current_pair)
+        total_chapters = len((state.get("story_plan") or {}).get("chapter_plan") or [])
         batch_index = state.get("batch_index", 0) + len(current_pair)
+        # 安全推进：如果 current_pair 为空则 batch_index 不增加，避免无限循环
+        if batch_index >= total_chapters:
+            batch_index = total_chapters
         return {
             "completed_chapters": completed_chapters,
             "batch_index": batch_index,

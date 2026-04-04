@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,8 @@ from app.domain.models import (
 
 class TaskNotFoundError(Exception):
     pass
+
+logger = logging.getLogger(__name__)
 
 
 class TaskLogStore:
@@ -405,10 +408,15 @@ class TaskLogStore:
                     snapshot_path = task_dir / "task.json"
                 if not snapshot_path.exists():
                     continue
-                data = json.loads(snapshot_path.read_text(encoding="utf-8"))
-                task = TaskRecord.model_validate(data)
-                task.storage_state = storage_state
-                self._tasks[task.id] = task
+                try:
+                    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                    task = TaskRecord.model_validate(data)
+                    task.storage_state = storage_state
+                    self._tasks[task.id] = task
+                except json.JSONDecodeError:
+                    logger.warning("跳过损坏的任务快照 %s: JSON 解析失败", snapshot_path)
+                except Exception:
+                    logger.warning("跳过无法加载的任务 %s", snapshot_path)
 
     def _write_specs(self) -> None:
         specs = {

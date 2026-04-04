@@ -221,7 +221,7 @@ class OpenAICompatibleGatewayClient:
         messages: list[dict[str, str]],
         model: str | None = None,
     ) -> Generator[StreamChunk, None, None]:
-        """同步流式调用 /chat/completions，逐 chunk yield StreamChunk。5xx 自动重试。"""
+        """同步流式调用 /chat/completions，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
         payload = {
             "model": model or self.model,
             "messages": messages,
@@ -229,56 +229,68 @@ class OpenAICompatibleGatewayClient:
         }
         timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
 
+        last_stream_error: Exception | None = None
         for attempt in range(3):
-            with httpx.Client(timeout=timeout_cfg, trust_env=False) as client:
-                with client.stream(
-                    "POST",
-                    f"{self.base_url}/chat/completions",
-                    headers=self.headers,
-                    json=payload,
-                ) as response:
-                    if response.status_code >= 500:
-                        body = response.read()
-                        if attempt < 2:
-                            sleep(1.5 * (attempt + 1))
-                            continue
-                        raise GatewayClientError(
-                            f"同步流式调用失败（已重试 {attempt + 1} 次），状态码 {response.status_code}，"
-                            f"响应：{body.decode('utf-8', errors='replace')[:240]}"
-                        )
-                    if response.status_code >= 400:
-                        body = response.read()
-                        raise GatewayClientError(
-                            f"同步流式调用失败，状态码 {response.status_code}，"
-                            f"响应：{body.decode('utf-8', errors='replace')[:240]}"
-                        )
-                    for raw_line in response.iter_lines():
-                        line = raw_line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if data_str == "[DONE]":
-                            return
-                        try:
-                            chunk_data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        choices = chunk_data.get("choices") or []
-                        if not choices:
-                            usage = chunk_data.get("usage")
-                            if usage:
-                                yield StreamChunk(usage=usage)
-                            continue
-                        choice = choices[0]
-                        delta = choice.get("delta") or {}
-                        content = delta.get("content") or ""
-                        reasoning = delta.get("reasoning_content") or ""
-                        finish_reason = choice.get("finish_reason")
-                        chunk_model = chunk_data.get("model", "")
-                        yield StreamChunk(
-                            content=content,
-                            reasoning_content=reasoning,
-                            finish_reason=finish_reason,
-                            model=chunk_model,
-                        )
-                    return  # 成功完成，退出重试循环
+            try:
+                with httpx.Client(timeout=timeout_cfg, trust_env=False) as client:
+                    with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers=self.headers,
+                        json=payload,
+                    ) as response:
+                        if response.status_code >= 500:
+                            body = response.read()
+                            if attempt < 2:
+                                sleep(1.5 * (attempt + 1))
+                                continue
+                            raise GatewayClientError(
+                                f"同步流式调用失败（已重试 {attempt + 1} 次），状态码 {response.status_code}，"
+                                f"响应：{body.decode('utf-8', errors='replace')[:240]}"
+                            )
+                        if response.status_code >= 400:
+                            body = response.read()
+                            raise GatewayClientError(
+                                f"同步流式调用失败，状态码 {response.status_code}，"
+                                f"响应：{body.decode('utf-8', errors='replace')[:240]}"
+                            )
+                        for raw_line in response.iter_lines():
+                            line = raw_line.strip()
+                            if not line or not line.startswith("data:"):
+                                continue
+                            data_str = line[len("data:"):].strip()
+                            if data_str == "[DONE]":
+                                return
+                            try:
+                                chunk_data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+                            choices = chunk_data.get("choices") or []
+                            if not choices:
+                                usage = chunk_data.get("usage")
+                                if usage:
+                                    yield StreamChunk(usage=usage)
+                                continue
+                            choice = choices[0]
+                            delta = choice.get("delta") or {}
+                            content = delta.get("content") or ""
+                            reasoning = delta.get("reasoning_content") or ""
+                            finish_reason = choice.get("finish_reason")
+                            chunk_model = chunk_data.get("model", "")
+                            yield StreamChunk(
+                                content=content,
+                                reasoning_content=reasoning,
+                                finish_reason=finish_reason,
+                                model=chunk_model,
+                            )
+                        return  # 成功完成，退出重试循环
+            except httpx.HTTPError as exc:
+                last_stream_error = exc
+                if attempt < 2:
+                    sleep(1.5 * (attempt + 1))
+                    continue
+                raise GatewayClientError(
+                    f"同步流式调用网络失败（已重试 {attempt + 1} 次）：{exc}"
+                ) from exc
+        # 理论上不可达
+        raise GatewayClientError(f"同步流式调用失败：{last_stream_error}")
