@@ -12,9 +12,11 @@ import {
   CardContent,
   Chip,
   Container,
+  FormControlLabel,
   MenuItem,
   Skeleton,
   Stack,
+  Switch,
   TextField,
   Typography,
 } from "@mui/material";
@@ -32,6 +34,7 @@ const defaultPayload: TaskCreatePayload = {
   banned: "",
   title_hint: "",
   model_id: "",
+  auto_review: true,
 };
 
 const modeOptions: { value: TaskMode; label: string }[] = [
@@ -316,6 +319,35 @@ export default function CreateTaskClient() {
               <TextField label="标题倾向" value={payload.title_hint} onChange={updateField("title_hint")} />
               <TextField label="目标读者" value={payload.audience} onChange={updateField("audience")} />
               <TextField label="禁忌要求" value={payload.banned} onChange={updateField("banned")} />
+            </Box>
+
+            <Box
+              sx={{
+                p: 2,
+                borderRadius: 2,
+                border: "1px solid",
+                borderColor: "divider",
+                backgroundColor: "rgba(39, 100, 81, 0.03)",
+              }}
+            >
+              <Stack direction="row" spacing={2} alignItems="center">
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={payload.auto_review ?? true}
+                      onChange={(e) =>
+                        setPayload((curr) => ({ ...curr, auto_review: e.target.checked }))
+                      }
+                      color="primary"
+                    />
+                  }
+                  label="启用自动审核"
+                  sx={{ flex: 1 }}
+                />
+                <Typography variant="body2" color="text.secondary">
+                  开启后，大纲/章节/验证阶段将自动通过 AI 审核流转，无需人工介入
+                </Typography>
+              </Stack>
             </Box>
 
             <Stack spacing={1}>

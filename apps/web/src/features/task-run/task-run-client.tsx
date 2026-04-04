@@ -34,7 +34,11 @@ import {
   PlayArrow as PlayIcon,
   MenuBook as MenuBookIcon,
   Close as CloseIcon,
+  Psychology as ThinkIcon,
+  ExpandMore as ExpandIcon,
+  ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
+import { Collapse, CircularProgress, Tooltip } from "@mui/material";
 import { getApiBase, getCurrentChapters, getWorkspace, runTask } from "@/lib/api";
 import {
   ContextStatus,
@@ -256,7 +260,43 @@ function buildChapterProgress(events: WorkspaceEvent[]) {
 }
 
 function buildSystemStages(events: WorkspaceEvent[]) {
-  return events.filter((event) => !event.event_type.startsWith("chapter.")).slice(-10);
+  return events.filter((event) => !event.event_type.startsWith("chapter.") && event.event_type !== "model.thinking").slice(-10);
+}
+
+interface ThinkingGroup {
+  unitId: string;
+  stage: string;
+  content: string;
+  lastUpdatedAt: string;
+  isActive: boolean;
+}
+
+function buildThinkingGroups(events: WorkspaceEvent[]): ThinkingGroup[] {
+  const thinkingEvents = events.filter((event) => event.event_type === "model.thinking");
+  if (!thinkingEvents.length) return [];
+
+  const groupMap = new Map<string, ThinkingGroup>();
+  for (const event of thinkingEvents) {
+    const key = event.unit_id || "default";
+    const existing = groupMap.get(key);
+    const chunk = event.payload?.reasoning_chunk || "";
+    const isLast = event === thinkingEvents[thinkingEvents.length - 1];
+    groupMap.set(key, {
+      unitId: key,
+      stage: event.stage || "",
+      content: (existing?.content || "") + chunk,
+      lastUpdatedAt: event.created_at,
+      isActive: isLast,
+    });
+  }
+
+  // 只保留最后一个活跃的思考组（正在思考的）
+  const groups = Array.from(groupMap.values());
+  const lastGroup = groups[groups.length - 1];
+  if (lastGroup) {
+    lastGroup.isActive = true;
+  }
+  return groups;
 }
 
 export default function TaskRunClient({ taskId }: { taskId: string }) {
@@ -268,6 +308,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const [activeTab, setActiveTab] = useState(0);
   const [chapterDialogOpen, setChapterDialogOpen] = useState(false);
   const [selectedChapter, setSelectedChapter] = useState<{ number: number; title: string; summary: string; content: string } | null>(null);
+  const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
@@ -413,6 +454,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const systemStages = buildSystemStages(workspace.recent_events);
   const chapterProgress = buildChapterProgress(workspace.recent_events);
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
+  const thinkingGroups = buildThinkingGroups(workspace.recent_events);
   const currentStep = getStepIndex(workspace.meta.status);
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
@@ -628,6 +670,78 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
           {/* Tab 0: 实时日志 */}
           {activeTab === 0 && (
             <Stack spacing={3}>
+              {/* 思考链区域 */}
+              {thinkingGroups.length > 0 && (
+                <Box>
+                  <Typography variant="h6" sx={{ mb: 1.5, display: "flex", alignItems: "center", gap: 1 }}>
+                    <ThinkIcon sx={{ fontSize: 20, color: "primary.main" }} />
+                    模型思考过程
+                  </Typography>
+                  {thinkingGroups.map((group) => {
+                    const key = group.unitId;
+                    const isOpen = expandedThinking[key] ?? false;
+                    const isRunning = group.isActive && ["planning", "drafting", "verification"].includes(workspace.meta.status);
+                    return (
+                      <Box
+                        key={key}
+                        sx={{
+                          mb: 1.5,
+                          borderRadius: 2,
+                          border: "1px solid",
+                          borderColor: isRunning ? "primary.main" : "divider",
+                          bgcolor: isRunning ? "rgba(39, 100, 81, 0.03)" : "background.paper",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <Box
+                          onClick={() => setExpandedThinking((prev) => ({ ...prev, [key]: !prev[key] }))}
+                          sx={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 1,
+                            px: 2,
+                            py: 1,
+                            cursor: "pointer",
+                            "&:hover": { bgcolor: "rgba(0,0,0,0.02)" },
+                            userSelect: "none",
+                          }}
+                        >
+                          <ThinkIcon sx={{ fontSize: 18, color: isRunning ? "primary.main" : "text.secondary" }} />
+                          <Typography variant="body2" sx={{ flex: 1, fontWeight: isRunning ? 600 : 400 }}>
+                            {isRunning ? "正在思考..." : `思考过程 · ${group.stage} · ${group.unitId}`}
+                          </Typography>
+                          {isRunning && <CircularProgress size={14} />}
+                          <Typography variant="caption" color="text.secondary">
+                            {group.content.length} 字
+                          </Typography>
+                          {isOpen ? <CollapseIcon sx={{ fontSize: 16 }} /> : <ExpandIcon sx={{ fontSize: 16 }} />}
+                        </Box>
+                        <Collapse in={isOpen}>
+                          <Box
+                            sx={{
+                              px: 2,
+                              py: 1.5,
+                              maxHeight: 300,
+                              overflowY: "auto",
+                              fontSize: "0.82rem",
+                              color: "text.secondary",
+                              whiteSpace: "pre-wrap",
+                              wordBreak: "break-word",
+                              lineHeight: 1.7,
+                              fontFamily: "monospace",
+                              bgcolor: "rgba(39, 100, 81, 0.02)",
+                              borderTop: "1px dashed rgba(39, 100, 81, 0.1)",
+                            }}
+                          >
+                            {group.content}
+                          </Box>
+                        </Collapse>
+                      </Box>
+                    );
+                  })}
+                  <Divider sx={{ my: 1 }} />
+                </Box>
+              )}
               <Box>
                 <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
                   {streamState}

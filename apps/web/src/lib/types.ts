@@ -26,6 +26,7 @@ export interface TaskInput {
 
 export interface TaskCreatePayload extends TaskInput {
   mode: TaskMode;
+  auto_review?: boolean;
 }
 
 export interface ModelContextWindowCapability {
@@ -191,6 +192,9 @@ export interface WorkspaceEvent {
     detail?: string;
     approved?: boolean;
     comment?: string;
+    // 思考链（model.thinking 事件）
+    reasoning_chunk?: string;
+    accumulated_length?: number;
   };
 }
 
