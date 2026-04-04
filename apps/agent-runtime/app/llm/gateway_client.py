@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from time import sleep
 from typing import Any
 
@@ -191,6 +191,60 @@ class OpenAICompatibleGatewayClient:
                     choices = chunk_data.get("choices") or []
                     if not choices:
                         # 最后一个 usage chunk 可能 choices 为空
+                        usage = chunk_data.get("usage")
+                        if usage:
+                            yield StreamChunk(usage=usage)
+                        continue
+                    choice = choices[0]
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content") or ""
+                    reasoning = delta.get("reasoning_content") or ""
+                    finish_reason = choice.get("finish_reason")
+                    chunk_model = chunk_data.get("model", "")
+                    yield StreamChunk(
+                        content=content,
+                        reasoning_content=reasoning,
+                        finish_reason=finish_reason,
+                        model=chunk_model,
+                    )
+
+    def complete_stream_sync(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+    ) -> Generator[StreamChunk, None, None]:
+        """同步流式调用 /chat/completions，逐 chunk yield StreamChunk。"""
+        payload = {
+            "model": model or self.model,
+            "messages": messages,
+            "stream": True,
+        }
+        timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
+        with httpx.Client(timeout=timeout_cfg, trust_env=False) as client:
+            with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    body = response.read()
+                    raise GatewayClientError(
+                        f"同步流式调用失败，状态码 {response.status_code}，响应：{body.decode('utf-8', errors='replace')[:240]}"
+                    )
+                for raw_line in response.iter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        return
+                    try:
+                        chunk_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk_data.get("choices") or []
+                    if not choices:
                         usage = chunk_data.get("usage")
                         if usage:
                             yield StreamChunk(usage=usage)

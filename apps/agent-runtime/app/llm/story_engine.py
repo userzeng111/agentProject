@@ -341,12 +341,13 @@ class StoryEngine:
                 conversation_history=conversation_history,
                 prompt_messages=self._prompt_to_messages(chapter_prompt_value),
             )
-            chapter_payload, conversation_history = self._complete_json_with_cache(
+            chapter_payload, conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="drafting",
                 exchange_label=f"chapter-{item['number']:02d}",
                 exchange_callback=active_exchange_callback,
+                progress_callback=active_progress_callback,
             )
             chapter_draft = ChapterDraft.model_validate(chapter_payload)
             chapters.append(chapter_draft)
@@ -454,12 +455,13 @@ class StoryEngine:
                 conversation_history=conversation_history,
                 prompt_messages=self._prompt_to_messages(chapter_prompt_value),
             )
-            payload, conversation_history = self._complete_json_with_cache(
+            payload, conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="drafting",
                 exchange_label=f"chapter-{plan['number']:02d}",
                 exchange_callback=active_exchange_callback,
+                progress_callback=active_progress_callback,
             )
             chapter_draft = ChapterDraft.model_validate(payload)
 
@@ -518,12 +520,13 @@ class StoryEngine:
 
         self._require_gateway_client()
         request_messages = self._prompt_to_messages(prompt_value)
-        payload, _ = self._complete_json_with_cache(
+        payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
             stage="drafting",
             exchange_label="chapter-pair-revision",
             exchange_callback=active_exchange_callback,
+            progress_callback=active_progress_callback,
         )
         items = payload if isinstance(payload, list) else [payload]
         return [ChapterDraft.model_validate(item) for item in items]
@@ -555,12 +558,13 @@ class StoryEngine:
 
         self._require_gateway_client()
         request_messages = self._prompt_to_messages(prompt_value)
-        payload, _ = self._complete_json_with_cache(
+        payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
             stage="verification",
             exchange_label="full-story-verification",
             exchange_callback=active_exchange_callback,
+            progress_callback=active_progress_callback,
         )
         return payload
 
@@ -594,12 +598,13 @@ class StoryEngine:
 
         self._require_gateway_client()
         request_messages = self._prompt_to_messages(prompt_value)
-        payload, _ = self._complete_json_with_cache(
+        payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
             stage="verification",
             exchange_label="fix-issues",
             exchange_callback=active_exchange_callback,
+            progress_callback=active_progress_callback,
         )
         items = payload if isinstance(payload, list) else [payload]
         return [dict(ch) for ch in items]
@@ -682,6 +687,106 @@ class StoryEngine:
         )
         return payload, conversation_history
 
+    def _complete_stream_json_with_cache(
+        self,
+        request_messages: list[dict[str, str]],
+        model: str,
+        stage: str,
+        exchange_label: str,
+        exchange_callback: Callable[[dict[str, Any]], None] | None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+        """流式调用 LLM，实时发射思考链事件，最终解析 JSON。
+
+        比 _complete_json_with_cache 多了：
+        - 通过 progress_callback 发射 model.thinking 事件
+        - 流式读取 reasoning_content 并实时推送
+        - 失败时 fallback 到 _complete_json_with_cache
+        """
+        # 缓存命中则直接返回（不发 thinking 事件）
+        cache_key = self._response_cache_key(model=model, request_messages=request_messages)
+        cached_payload = self.response_cache.get(cache_key)
+        if isinstance(cached_payload, dict):
+            conversation_history = self._append_assistant_message(request_messages, cached_payload)
+            self._emit_exchange(
+                callback=exchange_callback,
+                stage=stage,
+                exchange_label=exchange_label,
+                model=model,
+                cache_hit=True,
+                request_messages=request_messages,
+                conversation_history=conversation_history,
+                response_payload=cached_payload,
+                cache_key=cache_key,
+            )
+            return cached_payload, conversation_history
+
+        if self.gateway_client is None:
+            raise GatewayClientError("当前没有可用的模型网关。")
+
+        active_progress = progress_callback or self.progress_callback or _progress_callback_var.get()
+
+        # 流式调用
+        full_content = ""
+        full_reasoning = ""
+        try:
+            for chunk in self.gateway_client.complete_stream_sync(
+                messages=request_messages, model=model,
+            ):
+                # 发射思考链事件
+                if chunk.reasoning_content and active_progress:
+                    full_reasoning += chunk.reasoning_content
+                    active_progress({
+                        "event_type": "model.thinking",
+                        "stage": stage,
+                        "unit_id": exchange_label,
+                        "message": "模型思考中...",
+                        "payload": {
+                            "reasoning_chunk": chunk.reasoning_content,
+                            "accumulated_length": len(full_reasoning),
+                        },
+                    })
+                if chunk.content:
+                    full_content += chunk.content
+        except (GatewayClientError, Exception) as exc:
+            # fallback 到非流式
+            import logging
+            logging.getLogger(__name__).warning("流式调用失败，fallback 到非流式: %s", exc)
+            return self._complete_json_with_cache(
+                request_messages=request_messages,
+                model=model,
+                stage=stage,
+                exchange_label=exchange_label,
+                exchange_callback=exchange_callback,
+            )
+
+        # 解析 JSON
+        gc = self._require_gateway_client()
+        cleaned = gc._strip_markdown_fences(full_content)
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError:
+            extracted = gc._extract_first_json_value(cleaned)
+            if extracted is not None:
+                payload = extracted
+            else:
+                raise GatewayClientError(f"模型返回的 JSON 无法解析：{full_content[:240]}")
+
+        self.response_cache.set(cache_key, payload)
+        conversation_history = self._append_assistant_message(request_messages, payload)
+        self._emit_exchange(
+            callback=exchange_callback,
+            stage=stage,
+            exchange_label=exchange_label,
+            model=model,
+            cache_hit=False,
+            request_messages=request_messages,
+            conversation_history=conversation_history,
+            response_payload=payload,
+            cache_key=cache_key,
+        )
+        return payload, conversation_history
+
     def _build_story_plan_with_retry(
         self,
         request_messages: list[dict[str, str]],
@@ -693,12 +798,13 @@ class StoryEngine:
         attempt_messages = request_messages
         for attempt in range(2):
             try:
-                payload, _ = self._complete_json_with_cache(
+                payload, _ = self._complete_stream_json_with_cache(
                     request_messages=attempt_messages,
                     model=model,
                     stage=stage,
                     exchange_label=exchange_label if attempt == 0 else f"{exchange_label}-retry",
                     exchange_callback=exchange_callback,
+                    progress_callback=None,
                 )
                 return StoryPlan.model_validate(payload)
             except (GatewayClientError, ValidationError) as exc:
