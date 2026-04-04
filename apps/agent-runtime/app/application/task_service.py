@@ -23,6 +23,7 @@ from app.domain.models import (
     SourceAsset,
     StoryPlan,
     TaskCreateRequest,
+    TaskMode,
     TaskRecord,
     TaskStatus,
     TaskSummary,
@@ -30,7 +31,13 @@ from app.domain.models import (
     WorkspaceResponse,
     utc_now,
 )
-from app.graph.main_graph import build_graph
+from app.graph.main_graph import (
+    _build_references,
+    _chapter_pair_instruction,
+    _outline_instruction,
+    _resolve_model_profile,
+    build_graph,
+)
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import (
     StoryEngine,
@@ -430,12 +437,169 @@ class TaskService:
             },
             "reference_text": reference_text,
             "source_assets": [source.model_dump(mode="json") for source in task.sources],
-            "auto_review": task.auto_review,
+            "auto_review": task.auto_review or self.auto_review,
             "auto_review_policy": task.auto_review_policy or dict(self.auto_review_policy),
         }
 
     def _config(self, task_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": task_id}, "recursion_limit": 100}
+
+    def _graph_state_values(self, task_id: str) -> dict[str, Any]:
+        try:
+            snapshot = self.graph.get_state(self._config(task_id))
+        except Exception:
+            return {}
+        return snapshot.values if snapshot and hasattr(snapshot, "values") and isinstance(snapshot.values, dict) else {}
+
+    def _load_context_snapshot(self, task_id: str, *, stage: str, snapshot_name: str) -> dict[str, Any] | None:
+        relative_path = f"context/{stage}/{snapshot_name}.json"
+        try:
+            return self.store.read_json(task_id, relative_path)
+        except Exception:
+            return None
+
+    def _load_completed_chapters_for_resume(self, task_id: str, completed_count: int) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for number in range(1, completed_count + 1):
+            relative_path = f"context/drafting/chapter-{number:02d}-history.json"
+            try:
+                history = self.store.read_json(task_id, relative_path)
+            except Exception:
+                continue
+            messages = history.get("messages") if isinstance(history, dict) else []
+            if not isinstance(messages, list) or not messages:
+                continue
+            assistant_content = str(messages[-1].get("content") or "")
+            if not assistant_content.strip():
+                continue
+            try:
+                payload = ChapterDraft.model_validate_json(assistant_content)
+            except Exception:
+                continue
+            items.append(payload.model_dump(mode="json"))
+        return items
+
+    def _resume_seed_state(self, task: TaskRecord) -> tuple[dict[str, Any], str] | None:
+        if task.pending_review is None:
+            return None
+        seed = self._initial_state(task)
+        if task.normalized_spec:
+            seed["normalized_spec"] = dict(task.normalized_spec)
+        if task.story_plan is not None:
+            seed["story_plan"] = task.story_plan.model_dump(mode="json")
+
+        review = task.pending_review
+        if review.type == "outline_review":
+            outline_snapshot = self._load_context_snapshot(task.id, stage="planning", snapshot_name="outline-context")
+            if isinstance(outline_snapshot, dict):
+                seed["outline_context_snapshot"] = outline_snapshot
+                packet = outline_snapshot.get("packet")
+                if isinstance(packet, dict):
+                    seed["outline_context_packet"] = packet
+            elif task.story_plan is not None:
+                state_for_refs = {
+                    "reference_text": seed.get("reference_text", ""),
+                    "source_assets": seed.get("source_assets", []),
+                }
+                snapshot = self.context_manager.build_snapshot(
+                    task_id=task.id,
+                    stage="planning",
+                    instruction=_outline_instruction(seed.get("normalized_spec") or {}),
+                    model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
+                    references=_build_references(state_for_refs),
+                    memory_items=[],
+                )
+                seed["outline_context_packet"] = snapshot.packet.model_dump(mode="json")
+                seed["outline_context_snapshot"] = snapshot.model_dump(mode="json")
+            seed["outline_revision_count"] = review.revision_count
+            return seed, "plan_story"
+
+        if review.type == "chapter_pair_review":
+            completed_count = review.completed_count or 0
+            completed_chapters = self._load_completed_chapters_for_resume(task.id, completed_count)
+            chapter_pair = [item.model_dump(mode="json") for item in (review.chapter_pair or [])]
+            seed.update(
+                {
+                    "batch_index": review.batch_index or 0,
+                    "total_chapters": review.total_chapters or (len(task.story_plan.chapter_plan) if task.story_plan else 0),
+                    "completed_count": completed_count,
+                    "completed_chapters": completed_chapters,
+                    "current_chapter_pair": chapter_pair,
+                    "chapter_pair_revision_count": review.chapter_pair_revision_count,
+                }
+            )
+            snapshot = self.context_manager.build_snapshot(
+                task_id=task.id,
+                stage="drafting",
+                instruction=_chapter_pair_instruction(seed.get("normalized_spec") or {}, seed.get("story_plan")),
+                model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
+                references=_build_references(
+                    {
+                        "reference_text": seed.get("reference_text", ""),
+                        "source_assets": seed.get("source_assets", []),
+                    }
+                ),
+                memory_items=[
+                    *(f"世界观：{note}" for note in ((seed.get("story_plan") or {}).get("world_notes") or [])),
+                    *(f"人物：{note}" for note in ((seed.get("story_plan") or {}).get("character_notes") or [])),
+                    *(
+                        f"章节计划：第{chapter.get('number')}章 {chapter.get('title')} - {chapter.get('goal')}"
+                        for chapter in (((seed.get("story_plan") or {}).get("chapter_plan")) or [])
+                        if isinstance(chapter, dict)
+                    ),
+                ],
+            )
+            seed["chapter_pair_context_packet"] = snapshot.packet.model_dump(mode="json")
+            return seed, "draft_chapter_pair"
+
+        if review.type == "verification_review":
+            # 恢复 story_plan：优先从 task.story_plan，否则从 outline-history.json
+            if task.story_plan:
+                total = len(task.story_plan.chapter_plan)
+            else:
+                total = 0
+                outline_history = self._load_context_snapshot(task.id, stage="planning", snapshot_name="outline-history")
+                if isinstance(outline_history, dict):
+                    messages = outline_history.get("messages") or []
+                    for msg in reversed(messages):
+                        if msg.get("role") == "assistant":
+                            content = str(msg.get("content", "")).strip()
+                            if content:
+                                try:
+                                    plan_data = StoryPlan.model_validate_json(content)
+                                    seed["story_plan"] = plan_data.model_dump(mode="json")
+                                    total = len(plan_data.chapter_plan)
+                                except Exception:
+                                    try:
+                                        import json as _json
+                                        plan_data = _json.loads(content)
+                                        seed["story_plan"] = plan_data
+                                        total = len(plan_data.get("chapter_plan", []))
+                                    except Exception:
+                                        pass
+                                break
+            seed.update(
+                {
+                    "completed_chapters": self._load_completed_chapters_for_resume(task.id, total),
+                    "verification_report": review.verification_report or {},
+                    "verification_revision_count": review.verification_revision_count,
+                }
+            )
+            return seed, "verify_full_story"
+
+        return None
+
+    def _rehydrate_resume_state_if_needed(self, task: TaskRecord) -> None:
+        values = self._graph_state_values(task.id)
+        if values.get("input_payload"):
+            return
+        if not hasattr(self.graph, "update_state"):
+            return
+        seeded = self._resume_seed_state(task)
+        if seeded is None:
+            return
+        seed_values, as_node = seeded
+        self.graph.update_state(self._config(task.id), seed_values, as_node=as_node)
 
     def _sync_result(
         self,
@@ -621,6 +785,7 @@ class TaskService:
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
+                self._rehydrate_resume_state_if_needed(task)
                 result = self.graph.invoke(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),

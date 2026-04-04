@@ -2,6 +2,7 @@ import datetime
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 if not hasattr(datetime, "UTC"):
     datetime.UTC = datetime.timezone.utc
@@ -224,6 +225,121 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         response = service.get_review(task.id)
 
         self.assertEqual(response.review_type, "chapter_pair_review")
+
+    def test_resume_chapter_review_rehydrates_missing_checkpoint_state(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.normalized_spec = {
+            "mode": "short_story",
+            "prompt": "写一篇恐怖短篇",
+            "genre": "恐怖",
+            "style": "冷静克制",
+            "requested_target_words": 1500,
+            "target_words": 1600,
+            "audience": "",
+            "banned": "",
+            "title_hint": "",
+            "model_id": "gpt-5.4",
+        }
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+                {"number": 3, "title": "第三章", "goal": "发现线索"},
+                {"number": 4, "title": "第四章", "goal": "逼近真相"},
+            ],
+        )
+        review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=2,
+            chapter_pair=[
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "章节摘要",
+                    "content": "第三章正文",
+                },
+                {
+                    "number": 4,
+                    "title": "第四章",
+                    "summary": "章节摘要",
+                    "content": "第四章正文",
+                },
+            ],
+            completed_count=2,
+            total_chapters=4,
+            chapter_pair_revision_count=1,
+        )
+        task.pending_review = review
+        task.status = task.status.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        store.save(task)
+
+        store.write_message_history(
+            task.id,
+            stage="drafting",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "{\"number\": 1, \"title\": \"第一章\", \"summary\": \"摘要\", \"content\": \"第一章正文\"}"},
+            ],
+            filename="chapter-01-history",
+        )
+        store.write_message_history(
+            task.id,
+            stage="drafting",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "{\"number\": 2, \"title\": \"第二章\", \"summary\": \"摘要\", \"content\": \"第二章正文\"}"},
+            ],
+            filename="chapter-02-history",
+        )
+
+        class FakeGraph:
+            def __init__(self):
+                self.updated = None
+
+            def get_state(self, config):
+                return SimpleNamespace(values={})
+
+            def update_state(self, config, values, as_node=None, task_id=None):
+                self.updated = {"config": config, "values": values, "as_node": as_node, "task_id": task_id}
+                return config
+
+            def invoke(self, command, config=None):
+                return {}
+
+        fake_graph = FakeGraph()
+        service.graph = fake_graph
+        service._sync_result = lambda task_id, result, review_comment="": store.get(task_id)
+
+        try:
+            service._resume_task_sync(task.id, approved=True, comment="继续")
+        except Exception as exc:  # pragma: no cover
+            self.fail(f"_resume_task_sync 不应因缺少检查点状态失败: {exc}")
+
+        self.assertIsNotNone(fake_graph.updated)
+        self.assertEqual(fake_graph.updated["as_node"], "draft_chapter_pair")
+        self.assertIn("input_payload", fake_graph.updated["values"])
+        self.assertEqual(len(fake_graph.updated["values"]["completed_chapters"]), 2)
+        self.assertEqual(len(fake_graph.updated["values"]["current_chapter_pair"]), 2)
 
 
 if __name__ == "__main__":
