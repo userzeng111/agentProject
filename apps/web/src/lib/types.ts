@@ -388,3 +388,24 @@ export interface ArchiveDetailResponse {
   artifact_index: ArtifactIndexItem[];
   history_index?: ReviewHistoryItem[];
 }
+
+
+/* ── 流式聊天相关类型 ── */
+
+export interface ChatStreamChunk {
+  content: string;
+  reasoning_content?: string;
+  finish_reason?: string;
+  usage?: Record<string, number>;
+}
+
+export interface ChatDoneEvent {
+  model: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  reasoning_content?: string;
+  isStreaming?: boolean;
+}

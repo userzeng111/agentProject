@@ -184,3 +184,67 @@ export function normalizeModelOptions(models: ModelOption[]) {
         : undefined,
     }));
 }
+
+
+import { ChatStreamChunk, ChatDoneEvent } from "@/lib/types";
+
+/**
+ * 流式聊天 - 逐 chunk 读取 SSE 事件并回调
+ */
+export async function streamChat(
+  messages: Array<{ role: string; content: string }>,
+  model: string | undefined,
+  onChunk: (chunk: ChatStreamChunk) => void,
+  onDone: (event: ChatDoneEvent | null) => void,
+  onError: (message: string) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/chat/stream`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages, model, stream: true }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    onError(text || "流式请求失败");
+    return;
+  }
+
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (trimmed.startsWith("event:")) continue;
+      if (trimmed.startsWith("data:")) {
+        const jsonStr = trimmed.slice(5).trim();
+        try {
+          const data = JSON.parse(jsonStr);
+          if (data.content !== undefined || data.reasoning_content !== undefined) {
+            onChunk(data);
+          }
+          if (data.finish_reason) {
+            onChunk(data);
+          }
+          if (data.usage) {
+            onChunk(data);
+          }
+        } catch {
+          // 忽略解析失败的行
+        }
+      }
+    }
+  }
+
+  onDone({ model: model ?? "" });
+}
