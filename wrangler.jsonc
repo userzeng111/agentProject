@@ -2,12 +2,6 @@
   "name": "agentproject1",
   "compatibility_date": "2026-04-05",
   "assets": {
-    "directory": ".",
-    "exclude": [".git", ".wrangler"]
-  },
-  "rules": [
-    { "glob": "**/*.html", "content_type": "text/html; charset=utf-8" },
-    { "glob": "**/*.js", "content_type": "application/javascript" },
-    { "glob": "**/*.css", "content_type": "text/css" }
-  ]
+    "directory": "."
+  }
 }
