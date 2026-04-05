@@ -2,7 +2,7 @@ import unittest
 
 from app.domain.models import AutoReviewPolicy
 from app.llm.auto_reviewer import AutoReviewManager, SubAgentSpec
-from app.llm.gateway_client import GatewayClientError
+from app.llm.gateway_client import GatewayClientError, StreamChunk
 
 
 class FakeGatewayClient:
@@ -16,6 +16,37 @@ class FakeGatewayClient:
         if isinstance(response, Exception):
             raise response
         return response
+
+    def complete_stream_sync(self, messages, model=None):
+        """模拟流式调用：将 complete_json 的结果包装成单个 StreamChunk 返回。"""
+        try:
+            result = self.complete_json(messages, model)
+            import json as _json
+
+            yield StreamChunk(
+                content=_json.dumps(result, ensure_ascii=False),
+                finish_reason="stop",
+                model=model or "",
+            )
+        except GatewayClientError:
+            # 模拟真实 LLM 返回无法解析的内容，让上层 _strip_and_parse_json 抛异常
+            yield StreamChunk(
+                content="这不是有效的 JSON",
+                finish_reason="stop",
+                model=model or "",
+            )
+
+    def _strip_markdown_fences(self, raw: str) -> str:
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            import re
+            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", cleaned, count=1)
+            if cleaned.endswith("```"):
+                cleaned = cleaned[:-3]
+        return cleaned.strip()
+
+    def _extract_first_json_value(self, text: str):
+        return None
 
 
 class AutoReviewerTests(unittest.TestCase):
