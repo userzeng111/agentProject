@@ -1,0 +1,1 @@
+self.__SSG_MANIFEST=new Set(["\u002Farchive\u002F[id]","\u002Fresult\u002F[id]","\u002Freview\u002F[id]","\u002Ftasks\u002F[id]"]);self.__SSG_MANIFEST_CB&&self.__SSG_MANIFEST_CB()
