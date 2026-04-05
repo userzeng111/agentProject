@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from app.agents.loader import SkillLoader
+from app.agents.base import BaseAgent, _RETRY_JSON_PROMPT
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
@@ -45,10 +45,12 @@ def reset_exchange_callback(token: Token) -> None:
     _exchange_callback_var.reset(token)
 
 
-class StoryEngine:
+class StoryEngine(BaseAgent):
+    _skill_subdir = "story_engine"
+
     def __init__(self, settings: Settings) -> None:
+        super().__init__()
         self.settings = settings
-        self.gateway_client: OpenAICompatibleGatewayClient | None = None
         self.progress_callback: Callable[[dict[str, Any]], None] | None = None
         self.exchange_callback: Callable[[dict[str, Any]], None] | None = None
         self.response_cache = LayeredCacheStore(
@@ -192,24 +194,8 @@ class StoryEngine:
             )
         self._runtime_default_model: str | None = None
 
-        # ── Skill 加载 ──
-        self._skill_loader = SkillLoader()
-        self._skills_loaded = False
+        # ── Skill 加载（继承自 BaseAgent） ──
         self._load_skills()
-
-    def _load_skills(self) -> None:
-        """加载 story_engine/ 目录下的 Skill YAML，失败时静默 fallback。"""
-        try:
-            skills_root = Path(__file__).parent.parent / "agents" / "skills" / "story_engine"
-            loader = SkillLoader(skills_root)
-            registry = loader.load_all()
-            if registry:
-                self._skill_loader = loader
-                self._skills_loaded = True
-                logger.info("StoryEngine 已加载 %d 个写作 Skill: %s", len(registry), list(registry.keys()))
-        except Exception as exc:
-            logger.warning("Skill YAML 加载失败，使用内置 prompt fallback: %s", exc)
-            self._skills_loaded = False
 
     # skill_id → 硬编码 prompt 属性名映射（fallback 用）
     _PROMPT_MAP: dict[str, str] = {
@@ -266,11 +252,6 @@ class StoryEngine:
         if self.gateway_client is None:
             return []
         return self.gateway_client.list_models()
-
-    def _require_gateway_client(self) -> OpenAICompatibleGatewayClient:
-        if self.gateway_client is None:
-            raise GatewayClientError("当前没有可用的模型网关，请检查 apps/agent-runtime/.env 中的 LLM_BASE_URL 与 LLM_API_KEY 配置。")
-        return self.gateway_client
 
     def build_story_plan(
         self,
@@ -779,32 +760,18 @@ class StoryEngine:
 
         active_progress = progress_callback or self.progress_callback or _progress_callback_var.get()
 
-        # 流式调用
-        full_content = ""
-        full_reasoning = ""
+        # 流式调用（委托 BaseAgent._call_llm_stream）
         try:
-            for chunk in self.gateway_client.complete_stream_sync(
-                messages=request_messages, model=model,
-            ):
-                # 发射思考链事件
-                if chunk.reasoning_content and active_progress:
-                    full_reasoning += chunk.reasoning_content
-                    active_progress({
-                        "event_type": "model.thinking",
-                        "stage": stage,
-                        "unit_id": exchange_label,
-                        "message": "模型思考中...",
-                        "payload": {
-                            "reasoning_chunk": chunk.reasoning_content,
-                            "accumulated_length": len(full_reasoning),
-                        },
-                    })
-                if chunk.content:
-                    full_content += chunk.content
+            full_content = self._call_llm_stream(
+                request_messages,
+                model,
+                progress_callback=active_progress,
+                stage=stage,
+                unit_id=exchange_label,
+            )
         except (GatewayClientError, Exception) as exc:
             # fallback 到非流式
-            import logging
-            logging.getLogger(__name__).warning("流式调用失败，fallback 到非流式: %s", exc)
+            logger.warning("流式调用失败，fallback 到非流式: %s", exc)
             return self._complete_json_with_cache(
                 request_messages=request_messages,
                 model=model,
@@ -814,16 +781,7 @@ class StoryEngine:
             )
 
         # 解析 JSON
-        gc = self._require_gateway_client()
-        cleaned = gc._strip_markdown_fences(full_content)
-        try:
-            payload = json.loads(cleaned)
-        except json.JSONDecodeError:
-            extracted = gc._extract_first_json_value(cleaned)
-            if extracted is not None:
-                payload = extracted
-            else:
-                raise GatewayClientError(f"模型返回的 JSON 无法解析：{full_content[:240]}")
+        payload = self._strip_and_parse_json(full_content)
 
         self.response_cache.set(cache_key, payload)
         conversation_history = self._append_assistant_message(request_messages, payload)
@@ -866,11 +824,7 @@ class StoryEngine:
                 attempt_messages = [dict(item) for item in request_messages] + [
                     {
                         "role": "user",
-                        "content": (
-                            "上一次返回结果不是可解析的目标 JSON。"
-                            "请重新输出一个完整、可解析的 JSON 对象。"
-                            "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
-                        ),
+                        "content": _RETRY_JSON_PROMPT,
                     }
                 ]
 

@@ -17,10 +17,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-from app.agents.loader import SkillLoader
+from app.agents.base import BaseAgent
 from app.domain.models import (
     AgentResult,
     AutoReviewPolicy,
@@ -567,7 +566,7 @@ def _get_verification_sub_agents() -> list[SubAgentSpec]:
 # ─────────────────────────────────────────────
 
 
-class AutoReviewManager:
+class AutoReviewManager(BaseAgent):
     """
     自动审核编排器
 
@@ -578,34 +577,21 @@ class AutoReviewManager:
     - 支持升级机制
     """
 
+    _skill_subdir = "auto_reviewer"
+
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
         default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 3,
     ) -> None:
-        self.gateway_client = gateway_client
+        super().__init__(gateway_client=gateway_client)
         self.default_model = default_model
         self.max_workers = max_workers
         self._lock = threading.Lock()
 
-        # ── Skill 加载 ──
-        self._skill_loader = SkillLoader()
-        self._skills_loaded = False
+        # ── Skill 加载（继承自 BaseAgent） ──
         self._load_skills()
-
-    def _load_skills(self) -> None:
-        """加载 auto_reviewer/ 目录下的审核 Skill YAML，失败时静默 fallback。"""
-        try:
-            skills_root = Path(__file__).parent.parent / "agents" / "skills" / "auto_reviewer"
-            self._skill_loader = SkillLoader(skills_root)
-            registry = self._skill_loader.load_all()
-            if registry:
-                self._skills_loaded = True
-                logger.info("AutoReviewManager 已加载 %d 个审核 Skill: %s", len(registry), list(registry.keys()))
-        except Exception as exc:
-            logger.warning("审核 Skill YAML 加载失败，使用内置 prompt fallback: %s", exc)
-            self._skills_loaded = False
 
     def _get_sub_agents_for_group(self, review_group: str) -> list[SubAgentSpec]:
         """从 Skill YAML 或硬编码获取子 Agent 规格。"""
@@ -1027,51 +1013,17 @@ class AutoReviewManager:
         )
 
     def _call_llm(self, prompt: str, model: str | None) -> str:
-        """调用 LLM（流式），同时支持思考链透传。"""
-        if self.gateway_client is None:
-            raise GatewayClientError(
-                "AutoReviewManager 需要有效的 gateway_client 才能执行自动审核。"
-            )
+        """调用 LLM（流式 + JSON 解析 + 重试），返回 JSON 字符串。"""
         messages = [
             {"role": "system", "content": "你是一个中文小说质量审核专家，请严格返回 JSON 格式的审核结果，不要输出额外解释。"},
             {"role": "user", "content": prompt},
         ]
-        attempt_messages = messages
-        for attempt in range(2):
-            try:
-                # 流式调用，累积 content 后解析 JSON
-                full_content = ""
-                for chunk in self.gateway_client.complete_stream_sync(
-                    attempt_messages,
-                    model=model or self.default_model,
-                ):
-                    if chunk.content:
-                        full_content += chunk.content
-                # 解析 JSON
-                cleaned = self.gateway_client._strip_markdown_fences(full_content)
-                try:
-                    response = json.loads(cleaned)
-                except json.JSONDecodeError:
-                    extracted = self.gateway_client._extract_first_json_value(cleaned)
-                    if extracted is not None:
-                        response = extracted
-                    else:
-                        raise GatewayClientError(f"自动审核返回的 JSON 无法解析：{full_content[:240]}")
-                return json.dumps(response, ensure_ascii=False)
-            except GatewayClientError:
-                if attempt == 1:
-                    raise
-                attempt_messages = [dict(item) for item in messages] + [
-                    {
-                        "role": "user",
-                        "content": (
-                            "上一次返回结果不是可解析的目标 JSON。"
-                            "请重新输出一个完整、可解析的 JSON 对象。"
-                            "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
-                        ),
-                    }
-                ]
-        raise GatewayClientError("自动审核调用失败：重试后仍未拿到有效 JSON。")
+        response = self._call_llm_json(
+            messages,
+            model=model or self.default_model,
+            max_retries=1,
+        )
+        return json.dumps(response, ensure_ascii=False)
 
     def _build_revision_comment(
         self,

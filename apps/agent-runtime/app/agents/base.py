@@ -1,7 +1,13 @@
 """
 Agent 基类
 
-所有具体 Agent 的公共父类，提供 prompt 渲染和 LLM 调用能力。
+所有具体 Agent 的公共父类，提供完整的 Agent 通用能力：
+- Skill YAML 加载与管理
+- gateway_client 守卫
+- 流式 LLM 调用（支持思考链透传）
+- JSON 解析与清理
+- LLM 调用 + JSON 解析 + 重试
+- 子类按需扩展业务方法
 """
 
 from __future__ import annotations
@@ -9,188 +15,160 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from app.agents.models import SkillConfig
+from app.agents.loader import SkillLoader
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 
 logger = logging.getLogger(__name__)
+
+# JSON 重试提示词（全局共享）
+_RETRY_JSON_PROMPT = (
+    "上一次返回结果不是可解析的目标 JSON。"
+    "请重新输出一个完整、可解析的 JSON 对象。"
+    "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+)
 
 
 class BaseAgent:
     """
     Agent 基类。
 
-    职责：
-    - 持有一个 SkillConfig 实例
-    - 提供 prompt 渲染能力（将变量注入模板）
-    - 提供 LLM 调用能力（委托给 GatewayClient）
-    - 提供流式调用、缓存、重试的统一接口
+    提供所有 Agent 共享的核心能力：
+    - Skill YAML 加载（通过 _skill_subdir 指定子目录）
+    - gateway_client 守卫
+    - 流式 LLM 调用（含思考链透传）
+    - JSON 解析与清理
+    - LLM 调用 + JSON 解析 + 自动重试
+
+    子类只需设置 _skill_subdir 并按需扩展业务方法。
     """
+
+    _skill_subdir: str  # 子类必须设置：story_engine / auto_reviewer
 
     def __init__(
         self,
-        skill_config: SkillConfig,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
-        response_cache: Any | None = None,
     ) -> None:
-        self.skill_config = skill_config
         self.gateway_client = gateway_client
-        self.response_cache = response_cache
+        self._skill_loader: SkillLoader | None = None
+        self._skills_loaded: bool = False
 
-    def render_prompt(self, **variables: Any) -> list[dict[str, str]]:
-        """
-        将变量注入 prompt 模板，返回 [{role, content}] 消息列表。
+    # ── Skill 加载 ──────────────────────────────
 
-        校验必填变量是否已提供，缺失时使用默认值或抛出 ValueError。
-        """
-        messages: list[dict[str, str]] = []
-
-        for role_name in ("system", "human"):
-            template = getattr(self.skill_config.prompt, role_name, "")
-            if not template:
-                continue
-
-            # 校验必填变量
-            for var_def in self.skill_config.input_variables:
-                if var_def.required and var_def.name not in variables:
-                    if var_def.default is not None:
-                        variables.setdefault(var_def.name, var_def.default)
-                    else:
-                        raise ValueError(
-                            f"Skill [{self.skill_config.skill_id}]: "
-                            f"缺少必填变量 '{var_def.name}'"
-                        )
-
-            # 为所有有默认值的变量填充默认值
-            for var_def in self.skill_config.input_variables:
-                if var_def.name not in variables and var_def.default is not None:
-                    variables.setdefault(var_def.name, var_def.default)
-
-            # 安全格式化（忽略未在模板中使用的变量）
-            try:
-                content = template.format(**variables)
-            except KeyError as e:
-                # 模板中有变量但未提供值，使用空字符串
-                missing_key = str(e).strip("'\"")
-                logger.warning(
-                    "Skill [%s] 变量 '%s' 未提供，使用空字符串",
-                    self.skill_config.skill_id,
-                    missing_key,
+    def _load_skills(self) -> None:
+        """加载 _skill_subdir 目录下的 Skill YAML，失败时静默 fallback。"""
+        try:
+            skills_root = Path(__file__).parent / "skills" / self._skill_subdir
+            self._skill_loader = SkillLoader(skills_root)
+            registry = self._skill_loader.load_all()
+            if registry:
+                self._skills_loaded = True
+                logger.info(
+                    "%s 已加载 %d 个 Skill: %s",
+                    self.__class__.__name__,
+                    len(registry),
+                    list(registry.keys()),
                 )
-                patched = dict(variables)
-                patched[missing_key] = ""
-                content = template.format(**patched)
+        except Exception as exc:
+            logger.warning("Skill YAML 加载失败，使用内置 prompt fallback: %s", exc)
+            self._skills_loaded = False
 
-            messages.append({"role": role_name, "content": content})
+    # ── Gateway 守卫 ────────────────────────────
 
-        return messages
+    def _require_gateway_client(self) -> OpenAICompatibleGatewayClient:
+        """返回 gateway_client，未配置时抛出 GatewayClientError。"""
+        if self.gateway_client is None:
+            raise GatewayClientError(
+                "当前没有可用的模型网关，请检查 apps/agent-runtime/.env 中的 LLM_BASE_URL 与 LLM_API_KEY 配置。"
+            )
+        return self.gateway_client
 
-    def resolve_model(self, override: str | None = None, settings_default: str | None = None) -> str:
-        """解析实际使用的模型。优先级：调用时传入 > skill 配置 > settings 默认。"""
-        candidate = (override or "").strip()
-        if candidate:
-            return candidate
-        if self.skill_config.model.default:
-            return self.skill_config.model.default
-        if settings_default:
-            return settings_default
-        return ""
+    # ── 流式 LLM 调用 ────────────────────────────
 
-    def call_stream(
+    def _call_llm_stream(
         self,
-        variables: dict[str, Any],
-        model: str | None = None,
+        messages: list[dict[str, str]],
+        model: str,
+        *,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        stage: str = "",
+        unit_id: str = "",
     ) -> str:
         """
-        流式调用 LLM，返回完整的文本内容。
+        流式调用 LLM，返回完整文本内容。
 
-        用于写作类 Agent 的流式 JSON 生成。
+        可选通过 progress_callback 透传思考链事件。
         """
-        if self.gateway_client is None:
-            raise RuntimeError(f"Agent [{self.skill_config.skill_id}] 未配置 gateway_client")
-
-        messages = self.render_prompt(**variables)
-        resolved_model = self.resolve_model(model)
-
+        gc = self._require_gateway_client()
         full_content = ""
-        for chunk in self.gateway_client.complete_stream_sync(messages, model=resolved_model):
-            # 透传思考链
+        full_reasoning = ""
+        for chunk in gc.complete_stream_sync(messages, model=model):
             if chunk.reasoning_content and progress_callback:
+                full_reasoning += chunk.reasoning_content
                 progress_callback({
-                    "reasoning_chunk": chunk.reasoning_content,
+                    "event_type": "model.thinking",
+                    "stage": stage,
+                    "unit_id": unit_id,
+                    "message": "模型思考中...",
+                    "payload": {
+                        "reasoning_chunk": chunk.reasoning_content,
+                        "accumulated_length": len(full_reasoning),
+                    },
                 })
             if chunk.content:
                 full_content += chunk.content
-
         return full_content
 
-    def call_json(
-        self,
-        variables: dict[str, Any],
-        model: str | None = None,
-        progress_callback: Callable[[dict[str, Any]], None] | None = None,
-        retry_count: int | None = None,
-    ) -> dict[str, Any]:
-        """
-        流式调用 LLM 并解析 JSON 返回。
+    # ── JSON 解析 ──────────────────────────────
 
-        支持：流式思考链透传、JSON 解析、重试。
-        """
-        if self.gateway_client is None:
-            raise RuntimeError(f"Agent [{self.skill_config.skill_id}] 未配置 gateway_client")
-
-        attempts = retry_count if retry_count is not None else self.skill_config.runtime.retry_count
-
-        # 首次尝试
-        full_content = self.call_stream(variables, model=model, progress_callback=progress_callback)
-        result = self._parse_json_response(full_content)
-        if result is not None:
-            return result
-
-        # 重试
-        for i in range(attempts):
-            logger.warning(
-                "Skill [%s] JSON 解析失败，重试 %d/%d",
-                self.skill_config.skill_id,
-                i + 1,
-                attempts,
-            )
-            retry_prompt = self.skill_config.runtime.retry_prompt or (
-                "上一次返回结果不是可解析的目标 JSON。"
-                "请重新输出一个完整、可解析的 JSON 对象。"
-                "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
-            )
-            retry_messages = self.render_prompt(**variables)
-            retry_messages.append({"role": "assistant", "content": full_content})
-            retry_messages.append({"role": "user", "content": retry_prompt})
-
-            resolved_model = self.resolve_model(model)
-            retry_content = ""
-            for chunk in self.gateway_client.complete_stream_sync(retry_messages, model=resolved_model):
-                if chunk.content:
-                    retry_content += chunk.content
-
-            result = self._parse_json_response(retry_content)
-            if result is not None:
-                return result
-
-        raise GatewayClientError(
-            f"Skill [{self.skill_config.skill_id}] 重试 {attempts} 次后仍无法解析 JSON。"
-            f"最后响应: {full_content[:300]}"
-        )
-
-    def _parse_json_response(self, content: str) -> dict[str, Any] | None:
-        """解析 LLM 返回的 JSON 内容。"""
-        if self.gateway_client is None:
-            return None
-
-        cleaned = self.gateway_client._strip_markdown_fences(content)
+    def _strip_and_parse_json(self, raw: str) -> dict[str, Any]:
+        """清理 Markdown 围栏并解析 JSON，失败时尝试提取首个 JSON 值。"""
+        gc = self._require_gateway_client()
+        cleaned = gc._strip_markdown_fences(raw)
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
-            extracted = self.gateway_client._extract_first_json_value(cleaned)
+            extracted = gc._extract_first_json_value(cleaned)
             if extracted is not None:
                 return extracted
-            return None
+            raise GatewayClientError(f"模型返回的 JSON 无法解析：{raw[:240]}")
+
+    # ── LLM 调用 + JSON 解析 + 重试 ────────────
+
+    def _call_llm_json(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        *,
+        max_retries: int = 1,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        stage: str = "",
+        unit_id: str = "",
+    ) -> dict[str, Any]:
+        """
+        流式调用 LLM 并解析 JSON，解析失败时自动重试。
+
+        重试时在原始消息后追加重试提示词。
+        """
+        attempt_messages = list(messages)
+        for attempt in range(max_retries + 1):
+            full_content = self._call_llm_stream(
+                attempt_messages,
+                model,
+                progress_callback=progress_callback,
+                stage=stage,
+                unit_id=unit_id,
+            )
+            try:
+                return self._strip_and_parse_json(full_content)
+            except (GatewayClientError, json.JSONDecodeError):
+                if attempt >= max_retries:
+                    raise
+                # 在当前尝试的消息基础上追加重试提示
+                attempt_messages = [dict(item) for item in attempt_messages] + [
+                    {"role": "user", "content": _RETRY_JSON_PROMPT}
+                ]
+        # 理论上不可达
+        raise GatewayClientError("LLM 调用重试后仍无法解析 JSON。")
