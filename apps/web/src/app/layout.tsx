@@ -1,13 +1,7 @@
-import type { Metadata } from "next";
 import { AppThemeProvider } from "@/components/app-theme-provider";
 import { AppHeader } from "@/components/app-header";
 import { Box } from "@mui/material";
 import "./globals.css";
-
-export const metadata: Metadata = {
-  title: "小说 Agent Demo",
-  description: "基于 LangChain 与 LangGraph 的小说生成 demo",
-};
 
 export default function RootLayout({
   children,
@@ -16,6 +10,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN">
+      <head>
+        <title>小说 Agent Demo</title>
+        <meta name="description" content="基于 LangChain 与 LangGraph 的小说生成 demo" />
+      </head>
       <body>
         <AppThemeProvider>
           <Box
