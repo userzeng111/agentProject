@@ -1,0 +1,12 @@
+node_modules/
+.git/
+.claude/
+.cunzhi-memory/
+.agents/
+.codex/
+.venv/
+.next/
+.env*
+*.pyc
+__pycache__/
+.DS_Store
