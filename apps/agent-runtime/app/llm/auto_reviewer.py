@@ -12,12 +12,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+from app.agents.loader import SkillLoader
 from app.domain.models import (
     AgentResult,
     AutoReviewPolicy,
@@ -29,6 +32,8 @@ from app.domain.models import (
     Strictness,
 )
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+
+logger = logging.getLogger(__name__)
 
 # 严格度对应的阈值调整因子
 _STRICTNESS_MULTIPLIERS = {
@@ -584,6 +589,74 @@ class AutoReviewManager:
         self.max_workers = max_workers
         self._lock = threading.Lock()
 
+        # ── Skill 加载 ──
+        self._skill_loader = SkillLoader()
+        self._skills_loaded = False
+        self._load_skills()
+
+    def _load_skills(self) -> None:
+        """加载 auto_reviewer/ 目录下的审核 Skill YAML，失败时静默 fallback。"""
+        try:
+            skills_root = Path(__file__).parent.parent / "agents" / "skills" / "auto_reviewer"
+            self._skill_loader = SkillLoader(skills_root)
+            registry = self._skill_loader.load_all()
+            if registry:
+                self._skills_loaded = True
+                logger.info("AutoReviewManager 已加载 %d 个审核 Skill: %s", len(registry), list(registry.keys()))
+        except Exception as exc:
+            logger.warning("审核 Skill YAML 加载失败，使用内置 prompt fallback: %s", exc)
+            self._skills_loaded = False
+
+    def _get_sub_agents_for_group(self, review_group: str) -> list[SubAgentSpec]:
+        """从 Skill YAML 或硬编码获取子 Agent 规格。"""
+        if self._skills_loaded:
+            try:
+                configs = self._skill_loader.get_by_group(review_group)
+                if configs:
+                    return [
+                        SubAgentSpec(
+                            agent_id=cfg.skill_id,
+                            agent_name=cfg.skill_name,
+                            role=cfg.review.role,
+                            dimension=cfg.review.dimension,
+                            weight=cfg.review.weight,
+                            prompt_template=cfg.prompt.human,
+                            system_role=cfg.prompt.system,
+                        )
+                        for cfg in configs
+                        if cfg.review is not None
+                    ]
+            except Exception as exc:
+                logger.debug("从 Skill 获取 %s 子 Agent 失败，fallback: %s", review_group, exc)
+
+        # Fallback: 硬编码
+        if review_group == "outline":
+            return _get_outline_sub_agents()
+        elif review_group == "chapter":
+            return _get_chapter_sub_agents()
+        elif review_group == "verification":
+            return _get_verification_sub_agents()
+        return []
+
+    def _get_synthesis_prompt(self, review_group: str) -> str:
+        """从 Skill YAML 或硬编码获取综合决策 prompt。"""
+        if self._skills_loaded:
+            try:
+                config = self._skill_loader.get_synthesis(review_group)
+                if config:
+                    return config.prompt.human
+            except Exception:
+                pass
+
+        # Fallback: 硬编码
+        if review_group == "outline":
+            return _OUTLINE_SYNTHESIS_PROMPT
+        elif review_group == "chapter":
+            return _CHAPTER_SYNTHESIS_PROMPT
+        elif review_group == "verification":
+            return _VERIFICATION_SYNTHESIS_PROMPT
+        return ""
+
     def review(self, payload: ReviewPayload, policy: AutoReviewPolicy) -> ReviewDecision:
         """
         执行自动审核，返回审核决策。
@@ -695,7 +768,7 @@ class AutoReviewManager:
         if story_plan is None:
             return self._fallback_decision("大纲数据为空")
 
-        specs = _get_outline_sub_agents()
+        specs = self._get_sub_agents_for_group("outline")
 
         def build_prompt(spec: SubAgentSpec) -> str:
             return spec.prompt_template.format(
@@ -737,7 +810,7 @@ class AutoReviewManager:
 
         # 调用综合 Agent
         threshold = policy.get_pass_threshold("outline_review")
-        synthesis_prompt = _OUTLINE_SYNTHESIS_PROMPT.format(
+        synthesis_prompt = self._get_synthesis_prompt("outline").format(
             sub_agents_json=sub_agents_json,
             mode=policy.mode.value,
             threshold=threshold,
@@ -784,7 +857,7 @@ class AutoReviewManager:
 
         completed_summaries = getattr(payload, "_completed_summaries", [])
 
-        specs = _get_chapter_sub_agents()
+        specs = self._get_sub_agents_for_group("chapter")
 
         def build_prompt(spec: SubAgentSpec) -> str:
             return spec.prompt_template.format(
@@ -813,7 +886,7 @@ class AutoReviewManager:
         )
 
         threshold = policy.get_pass_threshold("chapter_pair_review")
-        synthesis_prompt = _CHAPTER_SYNTHESIS_PROMPT.format(
+        synthesis_prompt = self._get_synthesis_prompt("chapter").format(
             sub_agents_json=sub_agents_json,
             mode=policy.mode.value,
             threshold=threshold,
@@ -841,7 +914,7 @@ class AutoReviewManager:
         report = payload.verification_report or {}
         report_text = json.dumps(report, ensure_ascii=False, indent=2)[:4000]
 
-        specs = _get_verification_sub_agents()
+        specs = self._get_sub_agents_for_group("verification")
 
         def build_prompt(spec: SubAgentSpec) -> str:
             return spec.prompt_template.format(verification_report=report_text)
@@ -866,7 +939,7 @@ class AutoReviewManager:
         )
 
         threshold = policy.get_pass_threshold("verification_review")
-        synthesis_prompt = _VERIFICATION_SYNTHESIS_PROMPT.format(
+        synthesis_prompt = self._get_synthesis_prompt("verification").format(
             sub_agents_json=sub_agents_json,
             mode=policy.mode.value,
             threshold=threshold,

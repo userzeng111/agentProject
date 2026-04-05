@@ -4,9 +4,11 @@ from collections.abc import Callable
 from contextvars import ContextVar, Token
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
+from app.agents.loader import SkillLoader
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
@@ -14,6 +16,8 @@ from pydantic import ValidationError
 from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan, TaskMode
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 from app.settings.config import Settings
+
+logger = logging.getLogger(__name__)
 
 _progress_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
     "story_engine_progress_callback",
@@ -188,6 +192,66 @@ class StoryEngine:
             )
         self._runtime_default_model: str | None = None
 
+        # ── Skill 加载 ──
+        self._skill_loader = SkillLoader()
+        self._skills_loaded = False
+        self._load_skills()
+
+    def _load_skills(self) -> None:
+        """加载 story_engine/ 目录下的 Skill YAML，失败时静默 fallback。"""
+        try:
+            skills_root = Path(__file__).parent.parent / "agents" / "skills" / "story_engine"
+            loader = SkillLoader(skills_root)
+            registry = loader.load_all()
+            if registry:
+                self._skill_loader = loader
+                self._skills_loaded = True
+                logger.info("StoryEngine 已加载 %d 个写作 Skill: %s", len(registry), list(registry.keys()))
+        except Exception as exc:
+            logger.warning("Skill YAML 加载失败，使用内置 prompt fallback: %s", exc)
+            self._skills_loaded = False
+
+    # skill_id → 硬编码 prompt 属性名映射（fallback 用）
+    _PROMPT_MAP: dict[str, str] = {
+        "outline-planner": "outline_prompt",
+        "draft-writer": "draft_prompt",
+        "chapter-writer": "chapter_prompt",
+        "outline-reviser": "outline_revision_prompt",
+        "chapter-reviser": "chapter_pair_revision_prompt",
+        "full-text-verifier": "verification_prompt",
+        "issue-fixer": "fix_issues_prompt",
+    }
+
+    def _render_skill_prompt(self, skill_id: str, **variables: Any) -> list[dict[str, str]]:
+        """从 Skill YAML 或硬编码 ChatPromptTemplate 渲染 prompt，返回消息列表。"""
+        # 优先使用 Skill YAML
+        if self._skills_loaded:
+            try:
+                config = self._skill_loader.get(skill_id)
+                # 为未提供的变量填充默认值
+                for var_def in config.input_variables:
+                    if var_def.name not in variables and var_def.default is not None:
+                        variables.setdefault(var_def.name, var_def.default)
+                messages: list[dict[str, str]] = []
+                for role_name in ("system", "human"):
+                    template = getattr(config.prompt, role_name, "")
+                    if template:
+                        content = template.format(**variables)
+                        messages.append({"role": role_name, "content": content})
+                return messages
+            except (KeyError, Exception) as exc:
+                logger.debug("Skill [%s] 渲染失败，fallback 到硬编码: %s", skill_id, exc)
+
+        # Fallback: 硬编码 ChatPromptTemplate
+        attr_name = self._PROMPT_MAP.get(skill_id)
+        if attr_name is None:
+            raise ValueError(f"未知的 skill_id: {skill_id}")
+        template = getattr(self, attr_name, None)
+        if template is None:
+            raise ValueError(f"未找到硬编码 prompt: {attr_name}")
+        prompt_value = template.invoke(variables)
+        return self._prompt_to_messages(prompt_value)
+
     def resolve_model(self, model: str | None) -> str:
         candidate = (model or "").strip()
         return candidate or self._runtime_default_model or self.settings.default_chat_model
@@ -222,22 +286,20 @@ class StoryEngine:
 
         # 修订模式
         if revision_comment and original_plan:
-            prompt_value = self.outline_revision_prompt.invoke(
-                {
-                    "revision_comment": revision_comment,
-                    "original_plan_json": json.dumps(original_plan, ensure_ascii=False),
-                    "mode": spec["mode"],
-                    "genre": spec.get("genre", ""),
-                    "style": spec.get("style", ""),
-                    "requested_target_words": self._requested_target_words(spec),
-                    "target_words": spec.get("target_words", 1800),
-                    "structure_hint": self._structure_hint(spec),
-                    "context_memory": self._context_memory(context_packet),
-                    "reference_excerpt": self._context_reference(reference_text, context_packet),
-                }
+            request_messages = self._render_skill_prompt(
+                "outline-reviser",
+                revision_comment=revision_comment,
+                original_plan_json=json.dumps(original_plan, ensure_ascii=False),
+                mode=spec["mode"],
+                genre=spec.get("genre", ""),
+                style=spec.get("style", ""),
+                requested_target_words=self._requested_target_words(spec),
+                target_words=spec.get("target_words", 1800),
+                structure_hint=self._structure_hint(spec),
+                context_memory=self._context_memory(context_packet),
+                reference_excerpt=self._context_reference(reference_text, context_packet),
             )
             self._require_gateway_client()
-            request_messages = self._prompt_to_messages(prompt_value)
             return self._build_story_plan_with_retry(
                 request_messages=request_messages,
                 model=resolved_model,
@@ -247,21 +309,19 @@ class StoryEngine:
             )
 
         # 首次生成
-        prompt_value = self.outline_prompt.invoke(
-            {
-                "mode": spec["mode"],
-                "genre": spec.get("genre", ""),
-                "style": spec.get("style", ""),
-                "requested_target_words": self._requested_target_words(spec),
-                "target_words": spec.get("target_words", 1800),
-                "structure_hint": self._structure_hint(spec),
-                "prompt": spec.get("prompt", ""),
-                "context_memory": self._context_memory(context_packet),
-                "reference_excerpt": self._context_reference(reference_text, context_packet),
-            }
+        request_messages = self._render_skill_prompt(
+            "outline-planner",
+            mode=spec["mode"],
+            genre=spec.get("genre", ""),
+            style=spec.get("style", ""),
+            requested_target_words=self._requested_target_words(spec),
+            target_words=spec.get("target_words", 1800),
+            structure_hint=self._structure_hint(spec),
+            prompt=spec.get("prompt", ""),
+            context_memory=self._context_memory(context_packet),
+            reference_excerpt=self._context_reference(reference_text, context_packet),
         )
         self._require_gateway_client()
-        request_messages = self._prompt_to_messages(prompt_value)
         return self._build_story_plan_with_retry(
             request_messages=request_messages,
             model=resolved_model,
@@ -287,17 +347,7 @@ class StoryEngine:
         summary = story_plan["logline"]
         chapter_plan = story_plan["chapter_plan"]
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        draft_prompt_value = self.draft_prompt.invoke(
-            {
-                "mode": spec["mode"],
-                "title": title,
-                "logline": summary,
-                "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
-                "context_memory": self._context_memory(context_packet),
-                "reference_excerpt": self._context_reference(reference_text, context_packet),
-            }
-        )
-        draft_prompt_text = self._prompt_to_text(draft_prompt_value)
+        draft_prompt_text = ""
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
@@ -321,25 +371,24 @@ class StoryEngine:
                         },
                     }
                 )
-            chapter_prompt_value = self.chapter_prompt.invoke(
-                {
-                    "mode": spec["mode"],
-                    "title": title,
-                    "logline": summary,
-                    "target_words": spec.get("target_words", 1800),
-                    "chapter_word_range": chapter_word_range,
-                    "chapter_number": item["number"],
-                    "chapter_title": item["title"],
-                    "chapter_goal": item["goal"],
-                    "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
-                    "completed_summaries": "；".join(completed_summaries) if completed_summaries else "无",
-                    "context_memory": self._context_memory(context_packet),
-                    "reference_excerpt": self._context_reference(reference_text, context_packet),
-                }
+            chapter_request_messages = self._render_skill_prompt(
+                "chapter-writer",
+                mode=spec["mode"],
+                title=title,
+                logline=summary,
+                target_words=spec.get("target_words", 1800),
+                chapter_word_range=chapter_word_range,
+                chapter_number=item["number"],
+                chapter_title=item["title"],
+                chapter_goal=item["goal"],
+                chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
+                completed_summaries="；".join(completed_summaries) if completed_summaries else "无",
+                context_memory=self._context_memory(context_packet),
+                reference_excerpt=self._context_reference(reference_text, context_packet),
             )
             request_messages = self._conversation_request_messages(
                 conversation_history=conversation_history,
-                prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+                prompt_messages=chapter_request_messages,
             )
             chapter_payload, conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
@@ -436,24 +485,25 @@ class StoryEngine:
                     },
                 })
 
-            chapter_prompt_value = self.chapter_prompt.invoke({
-                "mode": spec["mode"],
-                "title": title,
-                "logline": summary,
-                "target_words": spec.get("target_words", 1800),
-                "chapter_word_range": chapter_word_range,
-                "chapter_number": plan["number"],
-                "chapter_title": plan["title"],
-                "chapter_goal": plan["goal"],
-                "chapter_titles": " / ".join(ch["title"] for ch in chapter_plan),
-                "completed_summaries": completed_text,
-                "context_memory": self._context_memory(context_packet),
-                "reference_excerpt": self._context_reference(reference_text, context_packet),
-            })
+            chapter_request_messages = self._render_skill_prompt(
+                "chapter-writer",
+                mode=spec["mode"],
+                title=title,
+                logline=summary,
+                target_words=spec.get("target_words", 1800),
+                chapter_word_range=chapter_word_range,
+                chapter_number=plan["number"],
+                chapter_title=plan["title"],
+                chapter_goal=plan["goal"],
+                chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
+                completed_summaries=completed_text,
+                context_memory=self._context_memory(context_packet),
+                reference_excerpt=self._context_reference(reference_text, context_packet),
+            )
 
             request_messages = self._conversation_request_messages(
                 conversation_history=conversation_history,
-                prompt_messages=self._prompt_to_messages(chapter_prompt_value),
+                prompt_messages=chapter_request_messages,
             )
             payload, conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
@@ -506,21 +556,21 @@ class StoryEngine:
         completed_summaries = [f"{ch['title']}:{ch['summary']}" for ch in completed_chapters]
         completed_text = "；".join(completed_summaries) if completed_summaries else "无"
 
-        prompt_value = self.chapter_pair_revision_prompt.invoke({
-            "revision_comment": revision_comment,
-            "current_chapters_json": json.dumps(current_pair, ensure_ascii=False),
-            "mode": spec["mode"],
-            "title": title,
-            "logline": summary,
-            "target_words": spec.get("target_words", 1800),
-            "chapter_word_range": chapter_word_range,
-            "completed_summaries": completed_text,
-            "context_memory": self._context_memory(context_packet),
-            "reference_excerpt": self._context_reference(reference_text, context_packet),
-        })
+        request_messages = self._render_skill_prompt(
+            "chapter-reviser",
+            revision_comment=revision_comment,
+            current_chapters_json=json.dumps(current_pair, ensure_ascii=False),
+            mode=spec["mode"],
+            title=title,
+            logline=summary,
+            target_words=spec.get("target_words", 1800),
+            chapter_word_range=chapter_word_range,
+            completed_summaries=completed_text,
+            context_memory=self._context_memory(context_packet),
+            reference_excerpt=self._context_reference(reference_text, context_packet),
+        )
 
         self._require_gateway_client()
-        request_messages = self._prompt_to_messages(prompt_value)
         payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
@@ -552,14 +602,14 @@ class StoryEngine:
             for ch in completed_chapters
         )
 
-        prompt_value = self.verification_prompt.invoke({
-            "title": title,
-            "chapter_plan": " / ".join(f"第{ch['number']}章 {ch['title']}" for ch in chapter_plan),
-            "full_text": full_text[:8000],  # 截断避免超长
-        })
+        request_messages = self._render_skill_prompt(
+            "full-text-verifier",
+            title=title,
+            chapter_plan=" / ".join(f"第{ch['number']}章 {ch['title']}" for ch in chapter_plan),
+            full_text=full_text[:8000],  # 截断避免超长
+        )
 
         self._require_gateway_client()
-        request_messages = self._prompt_to_messages(prompt_value)
         payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
@@ -590,17 +640,17 @@ class StoryEngine:
         chapters_json = json.dumps(completed_chapters, ensure_ascii=False)
         issues_json = json.dumps(verification_report.get("issues") or [], ensure_ascii=False)
 
-        prompt_value = self.fix_issues_prompt.invoke({
-            "issues_json": issues_json,
-            "user_comment": review_comment,
-            "chapters_json": chapters_json,
-            "mode": spec["mode"],
-            "title": title,
-            "logline": summary,
-        })
+        request_messages = self._render_skill_prompt(
+            "issue-fixer",
+            issues_json=issues_json,
+            user_comment=review_comment,
+            chapters_json=chapters_json,
+            mode=spec["mode"],
+            title=title,
+            logline=summary,
+        )
 
         self._require_gateway_client()
-        request_messages = self._prompt_to_messages(prompt_value)
         payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
             model=resolved_model,
