@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 from app.domain.models import (
+    AgentRunRecord,
     ArtifactItem,
     DraftResult,
     ReviewPayload,
     SourceAsset,
     StoryPlan,
+    SubtaskRecord,
     TaskCreateRequest,
     TaskEvent,
     TaskRecord,
@@ -117,6 +119,39 @@ class TaskLogStore:
             key=lambda item: item.updated_at,
             reverse=True,
         )
+
+    def list_subtasks(self, task_id: str) -> list[SubtaskRecord]:
+        task = self.get(task_id)
+        if task.supervisor_plan is None:
+            return []
+        return list(task.supervisor_plan.subtasks)
+
+    def upsert_subtask(self, task_id: str, subtask: SubtaskRecord) -> TaskRecord:
+        task = self.get(task_id)
+        if task.supervisor_plan is None:
+            raise ValueError("当前任务没有 supervisor_plan。")
+
+        next_subtasks: list[SubtaskRecord] = []
+        replaced = False
+        for current in task.supervisor_plan.subtasks:
+            if current.id == subtask.id:
+                next_subtasks.append(subtask)
+                replaced = True
+            else:
+                next_subtasks.append(current)
+        if not replaced:
+            next_subtasks.append(subtask)
+
+        task.supervisor_plan = task.supervisor_plan.model_copy(
+            update={"subtasks": next_subtasks},
+            deep=True,
+        )
+        return self.save(task)
+
+    def append_agent_run(self, task_id: str, agent_run: AgentRunRecord) -> TaskRecord:
+        task = self.get(task_id)
+        task.agent_runs.append(agent_run)
+        return self.save(task)
 
     def add_source(self, task_id: str, source: SourceAsset) -> TaskRecord:
         task = self.get(task_id)

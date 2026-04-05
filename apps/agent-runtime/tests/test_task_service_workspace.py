@@ -146,6 +146,10 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertEqual(workspace.context_status["cache_scope"], "runtime_context")
             self.assertEqual(workspace.response_cache_status, {})
             self.assertEqual(workspace.request_preview["model_capabilities"]["cache"]["runtime_context_cache"], True)
+            self.assertIsNotNone(workspace.supervisor_plan)
+            assert workspace.supervisor_plan is not None
+            self.assertEqual(workspace.supervisor_plan.subtasks[0].kind, "reference_analysis")
+            self.assertEqual(workspace.supervisor_plan.subtasks[0].status.value, "ready")
 
     def test_dashboard_treats_dead_statuses_as_failed_attention_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

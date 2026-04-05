@@ -139,6 +139,13 @@ def build_router(task_service, engine=None) -> APIRouter:
         except Exception as exc:
             raise _handle_error(exc) from exc
 
+    @router.get("/tasks/{task_id}/supervisor")
+    def get_supervisor(task_id: str):
+        try:
+            return task_service.get_supervisor_plan(task_id)
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
     @router.get("/tasks/{task_id}/review")
     def get_review(task_id: str):
         try:

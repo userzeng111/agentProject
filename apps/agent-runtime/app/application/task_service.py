@@ -11,6 +11,7 @@ from langgraph.types import Command
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from app.context.manager import ContextManager
 from app.domain.models import (
+    AgentRunRecord,
     ArchiveTaskDetailResponse,
     ArchiveTaskListResponse,
     ArtifactItem,
@@ -22,6 +23,8 @@ from app.domain.models import (
     ReviewResponse,
     SourceAsset,
     StoryPlan,
+    SubtaskRecord,
+    SubtaskStatus,
     TaskCreateRequest,
     TaskMode,
     TaskRecord,
@@ -38,6 +41,7 @@ from app.graph.main_graph import (
     _resolve_model_profile,
     build_graph,
 )
+from app.graph.supervisor_graph import build_initial_supervisor_plan
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import (
     StoryEngine,
@@ -96,10 +100,11 @@ class TaskService:
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         task = self.store.create_task(payload)
+        task.supervisor_plan = build_initial_supervisor_plan(payload)
         if task.auto_review and not task.auto_review_policy:
             task.auto_review_policy = dict(self.auto_review_policy)
-            task = self.store.save(task)
-        return task
+        task = self.store.save(task)
+        return self._sync_supervisor_plan(task.id)
 
     def add_source(self, task_id: str, filename: str, media_type: str, content: str) -> TaskRecord:
         source = SourceAsset(filename=filename, media_type=media_type, content=content)
@@ -120,6 +125,7 @@ class TaskService:
             message="任务已进入后台执行，正在整理创作要求。",
             event_type="task.queued",
         )
+        snapshot = self._sync_supervisor_plan(task_id)
         self._start_background(task_id, self._run_task_sync, task_id)
         return snapshot
 
@@ -179,6 +185,7 @@ class TaskService:
                 event_type="review.submitted",
                 unit_id="outline",
             )
+        snapshot = self._sync_supervisor_plan(task_id)
         self._start_background(task_id, self._resume_task_sync, task_id, approved, comment)
         return snapshot
 
@@ -291,7 +298,17 @@ class TaskService:
             context_status=self._load_context_status(task.id),
             response_cache_status=self._load_response_cache_status(task),
             sources=task.sources,
+            supervisor_plan=task.supervisor_plan,
+            agent_runs=task.agent_runs,
         )
+
+    def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get(task_id)
+        if task.supervisor_plan is None:
+            raise ValueError("当前任务还没有 supervisor 规划结果。")
+        payload = task.supervisor_plan.model_dump(mode="json")
+        payload["agent_runs"] = [item.model_dump(mode="json") for item in task.agent_runs]
+        return payload
 
     def get_review(self, task_id: str) -> ReviewResponse:
         task = self.store.get(task_id)
@@ -646,6 +663,7 @@ class TaskService:
                     raise RuntimeError("工作流进入审核前未生成可用大纲。")
                 story_plan = StoryPlan.model_validate(story_plan_data)
                 record = self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
+                record = self._sync_supervisor_plan(task_id)
                 self._emit_trace_summary(
                     task_id,
                     kind="outline",
@@ -665,6 +683,7 @@ class TaskService:
                 review.completed_count = len(completed)
                 review.total_chapters = len(chapter_plan)
                 record = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
+                record = self._sync_supervisor_plan(task_id)
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",
@@ -678,6 +697,7 @@ class TaskService:
                 verification_report = values.get("verification_report") or {}
                 review.verification_report = verification_report
                 record = self.store.set_waiting_verification_review(task_id, review, auto_review_trace)
+                record = self._sync_supervisor_plan(task_id)
                 self._emit_trace_summary(
                     task_id,
                     kind="verification",
@@ -691,7 +711,8 @@ class TaskService:
             if not story_plan_data:
                 raise RuntimeError("工作流进入审核前未生成可用大纲。")
             story_plan = StoryPlan.model_validate(story_plan_data)
-            return self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
+            self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
+            return self._sync_supervisor_plan(task_id)
 
         # 工作流正常结束
         story_plan_data = values.get("story_plan")
@@ -699,7 +720,8 @@ class TaskService:
             raise RuntimeError("工作流结束后未找到大纲结果。")
         story_plan = StoryPlan.model_validate(story_plan_data)
         if values.get("cancelled"):
-            return self.store.set_cancelled(task_id, story_plan, review_comment)
+            self.store.set_cancelled(task_id, story_plan, review_comment)
+            return self._sync_supervisor_plan(task_id)
 
         draft_result_data = values.get("draft_result")
         if not draft_result_data:
@@ -707,6 +729,7 @@ class TaskService:
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
+        record = self._sync_supervisor_plan(task_id)
         self._emit_trace_summary(
             task_id,
             kind="completed",
@@ -746,6 +769,7 @@ class TaskService:
             return self._sync_result(task_id, result)
         except Exception as exc:
             self.store.set_failed(task_id, f"运行失败：{exc}")
+            self._sync_supervisor_plan(task_id)
             raise
         finally:
             self._leave_active_run(task_id)
@@ -796,6 +820,7 @@ class TaskService:
             return self._sync_result(task_id, result, review_comment=comment)
         except Exception as exc:
             self.store.set_failed(task_id, f"恢复执行失败：{exc}")
+            self._sync_supervisor_plan(task_id)
             raise
         finally:
             self._leave_active_run(task_id)
@@ -849,6 +874,8 @@ class TaskService:
 
     def _workspace_tabs(self, task: TaskRecord) -> list[str]:
         tabs = ["request", "events"]
+        if task.supervisor_plan is not None:
+            tabs.append("supervisor")
         if task.story_plan is not None:
             tabs.append("outline")
         review_statuses = {
@@ -1002,6 +1029,7 @@ class TaskService:
                 event_type=event_type,
                 payload=payload,
             )
+            self._sync_supervisor_plan(task_id)
             # 章节正文持久化（从 conversation_history 中提取）
             if event_type == "chapter.saved":
                 chapter_number = payload.get("chapter_number")
@@ -1170,6 +1198,110 @@ class TaskService:
         offset = chapter_number - 1 if event_type == "chapter.started" else chapter_number
         return min(90, max(task.progress, base_progress + int(offset / total * span)))
 
+    def _sync_supervisor_plan(self, task_id: str) -> TaskRecord:
+        task = self.store.get(task_id)
+        if task.supervisor_plan is None:
+            return task
+
+        status_map = self._derive_supervisor_subtask_status(task)
+        next_subtasks = [
+            item.model_copy(update={"status": status_map.get(item.kind, item.status)}, deep=True)
+            for item in task.supervisor_plan.subtasks
+        ]
+        task.supervisor_plan = task.supervisor_plan.model_copy(
+            update={"subtasks": next_subtasks},
+            deep=True,
+        )
+        return self.store.save(task)
+
+    def _derive_supervisor_subtask_status(self, task: TaskRecord) -> dict[str, SubtaskStatus]:
+        status_map = {
+            "reference_analysis": SubtaskStatus.BLOCKED,
+            "outline_planning": SubtaskStatus.BLOCKED,
+            "chapter_writing": SubtaskStatus.BLOCKED,
+            "chapter_review": SubtaskStatus.BLOCKED,
+            "full_verification": SubtaskStatus.BLOCKED,
+            "result_assembly": SubtaskStatus.BLOCKED,
+        }
+
+        if task.status in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
+            status_map["reference_analysis"] = SubtaskStatus.READY
+            return status_map
+
+        if task.status is TaskStatus.PLANNING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_CHAPTER_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.RUNNING
+            status_map["chapter_review"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_VERIFICATION_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+            status_map["chapter_review"] = SubtaskStatus.COMPLETED
+            status_map["full_verification"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.ASSEMBLING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+            status_map["chapter_review"] = SubtaskStatus.COMPLETED
+            status_map["full_verification"] = SubtaskStatus.COMPLETED
+            status_map["result_assembly"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.COMPLETED:
+            return {key: SubtaskStatus.COMPLETED for key in status_map}
+
+        if task.status is TaskStatus.DRAFTING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            if task.current_stage == "verification" or task.current_unit == "verification":
+                status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+                status_map["chapter_review"] = SubtaskStatus.COMPLETED
+                status_map["full_verification"] = SubtaskStatus.RUNNING
+                return status_map
+
+            status_map["chapter_writing"] = SubtaskStatus.RUNNING
+            if isinstance(task.current_unit, str) and task.current_unit.startswith("chapter-pair-"):
+                status_map["chapter_review"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status in {TaskStatus.CANCELLED, TaskStatus.FAILED}:
+            derived = self._derive_supervisor_subtask_status_for_terminal(task)
+            return derived
+
+        return status_map
+
+    def _derive_supervisor_subtask_status_for_terminal(self, task: TaskRecord) -> dict[str, SubtaskStatus]:
+        status_map = self._derive_supervisor_subtask_status(
+            task.model_copy(update={"status": TaskStatus.DRAFTING}, deep=True)
+        )
+        if task.current_stage in {"planning", "waiting_outline_review"}:
+            status_map["outline_planning"] = SubtaskStatus.FAILED
+        elif task.current_stage in {"drafting", "waiting_chapter_review"}:
+            if isinstance(task.current_unit, str) and task.current_unit.startswith("chapter-pair-"):
+                status_map["chapter_review"] = SubtaskStatus.FAILED
+            else:
+                status_map["chapter_writing"] = SubtaskStatus.FAILED
+        elif task.current_stage in {"verification", "waiting_verification_review"}:
+            status_map["full_verification"] = SubtaskStatus.FAILED
+        elif task.current_stage == "completed":
+            status_map["result_assembly"] = SubtaskStatus.FAILED
+        return status_map
+
     def _enter_active_run(self, task_id: str) -> bool:
         with self._run_lock:
             if task_id in self._active_runs:
@@ -1189,6 +1321,7 @@ class TaskService:
                 # 尝试标记任务为失败，防止永久卡在运行状态
                 try:
                     self.store.set_failed(task_id, f"后台任务异常：{exc}")
+                    self._sync_supervisor_plan(task_id)
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)

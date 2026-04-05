@@ -44,6 +44,8 @@ import {
   ContextStatus,
   ModelCapabilities,
   ResponseCacheStatus,
+  SupervisorSubtaskItem,
+  SupervisorSubtaskStatus,
   TaskStatus,
   WorkspaceEvent,
   WorkspaceResponse,
@@ -62,6 +64,18 @@ const statusMap: Record<TaskStatus, { label: string; color: "default" | "success
   failed: { label: "失败", color: "error" },
   waiting_chapter_review: { label: "待章节审核", color: "warning" },
   waiting_verification_review: { label: "待验证审核", color: "warning" },
+};
+
+const supervisorStatusMap: Record<
+  SupervisorSubtaskStatus,
+  { label: string; color: "default" | "success" | "warning" | "error" | "info" }
+> = {
+  pending: { label: "待规划", color: "default" },
+  ready: { label: "就绪", color: "info" },
+  running: { label: "执行中", color: "warning" },
+  blocked: { label: "阻塞", color: "default" },
+  completed: { label: "已完成", color: "success" },
+  failed: { label: "失败", color: "error" },
 };
 
 const WORKFLOW_STEPS = [
@@ -257,6 +271,18 @@ function buildChapterProgress(events: WorkspaceEvent[]) {
     });
 
   return Array.from(chapterMap.values()).sort((left, right) => left.number - right.number);
+}
+
+function countIncomingDependencies(workspace: WorkspaceResponse, subtaskId: string) {
+  return workspace.supervisor_plan?.dependencies.filter((edge) => edge.downstream_subtask_id === subtaskId).length ?? 0;
+}
+
+function countOutgoingDependencies(workspace: WorkspaceResponse, subtaskId: string) {
+  return workspace.supervisor_plan?.dependencies.filter((edge) => edge.upstream_subtask_id === subtaskId).length ?? 0;
+}
+
+function resolveSupervisorStatus(subtask: SupervisorSubtaskItem) {
+  return supervisorStatusMap[subtask.status] ?? supervisorStatusMap.pending;
 }
 
 function buildSystemStages(events: WorkspaceEvent[]) {
@@ -663,6 +689,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
           <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
             <Tab label={`实时日志 (${systemStages.length})`} />
             <Tab label={`章节进度 (${chapterProgress.length})`} />
+            <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
             <Tab label="任务详情" />
           </Tabs>
         </Box>
@@ -859,8 +886,86 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
             </List>
           )}
 
-          {/* Tab 2: 任务详情 */}
+          {/* Tab 2: Supervisor */}
           {activeTab === 2 && (
+            <Stack spacing={2}>
+              {!workspace.supervisor_plan ? (
+                <Alert severity="info">当前任务还没有可展示的 Supervisor 规划。</Alert>
+              ) : (
+                <>
+                  <Box>
+                    <Typography variant="h6" sx={{ mb: 1 }}>
+                      规划版本：{workspace.supervisor_plan.planner_version}
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      子任务：{workspace.supervisor_plan.subtasks.length} 个
+                      {" · "}
+                      依赖边：{workspace.supervisor_plan.dependencies.length} 条
+                      {" · "}
+                      Agent 运行记录：{workspace.agent_runs?.length ?? 0} 条
+                    </Typography>
+                  </Box>
+
+                  <List dense>
+                    {workspace.supervisor_plan.subtasks.map((subtask) => {
+                      const status = resolveSupervisorStatus(subtask);
+                      const incoming = countIncomingDependencies(workspace, subtask.id);
+                      const outgoing = countOutgoingDependencies(workspace, subtask.id);
+                      return (
+                        <div key={subtask.id}>
+                          <ListItem disableGutters alignItems="flex-start">
+                            <ListItemText
+                              primary={
+                                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                  <Typography>{subtask.title}</Typography>
+                                  <Chip size="small" color={status.color} label={status.label} />
+                                  <Chip size="small" variant="outlined" label={subtask.kind} />
+                                </Stack>
+                              }
+                              secondary={
+                                [
+                                  `依赖上游 ${incoming} 个`,
+                                  `下游 ${outgoing} 个`,
+                                  subtask.assigned_agent ? `指派: ${subtask.assigned_agent}` : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" · ")
+                              }
+                            />
+                          </ListItem>
+                          <Divider component="li" />
+                        </div>
+                      );
+                    })}
+                  </List>
+
+                  {workspace.agent_runs?.length ? (
+                    <Box>
+                      <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                        Agent 运行记录
+                      </Typography>
+                      <List dense>
+                        {workspace.agent_runs.map((run) => (
+                          <div key={run.id}>
+                            <ListItem disableGutters>
+                              <ListItemText
+                                primary={`${run.agent_name} · ${run.role}`}
+                                secondary={`状态：${run.status} · 子任务：${run.subtask_id}`}
+                              />
+                            </ListItem>
+                            <Divider component="li" />
+                          </div>
+                        ))}
+                      </List>
+                    </Box>
+                  ) : null}
+                </>
+              )}
+            </Stack>
+          )}
+
+          {/* Tab 3: 任务详情 */}
+          {activeTab === 3 && (
             <Stack spacing={2}>
               <Stack direction="row" spacing={2}>
                 <Typography variant="body2" color="text.secondary">

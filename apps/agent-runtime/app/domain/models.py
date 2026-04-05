@@ -159,6 +159,54 @@ class TaskEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class SubtaskStatus(str, Enum):
+    PENDING = "pending"
+    READY = "ready"
+    RUNNING = "running"
+    BLOCKED = "blocked"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class AgentRunStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class DependencyEdge(BaseModel):
+    upstream_subtask_id: str
+    downstream_subtask_id: str
+    kind: str = "finish_to_start"
+
+
+class SubtaskRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("subtask"))
+    kind: str
+    title: str
+    status: SubtaskStatus = SubtaskStatus.PENDING
+    assigned_agent: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentRunRecord(BaseModel):
+    id: str = Field(default_factory=lambda: new_id("agentrun"))
+    subtask_id: str
+    agent_name: str
+    role: str
+    status: AgentRunStatus = AgentRunStatus.PENDING
+    input_ref: str | None = None
+    output_ref: str | None = None
+
+
+class SupervisorPlan(BaseModel):
+    planner_version: str = "v1"
+    subtasks: list[SubtaskRecord] = Field(default_factory=list)
+    dependencies: list[DependencyEdge] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskRecord(BaseModel):
     id: str = Field(default_factory=lambda: new_id("task"))
     mode: TaskMode
@@ -183,6 +231,8 @@ class TaskRecord(BaseModel):
     auto_review: bool = False
     auto_review_policy: dict[str, Any] = Field(default_factory=dict)
     auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
+    supervisor_plan: SupervisorPlan | None = None
+    agent_runs: list[AgentRunRecord] = Field(default_factory=list)
 
 
 class TaskSummary(BaseModel):
@@ -221,6 +271,8 @@ class WorkspaceResponse(BaseModel):
     context_status: dict[str, Any] = Field(default_factory=dict)
     response_cache_status: dict[str, Any] = Field(default_factory=dict)
     sources: list[SourceAsset] = Field(default_factory=list)
+    supervisor_plan: SupervisorPlan | None = None
+    agent_runs: list[AgentRunRecord] = Field(default_factory=list)
 
 
 class ReviewResponse(BaseModel):

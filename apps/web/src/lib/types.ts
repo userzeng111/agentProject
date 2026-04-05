@@ -225,6 +225,48 @@ export interface WorkspaceResponse {
   response_cache_status?: ResponseCacheStatus;
   context_snapshot?: ContextStatus;
   sources?: SourceAsset[];
+  supervisor_plan?: SupervisorPlanSnapshot | null;
+  agent_runs?: AgentRunItem[];
+}
+
+export type SupervisorSubtaskStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "blocked"
+  | "completed"
+  | "failed";
+
+export interface DependencyEdge {
+  upstream_subtask_id: string;
+  downstream_subtask_id: string;
+  kind: string;
+}
+
+export interface SupervisorSubtaskItem {
+  id: string;
+  kind: string;
+  title: string;
+  status: SupervisorSubtaskStatus;
+  assigned_agent?: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface SupervisorPlanSnapshot {
+  planner_version: string;
+  subtasks: SupervisorSubtaskItem[];
+  dependencies: DependencyEdge[];
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentRunItem {
+  id: string;
+  subtask_id: string;
+  agent_name: string;
+  role: string;
+  status: "pending" | "running" | "completed" | "failed";
+  input_ref?: string | null;
+  output_ref?: string | null;
 }
 
 export interface ReviewHistoryItem {

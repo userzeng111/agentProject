@@ -84,6 +84,27 @@ export function getWorkspace(taskId: string) {
   return request<WorkspaceResponse>(`/api/tasks/${taskId}/workspace`);
 }
 
+export function getSupervisor(taskId: string) {
+  return request<{
+    planner_version: string;
+    subtasks: Array<{
+      id: string;
+      kind: string;
+      title: string;
+      status: string;
+      assigned_agent?: string;
+      payload?: Record<string, unknown>;
+    }>;
+    dependencies: Array<{
+      upstream_subtask_id: string;
+      downstream_subtask_id: string;
+      kind: string;
+    }>;
+    metadata?: Record<string, unknown>;
+    agent_runs?: WorkspaceResponse["agent_runs"];
+  }>(`/api/tasks/${taskId}/supervisor`);
+}
+
 export function getReview(taskId: string) {
   return request<ReviewResponse>(`/api/tasks/${taskId}/review`);
 }

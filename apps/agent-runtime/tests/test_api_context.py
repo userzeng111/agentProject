@@ -80,6 +80,26 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertTrue(payload["context_status"]["compression_applied"])
         self.assertEqual(payload["context_status"]["cache_scope"], "runtime_context")
         self.assertEqual(payload["response_cache_status"], {})
+        self.assertIn("supervisor_plan", payload)
+        self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
+        self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
+
+    def test_supervisor_endpoint_returns_supervisor_plan_and_agent_runs(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇港口悬疑小说",
+                model_id="gpt-5.4",
+            )
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/supervisor")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["planner_version"], "v1")
+        self.assertEqual(len(payload["subtasks"]), 6)
+        self.assertEqual(payload["agent_runs"], [])
 
     def test_workspace_endpoint_returns_response_cache_status_separately(self) -> None:
         task = self.task_service.create_task(
