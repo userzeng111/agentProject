@@ -68,7 +68,7 @@ log "检测到 Python: $($PYTHON --version)"
 start_backend() {
     log "启动后端服务 (FastAPI)..."
     cd "$BACKEND_DIR"
-    $PYTHON -m uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+    $PYTHON -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 }
 
 # 启动前端
@@ -95,7 +95,7 @@ sleep 2
 start_frontend &
 FRONTEND_PID=$!
 
-success "后端已启动 (PID: $BACKEND_PID, http://localhost:8001)"
+success "后端已启动 (PID: $BACKEND_PID, http://localhost:8000)"
 success "前端已启动 (PID: $FRONTEND_PID, http://localhost:3000)"
 echo ""
 log "按 Ctrl+C 停止所有服务"

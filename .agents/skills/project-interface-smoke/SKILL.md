@@ -33,7 +33,7 @@ python3 .agents/skills/project-interface-smoke/scripts/run_smoke.py
 ```bash
 python3 .agents/skills/project-interface-smoke/scripts/run_smoke.py \
   --frontend-url http://127.0.0.1:3000 \
-  --backend-url http://127.0.0.1:8001
+  --backend-url http://127.0.0.1:8000
 ```
 
 ## 检查内容
