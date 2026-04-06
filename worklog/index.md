@@ -60,3 +60,21 @@
 - 标题：多 Agent 语义表述与实现一致性评审
   路径：`worklog/active/agent架构/20260405-02-多agent语义表述与实现一致性评审.md`
   摘要：只读核对对外文档是否宣称多 Agent/自动审核/复杂编排，以及前端实现是否提供相符控制与反馈。
+- 标题：后端与隧道启动脚本
+  路径：`worklog/active/agent架构/20260406-03-后端与隧道启动脚本.md`
+  摘要：新增脚本一键启动后端服务与 cloudflared 内网穿透。
+- 标题：静态页面性能回归排查
+  路径：`worklog/active/agent架构/20260406-04-静态页面性能回归排查.md`
+  摘要：对比线上当前版本与提交 `33ba05d` 的静态页面流畅度差异，排查是否存在前端性能回归。
+- 标题：启动脚本未命中虚拟环境
+  路径：`worklog/active/agent架构/20260406-05-启动脚本未命中虚拟环境.md`
+  摘要：排查 `start-backend-tunnel.sh` 启动后端时使用系统 Python 导致 `uvicorn` 模块缺失。
+- 标题：start.sh 本地联调异常排查
+  路径：`worklog/active/agent架构/20260406-06-startsh本地联调异常排查.md`
+  摘要：排查执行 `start.sh` 后访问 `localhost:3000` 异常的原因，确认是前端、后端还是启动脚本口径问题。
+- 标题：聊天历史持久化与恢复
+  路径：`worklog/active/功能开发/20260406-01-聊天历史持久化与恢复.md`
+  摘要：AI 对话页面切换后历史丢失，需 localStorage 持久化 + 多会话管理 + 删除功能。
+- 标题：自动审核重写评分0分
+  路径：`worklog/active/功能开发/20260406-02-自动审核重写评分0分.md`
+  摘要：overall_score 未写入 trace，前端只能用子Agent均值估算，失败Agent拉低为0。

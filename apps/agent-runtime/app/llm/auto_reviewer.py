@@ -94,7 +94,7 @@ class SubAgentOutput:
             agent_name=self.agent_name,
             role=self.role,
             status="failed" if self.error else "completed",
-            score=self.score if not self.error else None,
+            score=self.score,  # 保留原始分数，不因失败而置空，避免前端均值计算被拉低
             issues=self.issues + self.warnings,
             highlights=self.highlights,
             reasoning=self.reasoning,

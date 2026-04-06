@@ -3,11 +3,15 @@
 # 一键启动前后端项目
 # ============================================
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/apps/agent-runtime"
 FRONTEND_DIR="$SCRIPT_DIR/apps/web"
+BACKEND_HOST="127.0.0.1"
+BACKEND_PORT="8000"
+FRONTEND_HOST="127.0.0.1"
+FRONTEND_PORT="3000"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -34,9 +38,11 @@ error() {
 
 # 检测包管理器
 detect_pm() {
-    if command -v pnpm &>/dev/null; then
+    if [[ -f "$FRONTEND_DIR/package-lock.json" ]] && command -v npm &>/dev/null; then
+        echo "npm"
+    elif [[ -f "$FRONTEND_DIR/pnpm-lock.yaml" ]] && command -v pnpm &>/dev/null; then
         echo "pnpm"
-    elif command -v yarn &>/dev/null; then
+    elif [[ -f "$FRONTEND_DIR/yarn.lock" ]] && command -v yarn &>/dev/null; then
         echo "yarn"
     elif command -v npm &>/dev/null; then
         echo "npm"
@@ -48,7 +54,11 @@ detect_pm() {
 
 # 检测 Python
 detect_python() {
-    if command -v python3 &>/dev/null; then
+    local venv_python="$BACKEND_DIR/.venv/bin/python"
+
+    if [[ -x "$venv_python" ]]; then
+        echo "$venv_python"
+    elif command -v python3 &>/dev/null; then
         echo "python3"
     elif command -v python &>/dev/null; then
         echo "python"
@@ -56,6 +66,20 @@ detect_python() {
         error "未找到 Python"
         exit 1
     fi
+}
+
+wait_http_ready() {
+    local url="$1"
+    local retries="$2"
+    local i
+
+    for ((i = 1; i <= retries; i++)); do
+        if curl -sf "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
 }
 
 PM=$(detect_pm)
@@ -68,14 +92,14 @@ log "检测到 Python: $($PYTHON --version)"
 start_backend() {
     log "启动后端服务 (FastAPI)..."
     cd "$BACKEND_DIR"
-    $PYTHON -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    $PYTHON -m uvicorn app.main:app --host "$BACKEND_HOST" --port "$BACKEND_PORT" --reload
 }
 
 # 启动前端
 start_frontend() {
     log "启动前端服务 (Next.js)..."
     cd "$FRONTEND_DIR"
-    $PM run dev
+    $PM run dev -- --hostname "$FRONTEND_HOST" --port "$FRONTEND_PORT"
 }
 
 # 并行启动
@@ -88,15 +112,24 @@ echo ""
 start_backend &
 BACKEND_PID=$!
 
-# 等待后端启动
-sleep 2
+if ! wait_http_ready "http://$BACKEND_HOST:$BACKEND_PORT/api/health" 20; then
+    error "后端健康检查失败：http://$BACKEND_HOST:$BACKEND_PORT/api/health"
+    kill "$BACKEND_PID" 2>/dev/null || true
+    exit 1
+fi
+success "后端已启动 (PID: $BACKEND_PID, http://$BACKEND_HOST:$BACKEND_PORT)"
 
 # 启动前端（后台运行）
 start_frontend &
 FRONTEND_PID=$!
 
-success "后端已启动 (PID: $BACKEND_PID, http://localhost:8000)"
-success "前端已启动 (PID: $FRONTEND_PID, http://localhost:3000)"
+if ! wait_http_ready "http://$FRONTEND_HOST:$FRONTEND_PORT" 30; then
+    error "前端就绪检查失败：http://$FRONTEND_HOST:$FRONTEND_PORT"
+    kill "$FRONTEND_PID" 2>/dev/null || true
+    kill "$BACKEND_PID" 2>/dev/null || true
+    exit 1
+fi
+success "前端已启动 (PID: $FRONTEND_PID, http://$FRONTEND_HOST:$FRONTEND_PORT)"
 echo ""
 log "按 Ctrl+C 停止所有服务"
 echo ""
@@ -105,8 +138,8 @@ echo ""
 cleanup() {
     echo ""
     warn "正在停止服务..."
-    kill $BACKEND_PID 2>/dev/null || true
-    kill $FRONTEND_PID 2>/dev/null || true
+    kill "$BACKEND_PID" 2>/dev/null || true
+    kill "$FRONTEND_PID" 2>/dev/null || true
     success "已停止所有服务"
     exit 0
 }

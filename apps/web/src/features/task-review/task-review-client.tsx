@@ -160,14 +160,26 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
 
   if (!trace || trace.length === 0) return null;
 
-  const visibleAgents = showAll ? trace : trace.slice(0, 3);
-  const hasMore = trace.length > 3;
+  // 提取 summary 条目（后端在 trace 头部插入的 __summary__ 对象）
+  const summaryEntry = trace.find((a: any) => a && a.__summary__);
+  // 过滤出真正的 Agent 条目（排除 __summary__ 伪条目）
+  const agentItems = trace.filter((a: any) => a && !a.__summary__);
+  const visibleAgents = showAll ? agentItems : agentItems.slice(0, 3);
+  const hasMore = agentItems.length > 3;
 
-  // 统计汇总
-  const totalScore = trace.reduce((sum, a) => sum + (a.score ?? 0), 0);
-  const avgScore = trace.length > 0 ? Math.round(totalScore / trace.length) : 0;
-  const completedCount = trace.filter((a) => a.status === "completed").length;
-  const failedCount = trace.filter((a) => a.status === "failed").length;
+  // 统计汇总：优先使用 summary 中的 overall_score
+  let displayScore: number;
+  const completedAgents = agentItems.filter((a) => a.status === "completed");
+  if (summaryEntry && typeof (summaryEntry as any).overall_score === "number") {
+    // 后端已提供 overall_score，直接使用
+    displayScore = Math.round((summaryEntry as any).overall_score);
+  } else {
+    // 回退：仅计算 completed 状态的 Agent 平均分（排除失败的）
+    const total = completedAgents.reduce((sum, a) => sum + (a.score ?? 0), 0);
+    displayScore = completedAgents.length > 0 ? Math.round(total / completedAgents.length) : 0;
+  }
+  const completedCount = agentItems.filter((a) => a.status === "completed").length;
+  const failedCount = agentItems.filter((a) => a.status === "failed").length;
 
   function getScoreColor(score: number | undefined) {
     if (score === undefined) return "default";
@@ -194,7 +206,7 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
               Agent 审核追踪
             </Typography>
             <Chip
-              label={`${trace.length} 个 Agent`}
+              label={`${agentItems.length} 个 Agent`}
               size="small"
               color="primary"
               variant="outlined"
@@ -205,13 +217,13 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
           </Stack>
           <Stack direction="row" spacing={1} alignItems="center">
             <Chip
-              label={`平均 ${avgScore} 分`}
+              label={`评分 ${displayScore} 分`}
               size="small"
-              color={getScoreColor(avgScore)}
+              color={getScoreColor(displayScore)}
               variant="filled"
             />
             <Chip
-              label={`${completedCount}/${trace.length} 完成`}
+              label={`${completedCount}/${agentItems.length} 完成`}
               size="small"
               variant="outlined"
             />

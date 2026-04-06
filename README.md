@@ -67,6 +67,25 @@ npm run build
 - 当前仓库执行 `npm run lint` 时会进入 Next.js ESLint 初始化交互，不适合作为现成校验命令。
 - 需要做前端基础校验时，优先使用 `npm run build`。
 
+### 2.2 一键启动后端 + Tunnel
+
+如果只需要启动后端与 Cloudflare Tunnel，可在仓库根目录运行：
+
+```bash
+./start-backend-tunnel.sh
+```
+
+默认行为：
+- 后端启动到 `127.0.0.1:8000`
+- 使用 `~/.cloudflared/config.yml`
+- 自动读取其中的 `tunnel` ID 并执行 `cloudflared tunnel run`
+
+如需只检查命令而不真正启动：
+
+```bash
+./start-backend-tunnel.sh --dry-run
+```
+
 ### 3. 验证接口
 
 ```bash

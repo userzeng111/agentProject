@@ -234,7 +234,21 @@ def build_graph(
                 payload._target_words = state.get("normalized_spec", {}).get("target_words", "")
 
                 decision = auto_review_manager.review(payload, policy)
-                trace = [a.model_dump() for a in decision.agent_trace]
+                agent_items = [a.model_dump() for a in decision.agent_trace]
+                # 将 overall_score / approved 等综合信息写入 trace 头部，供前端直接使用
+                trace = [
+                    {
+                        "__summary__": True,
+                        "overall_score": decision.overall_score,
+                        "approved": decision.approved,
+                        "auto_escalated": decision.auto_escalated,
+                        "comment": decision.comment,
+                        "reasoning": decision.reasoning,
+                        "critical_issues": decision.critical_issues,
+                        "warnings": decision.warnings,
+                    },
+                    *agent_items,
+                ]
             except Exception as e:
                 decision = ReviewDecision(
                     approved=False,
@@ -361,7 +375,24 @@ def build_graph(
                     for ch in (state.get("completed_chapters") or [])
                 ]
                 decision = auto_review_manager.review(payload, policy)
-                trace = [a.model_dump() for a in decision.agent_trace]
+                agent_items = [a.model_dump() for a in decision.agent_trace]
+                # 将 overall_score / approved 等综合信息写入 trace 头部
+                new_entry = [
+                    {
+                        "__summary__": True,
+                        "overall_score": decision.overall_score,
+                        "approved": decision.approved,
+                        "auto_escalated": decision.auto_escalated,
+                        "comment": decision.comment,
+                        "reasoning": decision.reasoning,
+                        "critical_issues": decision.critical_issues,
+                        "warnings": decision.warnings,
+                    },
+                    *agent_items,
+                ]
+                # 累积历史 trace（重写循环不覆盖之前的记录）
+                prev_trace = list(state.get("auto_review_trace") or [])
+                trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
                     approved=False,
@@ -370,7 +401,7 @@ def build_graph(
                     auto_escalated=True,
                     overall_score=0.0,
                 )
-                trace = []
+                trace = list(state.get("auto_review_trace") or [])
                 force_manual = True
             if force_manual or _should_interrupt_manual_review(
                 approved=decision.approved,
@@ -461,7 +492,21 @@ def build_graph(
                     verification_revision_count=state.get("verification_revision_count", 0),
                 )
                 decision = auto_review_manager.review(payload, policy)
-                trace = [a.model_dump() for a in decision.agent_trace]
+                agent_items = [a.model_dump() for a in decision.agent_trace]
+                # 将 overall_score / approved 等综合信息写入 trace 头部
+                trace = [
+                    {
+                        "__summary__": True,
+                        "overall_score": decision.overall_score,
+                        "approved": decision.approved,
+                        "auto_escalated": decision.auto_escalated,
+                        "comment": decision.comment,
+                        "reasoning": decision.reasoning,
+                        "critical_issues": decision.critical_issues,
+                        "warnings": decision.warnings,
+                    },
+                    *agent_items,
+                ]
             except Exception as e:
                 decision = ReviewDecision(
                     approved=False,
