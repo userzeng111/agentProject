@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -82,4 +83,22 @@ app.include_router(build_router(task_service, engine=engine), prefix="/api")
 # 挂载前端静态文件（仅当 out 目录存在时）
 _static_dir = Path("/home/user01/WorkSpace/AgentProject/apps/web/out")
 if _static_dir.is_dir():
-    app.mount("/", StaticFiles(directory=str(_static_dir), html=True), name="static")
+    _index_html = _static_dir / "index.html"
+
+    # 先挂载静态资源目录（JS/CSS/图片等走 StaticFiles 高效服务）
+    app.mount("/_next", StaticFiles(directory=str(_static_dir / "_next")), name="static-next")
+
+    @app.get("/{path:path}")
+    async def spa_fallback(request: Request, path: str):
+        """SPA 回退：静态文件优先，否则返回 index.html 让前端路由接管。"""
+        if path:
+            # 尝试匹配静态文件
+            candidate = _static_dir / path.strip("/")
+            if candidate.is_file():
+                return FileResponse(candidate)
+            # 尝试 index.html（如 /archive/ → archive/index.html）
+            index_candidate = _static_dir / path.strip("/") / "index.html"
+            if index_candidate.is_file():
+                return FileResponse(index_candidate)
+        # 所有其他路径回退到 index.html（SPA 路由）
+        return FileResponse(_index_html)
