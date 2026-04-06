@@ -21,6 +21,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getDashboard, getModels, updateDefaultModel } from "@/lib/api";
+import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
 
 const statusLabelMap: Record<TaskStatus, string> = {
@@ -40,19 +41,19 @@ const statusLabelMap: Record<TaskStatus, string> = {
 
 function resolveTaskHref(task: TaskCardSummary) {
   if (task.storage_state === "archive") {
-    return `/archive/${task.task_id}`;
+    return archiveDetailHref(task.task_id);
   }
   if (
     task.status === "waiting_outline_review" ||
     task.status === "waiting_chapter_review" ||
     task.status === "waiting_verification_review"
   ) {
-    return `/review/${task.task_id}`;
+    return reviewHref(task.task_id);
   }
   if (task.status === "completed") {
-    return `/result/${task.task_id}`;
+    return resultHref(task.task_id);
   }
-  return `/tasks/${task.task_id}`;
+  return workspaceHref(task.task_id);
 }
 
 // 紧凑任务卡片

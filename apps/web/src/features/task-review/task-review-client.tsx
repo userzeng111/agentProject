@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   Alert,
@@ -39,6 +39,7 @@ import {
   Check as CheckIcon,
 } from "@mui/icons-material";
 import { fetchTextRef, getReview, resumeTask } from "@/lib/api";
+import { resultHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ReviewResponse } from "@/lib/types";
 
 const OUTLINE_STEPS = [
@@ -772,8 +773,10 @@ function VerificationReview({
   );
 }
 
-export default function TaskReviewClient({ taskId }: { taskId: string }) {
+export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [review, setReview] = useState<ReviewResponse | null>(null);
   const [outlineMarkdown, setOutlineMarkdown] = useState("");
   const [comment, setComment] = useState("");
@@ -782,9 +785,15 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
   const [error, setError] = useState("");
 
   const loadReview = useCallback(async () => {
+    if (!resolvedTaskId) {
+      setError("缺少任务 ID");
+      setReview(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const nextReview = await getReview(taskId);
+      const nextReview = await getReview(resolvedTaskId);
       setReview(nextReview);
       setOutlineMarkdown(nextReview.outline_markdown ?? "");
       setError("");
@@ -798,7 +807,7 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [resolvedTaskId]);
 
   useEffect(() => {
     void loadReview();
@@ -807,10 +816,10 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
   async function handleDecision(approved: boolean) {
     try {
       setSubmitting(true);
-      const nextTask = await resumeTask(taskId, approved, comment);
+      const nextTask = await resumeTask(resolvedTaskId, approved, comment);
       setError("");
       if (nextTask.status === "completed") {
-        router.push(`/result/${taskId}`);
+        router.push(resultHref(resolvedTaskId));
       } else if (
         nextTask.status === "waiting_outline_review" ||
         nextTask.status === "waiting_chapter_review" ||
@@ -819,7 +828,7 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
         await loadReview();
         router.refresh();
       } else {
-        router.push(`/tasks/${taskId}`);
+        router.push(workspaceHref(resolvedTaskId));
       }
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "提交审核失败");
@@ -888,7 +897,7 @@ export default function TaskReviewClient({ taskId }: { taskId: string }) {
               首页
             </Typography>
           </Link>
-          <Link href={`/tasks/${taskId}`} style={{ color: "inherit", textDecoration: "none" }}>
+          <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
             <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
               工作台
             </Typography>

@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { createTask, getModels, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { workspaceHref } from "@/lib/task-routes";
 import { ModelOption, TaskCreatePayload, TaskMode } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
@@ -149,7 +150,7 @@ export default function CreateTaskClient() {
       if (file) {
         await uploadAsset(task.id, file);
       }
-      router.push(`/tasks/${task.id}`);
+      router.push(workspaceHref(task.id));
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "创建任务失败");
     } finally {

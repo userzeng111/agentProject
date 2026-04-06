@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 
 from app.domain.models import TaskRecord
+from app.storage.database import get_session
+from app.storage.db_models import TaskIndexModel
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +17,12 @@ def upsert_task_index(task: TaskRecord) -> None:
         task.story_plan.working_title
         if task.story_plan
         else (task.input.title_hint or task.input.prompt[:24] or task.id)
-    )    with get_session() as session:
+    )
+    with get_session() as session:
         row = session.query(TaskIndexModel).filter_by(id=task.id).first()
         if row is None:
             row = TaskIndexModel(id=task.id)
             session.add(row)
-            session.flush()
         row.mode = task.mode.value
         row.model_id = task.model_id
         row.status = task.status.value

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -25,6 +26,7 @@ import {
   MenuBook as MenuBookIcon,
 } from "@mui/icons-material";
 import { fetchTextRef, getApiBase, getResult } from "@/lib/api";
+import { workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
 
 const WORKFLOW_STEPS = [
@@ -34,16 +36,24 @@ const WORKFLOW_STEPS = [
   { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
 ];
 
-export default function TaskResultClient({ taskId }: { taskId: string }) {
+export default function TaskResultClient({ taskId }: { taskId?: string }) {
+  const searchParams = useSearchParams();
+  const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [result, setResult] = useState<ResultResponse | null>(null);
   const [resultMarkdown, setResultMarkdown] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
+    if (!resolvedTaskId) {
+      setError("缺少任务 ID");
+      setResult(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const response = await getResult(taskId);
+      const response = await getResult(resolvedTaskId);
       setResult(response);
       setResultMarkdown(response.result_markdown ?? "");
       setError("");
@@ -57,7 +67,7 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [resolvedTaskId]);
 
   useEffect(() => {
     void load();
@@ -105,7 +115,7 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
             首页
           </Typography>
         </Link>
-        <Link href={`/tasks/${taskId}`} style={{ color: "inherit", textDecoration: "none" }}>
+        <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
           <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
             工作台
           </Typography>
@@ -186,7 +196,7 @@ export default function TaskResultClient({ taskId }: { taskId: string }) {
             <Chip label={result.meta.status} size="small" variant="outlined" />
           </Stack>
         </Stack>
-        <Button component={Link} href={`/tasks/${taskId}`} variant="outlined" size="small">
+        <Button component={Link} href={workspaceHref(resolvedTaskId)} variant="outlined" size="small">
           返回工作台
         </Button>
       </Stack>

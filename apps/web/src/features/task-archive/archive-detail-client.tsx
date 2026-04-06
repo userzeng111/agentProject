@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -19,18 +20,27 @@ import {
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { fetchTextRef, getApiBase, getArchiveDetail } from "@/lib/api";
+import { resultHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse } from "@/lib/types";
 
-export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
+export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
+  const searchParams = useSearchParams();
+  const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [detail, setDetail] = useState<ArchiveDetailResponse | null>(null);
   const [resultMarkdown, setResultMarkdown] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
+    if (!resolvedTaskId) {
+      setError("缺少任务 ID");
+      setDetail(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const response = await getArchiveDetail(taskId);
+      const response = await getArchiveDetail(resolvedTaskId);
       setDetail(response);
       setResultMarkdown(response.result_markdown ?? "");
       setError("");
@@ -42,7 +52,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [resolvedTaskId]);
 
   useEffect(() => {
     void load();
@@ -117,7 +127,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId: string }) {
           <Button component={Link} href="/archive" variant="outlined" size="small">
             返回列表
           </Button>
-          <Button component={Link} href={`/result/${taskId}`} variant="text" size="small">
+          <Button component={Link} href={resultHref(resolvedTaskId)} variant="text" size="small">
             结果页视图
           </Button>
         </Stack>
