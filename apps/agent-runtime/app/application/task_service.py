@@ -93,6 +93,11 @@ class TaskService:
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
+
+        # 初始化 SQLite 业务数据库
+        from app.storage.database import init_db
+        init_db(str(Path(self.store.root_dir) / "data.db"))
+
         # 启动时同步运行时默认模型到 StoryEngine
         runtime_default = self.model_catalog._effective_default_model()
         if self.model_catalog._runtime_default_model and hasattr(self.engine, "set_runtime_default_model"):

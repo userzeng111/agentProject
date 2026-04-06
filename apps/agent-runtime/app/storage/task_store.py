@@ -68,9 +68,18 @@ class TaskLogStore:
         task.updated_at = utc_now()
         self._tasks[task.id] = task
         self._write_task_files(task)
+        self._sync_to_db(task)
         self._archive_completed_task(task)
         self._write_index()
         return task
+
+    def _sync_to_db(self, task: TaskRecord) -> None:
+        """将任务索引元数据同步写入 SQLite。"""
+        try:
+            from app.storage.db_repository import upsert_task_index
+            upsert_task_index(task)
+        except Exception:
+            logger.warning("任务 %s 数据库索引同步失败", task.id, exc_info=True)
 
     def get(self, task_id: str) -> TaskRecord:
         task = self._tasks.get(task_id)
