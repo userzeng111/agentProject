@@ -96,8 +96,7 @@ class TaskService:
 
         # 初始化 SQLite 业务数据库
         from app.storage.database import init_db
-        db_path = str(Path(self.store.root_dir) / "data.db")
-        init_db(db_path)
+        init_db(str(Path(self.store.root_dir) / "data.db"))
 
         # 启动时同步运行时默认模型到 StoryEngine
         runtime_default = self.model_catalog._effective_default_model()

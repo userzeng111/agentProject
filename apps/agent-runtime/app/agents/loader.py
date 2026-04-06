@@ -50,12 +50,12 @@ class SkillLoader:
         self._load_errors.clear()
 
         if not self._skills_root.exists():
-            logger.warning("Skill 根目录不存在: %s", self._skills_root)
+            logger.debug("Skill 根目录不存在，按无外部 Skill 处理: %s", self._skills_root)
             return self._registry
 
         yaml_files = sorted(self._skills_root.rglob("*.yaml"))
         if not yaml_files:
-            logger.warning("未找到任何 Skill YAML 文件: %s", self._skills_root)
+            logger.debug("未找到 Skill YAML 文件，按内置 prompt fallback: %s", self._skills_root)
             return self._registry
 
         for yaml_path in yaml_files:

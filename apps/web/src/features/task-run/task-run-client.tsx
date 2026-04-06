@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Avatar,
@@ -40,6 +41,7 @@ import {
 } from "@mui/icons-material";
 import { Collapse, CircularProgress, Tooltip } from "@mui/material";
 import { getApiBase, getCurrentChapters, getWorkspace, runTask } from "@/lib/api";
+import { resultHref, reviewHref } from "@/lib/task-routes";
 import {
   ContextStatus,
   ModelCapabilities,
@@ -325,7 +327,9 @@ function buildThinkingGroups(events: WorkspaceEvent[]): ThinkingGroup[] {
   return groups;
 }
 
-export default function TaskRunClient({ taskId }: { taskId: string }) {
+export default function TaskRunClient({ taskId }: { taskId?: string }) {
+  const searchParams = useSearchParams();
+  const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -338,9 +342,15 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
+    if (!resolvedTaskId) {
+      setError("缺少任务 ID");
+      setWorkspace(null);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const nextWorkspace = await getWorkspace(taskId);
+      const nextWorkspace = await getWorkspace(resolvedTaskId);
       setWorkspace(nextWorkspace);
       setError("");
     } catch (refreshError) {
@@ -348,26 +358,32 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [taskId]);
+  }, [resolvedTaskId]);
 
   useEffect(() => {
     void refreshWorkspace();
   }, [refreshWorkspace]);
 
   useEffect(() => {
+    if (!resolvedTaskId) {
+      setStreamState("缺少任务 ID，无法连接事件流");
+      return;
+    }
+
     let disposed = false;
     let source: EventSource | null = null;
+    const candidatePaths = streamPathCandidates(resolvedTaskId);
 
     const tryConnect = (index: number) => {
-      if (disposed || index >= streamPathCandidates(taskId).length) {
+      if (disposed || index >= candidatePaths.length) {
         if (!disposed) {
           setStreamState("事件流未就绪，当前使用手动刷新");
         }
         return;
       }
 
-      const target = `${getApiBase()}${streamPathCandidates(taskId)[index]}`;
-      setStreamState(`正在连接 ${streamPathCandidates(taskId)[index]}`);
+      const target = `${getApiBase()}${candidatePaths[index]}`;
+      setStreamState(`正在连接 ${candidatePaths[index]}`);
       source = new EventSource(target);
       eventSourceRef.current = source;
 
@@ -405,12 +421,12 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
       source?.close();
       eventSourceRef.current = null;
     };
-  }, [taskId, refreshWorkspace]);
+  }, [resolvedTaskId, refreshWorkspace]);
 
   async function handleRun() {
     try {
       setRunning(true);
-      await runTask(taskId);
+      await runTask(resolvedTaskId);
       await refreshWorkspace();
       setError("");
     } catch (runError) {
@@ -422,7 +438,7 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
 
   async function handleChapterClick(chapterNumber: number, chapterTitle: string) {
     try {
-      const data = await getCurrentChapters(taskId);
+      const data = await getCurrentChapters(resolvedTaskId);
       const chapter = data.chapters?.find((ch) => ch.number === chapterNumber);
       if (chapter) {
         setSelectedChapter({
@@ -587,12 +603,12 @@ export default function TaskRunClient({ taskId }: { taskId: string }) {
                   </Button>
                 )}
                 {canReview && (
-                  <Button component={Link} href={`/review/${workspace.meta.task_id}`} variant="contained" size="small">
+                  <Button component={Link} href={reviewHref(workspace.meta.task_id)} variant="contained" size="small">
                     进入审核
                   </Button>
                 )}
                 {workspace.meta.status === "completed" && (
-                  <Button component={Link} href={`/result/${workspace.meta.task_id}`} variant="contained" size="small">
+                  <Button component={Link} href={resultHref(workspace.meta.task_id)} variant="contained" size="small">
                     查看结果
                   </Button>
                 )}

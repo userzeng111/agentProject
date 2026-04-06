@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM 模型定义 — 任务索引表。
+"""SQLAlchemy ORM 模型 — 任务索引表。
 
 仅存储 ID、标题、状态等元数据，正文内容留在文件系统。
 """
@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column

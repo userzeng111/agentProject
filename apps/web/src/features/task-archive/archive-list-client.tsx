@@ -14,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getArchiveList } from "@/lib/api";
+import { archiveDetailHref } from "@/lib/task-routes";
 import { ArchiveTaskSummary } from "@/lib/types";
 
 const PAGE_SIZE = 10;
@@ -111,7 +112,7 @@ export default function ArchiveListClient() {
                     </Typography>
                     <Button
                       component={Link}
-                      href={`/archive/${item.task_id}`}
+                      href={archiveDetailHref(item.task_id)}
                       variant="text"
                       sx={{ alignSelf: "flex-start", px: 0 }}
                     >
