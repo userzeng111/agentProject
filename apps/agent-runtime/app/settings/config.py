@@ -40,6 +40,11 @@ class Settings(BaseSettings):
         default="MiniMax-M2.7-highspeed",
         validation_alias=AliasChoices("AUTO_REVIEW_SYNTHESIS_MODEL"),
     )
+    # 动态 Agent 审核模式（True=使用动态Agent编排审核，False=使用旧硬编码审核）
+    dynamic_agent_review: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("DYNAMIC_AGENT_REVIEW"),
+    )
 
     model_config = SettingsConfigDict(
         env_file=RUNTIME_ENV_FILE,

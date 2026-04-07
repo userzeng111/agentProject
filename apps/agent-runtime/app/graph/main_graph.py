@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypedDict
@@ -14,6 +15,8 @@ from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewMode, Revi
 from app.llm.auto_reviewer import AutoReviewManager
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
+
+logger = logging.getLogger(__name__)
 
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
@@ -91,6 +94,26 @@ def build_graph(
     auto_review_manager: AutoReviewManager | None = AutoReviewManager(
         gateway_client=getattr(engine, "gateway_client", None),
     )
+    # 动态 Agent 审核桥接层（与旧 AutoReviewManager 并行，通过配置切换）
+    dynamic_review_bridge: Any | None = None
+    try:
+        from app.settings.config import get_settings
+        _settings = get_settings()
+        if getattr(_settings, "dynamic_agent_review", False) and getattr(engine, "gateway_client", None) is not None:
+            from app.agents.dynamic.bridge import DynamicReviewBridge
+            dynamic_review_bridge = DynamicReviewBridge(
+                gateway_client=engine.gateway_client,
+                default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
+            )
+            logger.info("动态 Agent 审核模式已启用")
+    except Exception as e:
+        logger.warning("动态 Agent 审核初始化失败，使用旧模式: %s", e)
+    # 审核执行器：优先使用动态桥接层，否则使用旧 AutoReviewManager
+    def _execute_auto_review(payload: ReviewPayload, policy: AutoReviewPolicy):
+        """统一的审核执行入口，根据配置选择动态/旧模式。"""
+        if dynamic_review_bridge is not None:
+            return dynamic_review_bridge.review(payload, policy)
+        return auto_review_manager.review(payload, policy)
 
     def _should_interrupt_manual_review(
         *,

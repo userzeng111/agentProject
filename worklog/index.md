@@ -81,3 +81,6 @@
 - 标题：自动分配创建 Agent 功能设计
   路径：`worklog/active/agent架构/20260407-01-自动分配创建agent功能设计.md`
   摘要：设计 Master Agent + Planner Agent + Agent Factory 的动态 Agent 创建与任务分配架构。
+- 标题：动态 Agent 替换旧硬编码审核
+  路径：`worklog/active/agent架构/20260407-02-动态agent替换旧硬编码审核.md`
+  摘要：Phase 2：将 auto_reviewer.py 硬编码审核替换为动态 Agent 编排系统。
