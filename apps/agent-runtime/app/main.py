@@ -8,6 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from app.api.routes import build_router
+from app.api.dynamic_routes import build_dynamic_router
 from app.application.task_service import TaskService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
@@ -79,6 +80,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(build_router(task_service, engine=engine), prefix="/api")
+
+# 动态 Agent 编排路由（v2 并行）
+_dynamic_router = build_dynamic_router(
+    gateway_client=engine.gateway_client if engine else None,
+    default_model=engine.resolve_model(None) if engine else "",
+)
+app.include_router(_dynamic_router, prefix="/api/v2")
 
 # 挂载前端静态文件（仅当 out 目录存在时）
 _static_dir = Path("/home/user01/WorkSpace/AgentProject/apps/web/out")

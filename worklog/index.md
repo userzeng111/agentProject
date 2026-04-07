@@ -78,3 +78,6 @@
 - 标题：自动审核重写评分0分
   路径：`worklog/active/功能开发/20260406-02-自动审核重写评分0分.md`
   摘要：overall_score 未写入 trace，前端只能用子Agent均值估算，失败Agent拉低为0。
+- 标题：自动分配创建 Agent 功能设计
+  路径：`worklog/active/agent架构/20260407-01-自动分配创建agent功能设计.md`
+  摘要：设计 Master Agent + Planner Agent + Agent Factory 的动态 Agent 创建与任务分配架构。
