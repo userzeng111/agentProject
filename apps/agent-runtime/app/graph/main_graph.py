@@ -256,10 +256,11 @@ def build_graph(
                 payload._requested_target_words = state.get("normalized_spec", {}).get("requested_target_words", "")
                 payload._target_words = state.get("normalized_spec", {}).get("target_words", "")
 
-                decision = auto_review_manager.review(payload, policy)
+                decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
                 # 将 overall_score / approved 等综合信息写入 trace 头部，供前端直接使用
-                trace = [
+                # 累积历史 trace：review_outline 轮次
+                new_entry = [
                     {
                         "__summary__": True,
                         "overall_score": decision.overall_score,
@@ -272,6 +273,9 @@ def build_graph(
                     },
                     *agent_items,
                 ]
+                # 累积历史 trace（重写循环不覆盖之前的记录）
+                prev_trace = list(state.get("auto_review_trace") or [])
+                trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
                     approved=False,
@@ -280,7 +284,7 @@ def build_graph(
                     auto_escalated=True,
                     overall_score=0.0,
                 )
-                trace = []
+                trace = list(state.get("auto_review_trace") or [])
                 force_manual = True
             if force_manual or _should_interrupt_manual_review(
                 approved=decision.approved,
@@ -397,7 +401,7 @@ def build_graph(
                     f"{ch.get('title', '')}:{ch.get('summary', '')}"
                     for ch in (state.get("completed_chapters") or [])
                 ]
-                decision = auto_review_manager.review(payload, policy)
+                decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
                 # 将 overall_score / approved 等综合信息写入 trace 头部
                 new_entry = [
@@ -514,10 +518,10 @@ def build_graph(
                     verification_report=state.get("verification_report", {}),
                     verification_revision_count=state.get("verification_revision_count", 0),
                 )
-                decision = auto_review_manager.review(payload, policy)
+                decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
                 # 将 overall_score / approved 等综合信息写入 trace 头部
-                trace = [
+                new_entry = [
                     {
                         "__summary__": True,
                         "overall_score": decision.overall_score,
@@ -530,6 +534,9 @@ def build_graph(
                     },
                     *agent_items,
                 ]
+                # 累积历史 trace（重写循环不覆盖之前的记录）
+                prev_trace = list(state.get("auto_review_trace") or [])
+                trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
                     approved=False,
@@ -538,7 +545,7 @@ def build_graph(
                     auto_escalated=True,
                     overall_score=0.0,
                 )
-                trace = []
+                trace = list(state.get("auto_review_trace") or [])
                 force_manual = True
             if force_manual or _should_interrupt_manual_review(
                 approved=decision.approved,
@@ -626,6 +633,9 @@ def build_graph(
     def route_after_outline_review(state: WorkflowState) -> str:
         if state.get("approved"):
             return "prepare_chapter_pair_context"
+        # 达到最大修订次数，强制通过，防止死循环
+        if state.get("outline_revision_count", 0) >= MAX_OUTLINE_REVISIONS:
+            return "prepare_chapter_pair_context"
         return "revise_outline"
 
     def route_after_revise_outline(state: WorkflowState) -> str:
@@ -633,6 +643,9 @@ def build_graph(
 
     def route_after_chapter_pair_review(state: WorkflowState) -> str:
         if state.get("approved"):
+            return "accumulate_chapters"
+        # 达到最大修订次数，强制通过，防止死循环
+        if state.get("chapter_pair_revision_count", 0) >= MAX_CHAPTER_PAIR_REVISIONS:
             return "accumulate_chapters"
         return "revise_chapter_pair"
 
@@ -645,6 +658,9 @@ def build_graph(
 
     def route_after_verification_review(state: WorkflowState) -> str:
         if state.get("approved"):
+            return "assemble_result"
+        # 达到最大修订次数，强制通过，防止死循环
+        if state.get("verification_revision_count", 0) >= MAX_VERIFICATION_REVISIONS:
             return "assemble_result"
         return "fix_verified_issues"
 
@@ -720,7 +736,7 @@ def build_graph(
             "fix_verified_issues": "fix_verified_issues",
         },
     )
-    graph.add_edge("fix_verified_issues", "review_verification")
+    graph.add_edge("fix_verified_issues", "verify_full_story")
     graph.add_edge("assemble_result", END)
     graph.add_edge("cancel_task", END)
 

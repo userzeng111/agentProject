@@ -172,17 +172,20 @@ class StoryEngine(BaseAgent):
         # 修复问题 prompt
         self.fix_issues_prompt = ChatPromptTemplate.from_messages(
             [
-                ("system", "你是一个中文小说修订助手，要输出严格 JSON，不要输出额外解释。"),
+                ("system", "你是一个中文小说修订专家，擅长根据审核意见精准修复小说中的问题。你必须输出严格 JSON，不要输出额外解释。"),
                 (
                     "human",
-                    "请根据以下验证意见修复小说中的问题，返回修复后的章节内容。\n"
-                    "验证意见：{issues_json}\n"
-                    "用户补充意见：{user_comment}\n\n"
+                    "请根据以下【审核意见】修复小说中的问题，返回修复后的全部章节内容。\n\n"
+                    "【审核意见】（这是主要修复依据，必须逐条处理）：\n{user_comment}\n\n"
+                    "【验证报告问题】（辅助参考）：\n{issues_json}\n\n"
                     "需要修复的章节：\n{chapters_json}\n\n"
                     "请严格返回 JSON 数组，每个元素为修复后的章节：\n"
                     "{{number:int,title:string,summary:string,content:string}}。\n"
-                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
-                    "要求：只修改有问题的章节，其他章节保持原样。",
+                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n\n"
+                    "【重要要求】：\n"
+                    "1. 必须返回全部章节，包括未修改的章节（保持原样），不得遗漏任何章节。\n"
+                    "2. 优先修复【审核意见】中标记为严重/高优先级的问题。\n"
+                    "3. 修复后的内容必须与上下文连贯，不得破坏已有的叙事逻辑。",
                 ),
             ]
         )
@@ -641,7 +644,22 @@ class StoryEngine(BaseAgent):
             progress_callback=active_progress_callback,
         )
         items = payload if isinstance(payload, list) else [payload]
-        return [dict(ch) for ch in items]
+        fixed = [dict(ch) for ch in items]
+
+        # 安全检查：如果 LLM 返回的章节数少于原始章节，用原始章节补全
+        if len(fixed) < len(completed_chapters):
+            logger.warning(
+                "issue-fixer 返回 %d 章，原始 %d 章，用原始章节补全缺失部分",
+                len(fixed), len(completed_chapters),
+            )
+            fixed_numbers = {ch.get("number") for ch in fixed}
+            for orig_ch in completed_chapters:
+                if orig_ch.get("number") not in fixed_numbers:
+                    fixed.append(dict(orig_ch))
+            # 按 number 排序
+            fixed.sort(key=lambda ch: ch.get("number", 0))
+
+        return fixed
 
     def _prompt_to_text(self, prompt_value) -> str:
         return "\n".join(str(message.content) for message in prompt_value.messages)
