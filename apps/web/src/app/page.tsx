@@ -20,6 +20,7 @@ import {
   Tabs,
   Typography,
 } from "@mui/material";
+import { Replay as ReplayIcon } from "@mui/icons-material";
 import { getDashboard, getModels, updateDefaultModel } from "@/lib/api";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
@@ -58,6 +59,7 @@ function resolveTaskHref(task: TaskCardSummary) {
 
 // 紧凑任务卡片
 function TaskListItem({ task }: { task: TaskCardSummary }) {
+  const isFailed = task.status === "failed";
   return (
     <Card
       variant="outlined"
@@ -90,6 +92,18 @@ function TaskListItem({ task }: { task: TaskCardSummary }) {
             >
               查看
             </Button>
+            {isFailed && (
+              <Button
+                component={Link}
+                href={`/create/?retry_from=${task.task_id}`}
+                size="small"
+                color="warning"
+                startIcon={<ReplayIcon />}
+                sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+              >
+                重新创建
+              </Button>
+            )}
           </Stack>
           <Typography
             variant="body2"
@@ -119,6 +133,7 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
     { label: "待处理", total: dashboard.continue_tasks.length, list: dashboard.continue_tasks },
     { label: "运行中", total: dashboard.running_tasks.length, list: dashboard.running_tasks },
     { label: "失败", total: dashboard.failed_tasks.length, list: dashboard.failed_tasks },
+    { label: "已完成", total: (dashboard.completed_tasks ?? []).length, list: dashboard.completed_tasks ?? [] },
   ];
 
   const current = tabConfig[activeTab];
@@ -130,7 +145,7 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
     setPage(1);
   };
 
-  const emptyTexts = ["当前没有需要人工继续处理的任务。", "当前没有运行中的任务。", "当前没有失败任务。"];
+  const emptyTexts = ["当前没有需要人工继续处理的任务。", "当前没有运行中的任务。", "当前没有失败任务。", "当前没有已完成的任务。"];
 
   return (
     <Card sx={{ borderRadius: 4, display: "flex", flexDirection: "column", overflow: "hidden" }}>

@@ -80,6 +80,10 @@ export function getDashboard() {
   return request<DashboardResponse>("/api/dashboard");
 }
 
+export function getTask(taskId: string) {
+  return request<TaskRecord>(`/api/tasks/${taskId}`);
+}
+
 export function getWorkspace(taskId: string) {
   return request<WorkspaceResponse>(`/api/tasks/${taskId}/workspace`);
 }

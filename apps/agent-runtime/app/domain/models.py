@@ -255,11 +255,13 @@ class DashboardResponse(BaseModel):
     continue_tasks: list[TaskSummary]
     running_tasks: list[TaskSummary]
     failed_tasks: list[TaskSummary]
+    completed_tasks: list[TaskSummary] = Field(default_factory=list)
     model_summary: dict[str, Any]
     system_summary: dict[str, Any]
     continue_total: int = 0
     running_total: int = 0
     failed_total: int = 0
+    completed_total: int = 0
 
 
 class WorkspaceResponse(BaseModel):

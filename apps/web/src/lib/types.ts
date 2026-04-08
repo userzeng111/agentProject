@@ -144,6 +144,7 @@ export interface DashboardResponse {
   continue_tasks: TaskCardSummary[];
   running_tasks: TaskCardSummary[];
   failed_tasks: TaskCardSummary[];
+  completed_tasks?: TaskCardSummary[];
   model_summary?: {
     default_model: string;
     supported_models: string[];
@@ -155,6 +156,7 @@ export interface DashboardResponse {
   continue_total?: number;
   running_total?: number;
   failed_total?: number;
+  completed_total?: number;
 }
 
 export interface WorkspaceMeta {

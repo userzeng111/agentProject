@@ -15,6 +15,7 @@ import {
   List,
   ListItem,
   ListItemText,
+  Snackbar,
   Stack,
   Typography,
 } from "@mui/material";
@@ -22,6 +23,7 @@ import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { fetchTextRef, getApiBase, getArchiveDetail } from "@/lib/api";
 import { resultHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse } from "@/lib/types";
+import MarkdownContent from "@/components/markdown-content";
 
 export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
   const searchParams = useSearchParams();
@@ -30,6 +32,40 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
   const [resultMarkdown, setResultMarkdown] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMsg, setSnackbarMsg] = useState("");
+
+  /** 显示 snackbar 提示 */
+  const showSnackbar = useCallback((msg: string) => {
+    setSnackbarMsg(msg);
+    setSnackbarOpen(true);
+  }, []);
+
+  /** 复制全文到剪贴板 */
+  const handleCopy = useCallback(async () => {
+    if (!resultMarkdown) return;
+    try {
+      await navigator.clipboard.writeText(resultMarkdown);
+      showSnackbar("已复制到剪贴板");
+    } catch {
+      showSnackbar("复制失败，请手动选择复制");
+    }
+  }, [resultMarkdown, showSnackbar]);
+
+  /** 导出为 Markdown 文件下载 */
+  const handleExportMd = useCallback(() => {
+    if (!resultMarkdown) return;
+    const blob = new Blob([resultMarkdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${detail?.meta.title || resolvedTaskId || "archive"}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showSnackbar("已导出 Markdown 文件");
+  }, [resultMarkdown, detail?.meta.title, resolvedTaskId, showSnackbar]);
 
   const load = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -152,11 +188,23 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
       <Card>
         <CardContent>
           <Stack spacing={2}>
-            <Typography variant="h5">正文内容</Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography variant="h5">正文内容</Typography>
+              {resultMarkdown ? (
+                <Stack direction="row" spacing={1}>
+                  <Button size="small" variant="outlined" onClick={() => void handleCopy()}>
+                    复制全文
+                  </Button>
+                  <Button size="small" variant="outlined" onClick={handleExportMd}>
+                    导出 MD
+                  </Button>
+                </Stack>
+              ) : null}
+            </Stack>
             {resultMarkdown ? (
-              <Typography component="pre" sx={{ fontFamily: "inherit", fontSize: 16, lineHeight: 1.85, whiteSpace: "pre-wrap" }}>
+              <MarkdownContent variant="article">
                 {resultMarkdown}
-              </Typography>
+              </MarkdownContent>
             ) : (
               <Alert severity="warning">当前没有可读取的归档正文。</Alert>
             )}
@@ -266,6 +314,14 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
         </CardContent>
       </Card>
     </Stack>
+    {/* 操作反馈提示 */}
+    <Snackbar
+      open={snackbarOpen}
+      autoHideDuration={2500}
+      onClose={() => setSnackbarOpen(false)}
+      message={snackbarMsg}
+      anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+    />
     </Container>
   );
 }

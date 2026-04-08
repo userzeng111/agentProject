@@ -41,6 +41,7 @@ import {
 import { fetchTextRef, getReview, resumeTask } from "@/lib/api";
 import { resultHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ReviewResponse } from "@/lib/types";
+import MarkdownContent from "@/components/markdown-content";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -499,12 +500,9 @@ function OutlineReview({
           <Stack spacing={2}>
             <Typography variant="h5">大纲内容</Typography>
             {outlineMarkdown ? (
-              <Typography
-                component="pre"
-                sx={{ fontFamily: "inherit", fontSize: 15, lineHeight: 1.8, whiteSpace: "pre-wrap" }}
-              >
+              <MarkdownContent variant="outline">
                 {outlineMarkdown}
-              </Typography>
+              </MarkdownContent>
             ) : (
               <Alert severity="info">暂无大纲内容。</Alert>
             )}
@@ -617,12 +615,9 @@ function ChapterPairReview({
                 <Chip label={chapter.summary} size="small" variant="outlined" />
               </Stack>
               <Divider />
-              <Typography
-                component="pre"
-                sx={{ fontFamily: "inherit", fontSize: 15, lineHeight: 1.8, whiteSpace: "pre-wrap" }}
-              >
+              <MarkdownContent variant="outline">
                 {chapter.content}
-              </Typography>
+              </MarkdownContent>
             </Stack>
           </CardContent>
         </Card>

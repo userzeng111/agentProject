@@ -99,6 +99,23 @@ def build_router(task_service, engine=None) -> APIRouter:
         except Exception as exc:
             raise _handle_error(exc) from exc
 
+    @router.post("/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str, payload: dict[str, str] | None = None):
+        """取消一个正在运行或等待审核的任务。"""
+        comment = (payload or {}).get("comment", "")
+        try:
+            return task_service.cancel_task(task_id, comment=comment)
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
+    @router.delete("/tasks/{task_id}")
+    def delete_task(task_id: str):
+        """删除一个已取消/已完成/失败的任务（不能删除运行中的任务）。"""
+        try:
+            return task_service.delete_task(task_id)
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
     @router.post("/tasks/{task_id}/assets")
     async def upload_asset(task_id: str, file: UploadFile = File(...)):
         try:

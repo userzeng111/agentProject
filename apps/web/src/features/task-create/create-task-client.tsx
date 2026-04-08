@@ -21,7 +21,7 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { createTask, getModels, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { createTask, getModels, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
 import { workspaceHref } from "@/lib/task-routes";
 import { ModelOption, TaskCreatePayload, TaskMode } from "@/lib/types";
 
@@ -88,6 +88,7 @@ export default function CreateTaskClient() {
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [retryLoaded, setRetryLoaded] = useState(false);
 
   useEffect(() => {
     async function loadModels() {
@@ -108,6 +109,43 @@ export default function CreateTaskClient() {
 
     void loadModels();
   }, []);
+
+  // 检查 URL 中是否有 retry_from 参数，加载原始任务数据预填充表单
+  useEffect(() => {
+    if (retryLoaded) return;
+    const params = new URLSearchParams(window.location.search);
+    const retryFrom = params.get("retry_from");
+    if (!retryFrom) {
+      setRetryLoaded(true);
+      return;
+    }
+
+    async function loadRetryTask() {
+      try {
+        const task = await getTask(retryFrom!);
+        const input = task.input;
+        setPayload((current) => ({
+          ...current,
+          prompt: input.prompt ?? current.prompt,
+          genre: input.genre ?? current.genre,
+          style: input.style ?? current.style,
+          target_words: input.target_words ?? current.target_words,
+          audience: input.audience ?? current.audience,
+          banned: input.banned ?? current.banned,
+          title_hint: input.title_hint ?? current.title_hint,
+          mode: task.mode ?? current.mode,
+          model_id: input.model_id ?? current.model_id,
+        }));
+      } catch (loadError) {
+        // 重试数据加载失败不影响正常创建流程
+        console.warn("加载重试任务数据失败：", loadError);
+      } finally {
+        setRetryLoaded(true);
+      }
+    }
+
+    void loadRetryTask();
+  }, [retryLoaded]);
 
   const resetPayload = useMemo(
     () => ({

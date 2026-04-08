@@ -124,16 +124,100 @@ class BaseAgent:
     # ── JSON 解析 ──────────────────────────────
 
     def _strip_and_parse_json(self, raw: str) -> dict[str, Any]:
-        """清理 Markdown 围栏并解析 JSON，失败时尝试提取首个 JSON 值。"""
+        """清理 Markdown 围栏并解析 JSON，失败时尝试提取或修复截断的 JSON。"""
         gc = self._require_gateway_client()
         cleaned = gc._strip_markdown_fences(raw)
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
+            # 尝试提取首个完整 JSON 值
             extracted = gc._extract_first_json_value(cleaned)
             if extracted is not None:
                 return extracted
+            # 尝试修复被截断的 JSON（模型输出 token 上限导致）
+            repaired = self._repair_truncated_json(cleaned)
+            if repaired is not None:
+                return repaired
             raise GatewayClientError(f"模型返回的 JSON 无法解析：{raw[:240]}")
+
+    @staticmethod
+    def _repair_truncated_json(text: str) -> dict[str, Any] | None:
+        """尝试修复被截断的 JSON：找到最后一个完整的键值对，补全缺失的括号。"""
+        # 找到第一个 { 的位置
+        start = text.find("{")
+        if start < 0:
+            return None
+        fragment = text[start:]
+
+        # 找到最后一个完整的字符串值或数值/布尔值的位置
+        # 策略：逐字符追踪括号深度和字符串状态，找到截断点
+        depth = 0
+        in_string = False
+        escaping = False
+        last_good_pos = start  # 最后一个可能完整的位置
+
+        i = 0
+        while i < len(fragment):
+            char = fragment[i]
+            if in_string:
+                if escaping:
+                    escaping = False
+                elif char == "\\":
+                    escaping = True
+                elif char == '"':
+                    in_string = False
+                    # 字符串结束，检查后面是否有逗号或冒号
+                    j = i + 1
+                    while j < len(fragment) and fragment[j] in " \t\n\r":
+                        j += 1
+                    if j < len(fragment) and fragment[j] in ",:}":
+                        last_good_pos = j + 1
+                i += 1
+                continue
+
+            if char == '"':
+                in_string = True
+                i += 1
+                continue
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    # 已经是完整 JSON
+                    try:
+                        return json.loads(fragment[:i + 1])
+                    except json.JSONDecodeError:
+                        pass
+            elif char == ",":
+                last_good_pos = i
+            i += 1
+
+        # 在 last_good_pos 处截断，补全括号
+        candidate = fragment[:last_good_pos].rstrip(",")
+        if candidate.endswith(":"):
+            # 有一个键没有值，移除这个不完整的键
+            idx = candidate.rfind('"')
+            if idx > 0:
+                # 找到前一个逗号
+                comma = candidate[:idx].rfind(",")
+                if comma > 0:
+                    candidate = candidate[:comma]
+                else:
+                    candidate = candidate[:idx].rstrip(":{ \t\n")
+
+        # 补全缺失的右括号
+        open_braces = candidate.count("{") - candidate.count("}")
+        open_brackets = candidate.count("[") - candidate.count("]")
+        candidate += "]" * max(0, open_brackets) + "}" * max(0, open_braces)
+
+        try:
+            result = json.loads(candidate)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+        return None
 
     # ── LLM 调用 + JSON 解析 + 重试 ────────────
 

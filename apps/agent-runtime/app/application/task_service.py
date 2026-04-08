@@ -118,6 +118,25 @@ class TaskService:
     def get_task(self, task_id: str) -> TaskRecord:
         return self.store.get(task_id)
 
+    def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
+        """取消一个正在运行或等待审核的任务。"""
+        # 检查任务是否在活跃运行中，如果是则先移除
+        with self._run_lock:
+            was_active = task_id in self._active_runs
+            if was_active:
+                self._active_runs.discard(task_id)
+        record = self.store.cancel_task(task_id, comment=comment)
+        self._sync_supervisor_plan(task_id)
+        return record
+
+    def delete_task(self, task_id: str) -> dict[str, str]:
+        """删除一个已取消/已完成/失败的任务（不能删除运行中的任务）。"""
+        # 再次确认任务不在活跃运行中
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在运行中，请先取消后再删除。")
+        return self.store.delete_task(task_id)
+
     def run_task(self, task_id: str) -> TaskRecord:
         task = self.store.get(task_id)
         if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
@@ -237,10 +256,16 @@ class TaskService:
         failed_tasks = [self._to_summary(task) for task in tasks if task.status is TaskStatus.FAILED]
         failed_tasks.extend(self._to_summary(task) for task in tasks if task.status in dead_statuses)
         failed_tasks.extend(self._to_stale_run_summary(task) for task in tasks if self._is_stale_running_task(task))
+        completed_tasks = [
+            self._to_summary(task)
+            for task in tasks
+            if task.status is TaskStatus.COMPLETED and task.storage_state != "archive"
+        ]
         return DashboardResponse(
             continue_tasks=continue_tasks,
             running_tasks=running_tasks,
             failed_tasks=failed_tasks,
+            completed_tasks=completed_tasks,
             model_summary=self._model_summary(),
             system_summary={
                 "active_runs": len(running_tasks),
@@ -249,6 +274,7 @@ class TaskService:
             continue_total=len(continue_tasks),
             running_total=len(running_tasks),
             failed_total=len(failed_tasks),
+            completed_total=len(completed_tasks),
         )
 
     def get_archive_list(self, page: int = 1, page_size: int = 10) -> ArchiveTaskListResponse:

@@ -359,10 +359,18 @@ _FIX_PLANNER_PROMPT = """你是一个中文小说修复规划专家。
 【输出要求】
 严格返回 JSON：
 {{
+  "score": int,
   "revision_scope": str | null,
   "revision_priority": [{{"chapter": int | null, "issue_type": str, "priority": str}}],
+  "issues": [{{"severity": "critical" | "warning", "dimension": "修复规划", "description": str, "suggestion": str}}],
+  "warnings": [{{"severity": "warning", "dimension": "修复规划", "description": str, "suggestion": str}}],
   "reasoning": str
 }}
+
+【评分规则】
+- 修复规划完整、优先级合理、可操作 → 80~100 分
+- 规划基本合理但有遗漏 → 60~79 分
+- 规划不完整或不可行 → 0~59 分
 
 【验证报告】
 {verification_report}

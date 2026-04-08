@@ -288,6 +288,75 @@ class TaskLogStore:
         )
         return self.save(task)
 
+    def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
+        """取消任务 — 仅允许取消处于 planning/drafting/waiting_* 状态的任务。"""
+        cancellable_statuses = {
+            TaskStatus.PLANNING,
+            TaskStatus.DRAFTING,
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.ASSEMBLING,
+        }
+        task = self.get(task_id)
+        if task.status not in cancellable_statuses:
+            raise ValueError(
+                f"当前任务状态为 {task.status.value}，无法取消。"
+                f"只能取消 planning/drafting/waiting_* 状态的任务。"
+            )
+        task.status = TaskStatus.CANCELLED
+        task.current_stage = "cancelled"
+        task.pending_review = None
+        note = comment.strip() or "任务已被用户取消。"
+        self.append_event(
+            task_id,
+            stage="cancelled",
+            message=note,
+            event_type="task.cancelled",
+            payload={"summary": note, "display_level": "public"},
+            task=task,
+        )
+        return self.save(task)
+
+    def delete_task(self, task_id: str) -> dict[str, str]:
+        """删除任务 — 不允许删除运行中的任务，仅删除已结束的任务。"""
+        running_statuses = {
+            TaskStatus.PLANNING,
+            TaskStatus.DRAFTING,
+            TaskStatus.ASSEMBLING,
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.WAITING_MANUAL_ACTION,
+        }
+        task = self.get(task_id)
+        if task.status in running_statuses:
+            raise ValueError(
+                f"当前任务状态为 {task.status.value}，无法删除。"
+                f"请先取消任务后再删除。"
+            )
+        # 从内存字典中移除
+        self._tasks.pop(task_id, None)
+        # 从 SQLite 索引中删除
+        try:
+            from app.storage.db_repository import delete_task_index
+            delete_task_index(task_id)
+        except Exception:
+            logger.warning("任务 %s 数据库索引删除失败", task_id, exc_info=True)
+        # 删除 tasklog 目录下的文件
+        task_dir = self._task_dir(task)
+        if task_dir.exists():
+            try:
+                shutil.rmtree(task_dir)
+            except Exception:
+                logger.warning("任务 %s 目录删除失败: %s", task_id, task_dir, exc_info=True)
+        # 清理订阅者
+        self._subscribers.pop(task_id, None)
+        # 刷新索引
+        self._write_index()
+        return {"task_id": task_id, "message": "任务已删除。"}
+
     def set_failed(self, task_id: str, message: str) -> TaskRecord:
         task = self.get(task_id)
         task.status = TaskStatus.FAILED

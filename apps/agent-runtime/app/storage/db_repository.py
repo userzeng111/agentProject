@@ -1,4 +1,4 @@
-"""数据库仓库层 — 任务索引的 upsert 操作。"""
+"""数据库仓库层 — 任务索引的 upsert / delete 操作。"""
 
 from __future__ import annotations
 
@@ -34,3 +34,12 @@ def upsert_task_index(task: TaskRecord) -> None:
         row.created_at = task.created_at
         row.updated_at = task.updated_at
         session.commit()
+
+
+def delete_task_index(task_id: str) -> None:
+    """从索引表中删除指定任务的记录。"""
+    with get_session() as session:
+        row = session.query(TaskIndexModel).filter_by(id=task_id).first()
+        if row is not None:
+            session.delete(row)
+            session.commit()
