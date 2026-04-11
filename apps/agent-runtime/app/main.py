@@ -12,6 +12,7 @@ from app.api.dynamic_routes import build_dynamic_router
 from app.application.task_service import TaskService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
+from app.rag import RagConfig, RagService
 from app.settings.config import get_settings
 from app.storage.task_store import TaskLogStore
 
@@ -38,6 +39,7 @@ settings = get_settings()
 store = TaskLogStore(root_dir=settings.tasklog_root)
 engine = StoryEngine(settings)
 model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+rag_service = RagService(RagConfig.from_env())
 auto_review_policy = {
     "auditor_model": settings.auto_review_auditor_model,
     "synthesis_model": settings.auto_review_synthesis_model,
@@ -52,6 +54,7 @@ task_service = TaskService(
     store=store,
     engine=engine,
     model_catalog=model_catalog,
+    rag_service=rag_service,
     auto_review=settings.auto_review,
     auto_review_policy=auto_review_policy,
 )
@@ -79,7 +82,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.include_router(build_router(task_service, engine=engine), prefix="/api")
+app.include_router(build_router(task_service, engine=engine, rag_service=rag_service), prefix="/api")
 
 # 动态 Agent 编排路由（v2 并行）
 _dynamic_router = build_dynamic_router(

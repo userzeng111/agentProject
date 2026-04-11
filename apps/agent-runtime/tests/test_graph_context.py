@@ -3,8 +3,10 @@ import unittest
 from langgraph.types import Command
 
 from app.context.manager import ContextManager
+from app.context.models import ReferenceMaterial
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
 from app.graph.main_graph import build_graph
+from app.rag.service import RagHit, RagSearchResult
 
 
 class FakeEngine:
@@ -70,6 +72,35 @@ class FakeModelCatalog:
         }
 
 
+class FakeRagService:
+    def search_for_story_outline(self, *, spec):
+        return RagSearchResult(
+            query=spec.get("prompt", ""),
+            hits=[RagHit(doc_id="rag-1", content="灯塔档案：夜航记录曾被篡改。", score=0.93, metadata={})],
+            selected_contexts=["灯塔档案：夜航记录曾被篡改。"],
+            error=None,
+        )
+
+    def search_for_story_chapter(self, *, spec, story_plan, batch_index, completed_chapters):
+        return RagSearchResult(
+            query=story_plan.get("working_title", ""),
+            hits=[RagHit(doc_id="rag-2", content="港口潮汐表：凌晨两点会出现异常回流。", score=0.88, metadata={})],
+            selected_contexts=["港口潮汐表：凌晨两点会出现异常回流。"],
+            error=None,
+            selected_hits=[RagHit(doc_id="rag-2", content="港口潮汐表：凌晨两点会出现异常回流。", score=0.88, metadata={})],
+        )
+
+    def build_reference_materials(self, result, *, prefix, start_priority=40):
+        return [
+            ReferenceMaterial(
+                source_id=f"{prefix}-1",
+                title=f"{prefix}资料",
+                content=result.selected_contexts[0],
+                priority=start_priority,
+            )
+        ]
+
+
 class GraphContextIntegrationTests(unittest.TestCase):
     def test_graph_builds_outline_and_chapter_pair_context_snapshots(self) -> None:
         engine = FakeEngine()
@@ -109,6 +140,37 @@ class GraphContextIntegrationTests(unittest.TestCase):
         self.assertIn("chapter_pair_context_packet", final_snapshot)
         self.assertTrue(engine.chapter_pair_contexts)
         self.assertIsNotNone(engine.chapter_pair_contexts[0])
+
+    def test_graph_injects_rag_context_into_outline_and_chapter_snapshots(self) -> None:
+        engine = FakeEngine()
+        graph = build_graph(
+            engine,
+            context_manager=ContextManager(),
+            model_catalog=FakeModelCatalog(),
+            rag_service=FakeRagService(),
+        )
+        config = {"configurable": {"thread_id": "task-graph-rag-1"}}
+        initial_state = {
+            "task_id": "task-graph-rag-1",
+            "input_payload": {
+                "mode": "short_story",
+                "prompt": "写一篇临海城市的悬疑故事",
+                "genre": "悬疑",
+                "style": "冷静克制",
+                "target_words": 1800,
+                "audience": "",
+                "banned": "",
+                "title_hint": "潮汐谜案",
+                "model_id": "gpt-5.4",
+            },
+            "reference_text": "港口、潮水、旧案卷宗。",
+        }
+
+        graph.invoke(initial_state, config=config)
+        self.assertIn("灯塔档案", engine.outline_contexts[0]["references_text"])
+
+        graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        self.assertIn("港口潮汐表", engine.chapter_pair_contexts[0]["references_text"])
 
 
 if __name__ == "__main__":

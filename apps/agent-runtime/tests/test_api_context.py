@@ -9,7 +9,9 @@ from app.api.routes import build_router
 from app.application.task_service import TaskService
 from app.domain.models import DraftResult, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
 from app.llm.model_catalog import ModelCatalogService
+from app.llm.gateway_client import StreamChunk
 from app.llm.story_engine import StoryEngine
+from app.rag.service import RagHit, RagSearchResult
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
 
@@ -204,6 +206,63 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
         self.assertIn("entry_refs", archive_list_payload["items"][0])
         self.assertEqual(len(archive_detail_payload["sources"]), 1)
+
+    def test_chat_completions_injects_rag_context_before_gateway_call(self) -> None:
+        class FakeStreamGateway:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def complete_stream(self, messages, model=None):
+                self.calls.append({"messages": [dict(item) for item in messages], "model": model})
+                yield StreamChunk(content="这是回答")
+
+        class FakeEngine:
+            def __init__(self) -> None:
+                self.gateway_client = FakeStreamGateway()
+
+            def resolve_model(self, model):
+                return model or "gpt-5.4"
+
+        class FakeRagService:
+            def augment_chat_messages(self, messages, top_k=None):
+                return (
+                    [
+                        {"role": "system", "content": "参考资料：港口档案记载夜航记录曾被改写。"},
+                        *messages,
+                    ],
+                    RagSearchResult(
+                        query="夜航记录怎么回事",
+                        hits=[
+                            RagHit(
+                                doc_id="rag-chat-1",
+                                content="港口档案记载夜航记录曾被改写。",
+                                score=0.95,
+                                metadata={},
+                            )
+                        ],
+                        selected_contexts=["港口档案记载夜航记录曾被改写。"],
+                        error=None,
+                    ),
+                )
+
+        app = FastAPI()
+        fake_engine = FakeEngine()
+        app.include_router(build_router(self.task_service, engine=fake_engine, rag_service=FakeRagService()), prefix="/api")
+        client = TestClient(app)
+
+        response = client.post(
+            "/api/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "夜航记录怎么回事"}],
+                "model": "gpt-5.4",
+                "stream": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        call_messages = fake_engine.gateway_client.calls[0]["messages"]
+        self.assertEqual(call_messages[0]["role"], "system")
+        self.assertIn("港口档案", call_messages[0]["content"])
 
 
 if __name__ == "__main__":

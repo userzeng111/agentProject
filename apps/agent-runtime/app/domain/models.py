@@ -461,3 +461,5 @@ class ChatRequest(BaseModel):
     messages: list[ChatMessage]
     model: str | None = None
     stream: bool = True
+    rag_enabled: bool = True
+    rag_top_k: int | None = None

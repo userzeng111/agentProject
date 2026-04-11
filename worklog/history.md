@@ -1,5 +1,8 @@
 # 历史问题索引
 
+- 标题：AgentProject 接入 embeddingProject 实现小说 RAG
+  路径：`worklog/archive/功能开发/20260411-01-AgentProject接入embeddingProject实现小说RAG.md`
+  摘要：在主项目中新增统一 RAG 适配层，接入小说任务流与聊天问答，并通过后端全量测试验证。
 - 标题：首页布局优化与分页设计
   路径：`worklog/archive/UI优化/20260401-01-首页布局优化与分页设计.md`
   摘要：首页双栏布局 + Tab 分组 + 紧凑卡片 + 前端分页，归档列表后端分页，参考知乎网页端设计。

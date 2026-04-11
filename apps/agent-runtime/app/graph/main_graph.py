@@ -84,6 +84,7 @@ def build_graph(
     model_catalog: ModelCatalogService | None = None,
     history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
     checkpoint_db_path: str | Path | None = None,
+    rag_service: Any | None = None,
     auto_review: bool = False,
     auto_review_policy: dict[str, Any] | None = None,
 ):
@@ -99,10 +100,15 @@ def build_graph(
     try:
         from app.settings.config import get_settings
         _settings = get_settings()
-        if getattr(_settings, "dynamic_agent_review", False) and getattr(engine, "gateway_client", None) is not None:
+        gateway_client = getattr(engine, "gateway_client", None)
+        if (
+            getattr(_settings, "dynamic_agent_review", False)
+            and gateway_client is not None
+            and hasattr(gateway_client, "complete_stream_sync")
+        ):
             from app.agents.dynamic.bridge import DynamicReviewBridge
             dynamic_review_bridge = DynamicReviewBridge(
-                gateway_client=engine.gateway_client,
+                gateway_client=gateway_client,
                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
             )
             logger.info("动态 Agent 审核模式已启用")
@@ -201,6 +207,14 @@ def build_graph(
         }
 
     def prepare_outline_context(state: WorkflowState) -> WorkflowState:
+        references = _build_references(state)
+        if rag_service is not None:
+            references.extend(
+                rag_service.build_reference_materials(
+                    rag_service.search_for_story_outline(spec=state["normalized_spec"]),
+                    prefix="大纲RAG",
+                )
+            )
         snapshot = active_context_manager.build_snapshot(
             task_id=state["task_id"],
             stage="planning",
@@ -209,7 +223,7 @@ def build_graph(
                 active_model_catalog,
                 state["normalized_spec"].get("model_id"),
             ),
-            references=_build_references(state),
+            references=references,
             memory_items=[],
         )
         return {
@@ -337,6 +351,19 @@ def build_graph(
         total_chapters = len(chapter_plan)
         completed = state.get("completed_chapters") or []
         completed_count = len(completed)
+        references = _build_references(state)
+        if rag_service is not None:
+            references.extend(
+                rag_service.build_reference_materials(
+                    rag_service.search_for_story_chapter(
+                        spec=state["normalized_spec"],
+                        story_plan=state.get("story_plan"),
+                        batch_index=batch_index,
+                        completed_chapters=completed,
+                    ),
+                    prefix="章节RAG",
+                )
+            )
 
         snapshot = active_context_manager.build_snapshot(
             task_id=state["task_id"],
@@ -346,7 +373,7 @@ def build_graph(
                 active_model_catalog,
                 state["normalized_spec"].get("model_id"),
             ),
-            references=_build_references(state),
+            references=references,
             memory_items=_chapter_pair_memory_items(state),
         )
         return {

@@ -50,6 +50,7 @@ from app.llm.story_engine import (
     set_exchange_callback,
     set_progress_callback,
 )
+from app.rag.service import RagService
 from app.storage.task_store import TaskLogStore
 
 
@@ -62,6 +63,7 @@ class TaskService:
         engine: StoryEngine,
         model_catalog: ModelCatalogService | None = None,
         context_manager: ContextManager | None = None,
+        rag_service: RagService | None = None,
         auto_review: bool = False,
         auto_review_policy: dict[str, Any] | None = None,
     ) -> None:
@@ -79,6 +81,7 @@ class TaskService:
                 ]
             )
         )
+        self.rag_service = rag_service
         self.auto_review = auto_review
         self.auto_review_policy = auto_review_policy or {}
         checkpoint_db_path = str(Path(self.store.root_dir) / "checkpoints.db")
@@ -88,6 +91,7 @@ class TaskService:
             model_catalog=self.model_catalog,
             history_loader=self._load_message_history,
             checkpoint_db_path=checkpoint_db_path,
+            rag_service=self.rag_service,
             auto_review=auto_review,
             auto_review_policy=self.auto_review_policy,
         )
@@ -549,12 +553,20 @@ class TaskService:
                     "reference_text": seed.get("reference_text", ""),
                     "source_assets": seed.get("source_assets", []),
                 }
+                references = _build_references(state_for_refs)
+                if self.rag_service is not None:
+                    references.extend(
+                        self.rag_service.build_reference_materials(
+                            self.rag_service.search_for_story_outline(spec=seed.get("normalized_spec") or {}),
+                            prefix="大纲RAG",
+                        )
+                    )
                 snapshot = self.context_manager.build_snapshot(
                     task_id=task.id,
                     stage="planning",
                     instruction=_outline_instruction(seed.get("normalized_spec") or {}),
                     model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
-                    references=_build_references(state_for_refs),
+                    references=references,
                     memory_items=[],
                 )
                 seed["outline_context_packet"] = snapshot.packet.model_dump(mode="json")
@@ -576,17 +588,30 @@ class TaskService:
                     "chapter_pair_revision_count": review.chapter_pair_revision_count,
                 }
             )
+            references = _build_references(
+                {
+                    "reference_text": seed.get("reference_text", ""),
+                    "source_assets": seed.get("source_assets", []),
+                }
+            )
+            if self.rag_service is not None:
+                references.extend(
+                    self.rag_service.build_reference_materials(
+                        self.rag_service.search_for_story_chapter(
+                            spec=seed.get("normalized_spec") or {},
+                            story_plan=seed.get("story_plan"),
+                            batch_index=review.batch_index or 0,
+                            completed_chapters=completed_chapters,
+                        ),
+                        prefix="章节RAG",
+                    )
+                )
             snapshot = self.context_manager.build_snapshot(
                 task_id=task.id,
                 stage="drafting",
                 instruction=_chapter_pair_instruction(seed.get("normalized_spec") or {}, seed.get("story_plan")),
                 model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
-                references=_build_references(
-                    {
-                        "reference_text": seed.get("reference_text", ""),
-                        "source_assets": seed.get("source_assets", []),
-                    }
-                ),
+                references=references,
                 memory_items=[
                     *(f"世界观：{note}" for note in ((seed.get("story_plan") or {}).get("world_notes") or [])),
                     *(f"人物：{note}" for note in ((seed.get("story_plan") or {}).get("character_notes") or [])),

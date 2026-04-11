@@ -13,7 +13,7 @@ from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
 
-def build_router(task_service, engine=None) -> APIRouter:
+def build_router(task_service, engine=None, rag_service=None) -> APIRouter:
     router = APIRouter()
     # 从 engine 获取 gateway_client 用于流式聊天
     _gateway_client = engine.gateway_client if engine else None
@@ -30,6 +30,12 @@ def build_router(task_service, engine=None) -> APIRouter:
 
     def _sse_payload(event_name: str, payload: dict) -> str:
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def _apply_chat_rag(messages: list[dict[str, str]], payload: ChatRequest) -> list[dict[str, str]]:
+        if rag_service is None or not payload.rag_enabled:
+            return messages
+        augmented_messages, _ = rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
+        return augmented_messages
 
     def _split_file_ref(ref: str) -> tuple[str, str]:
         parts = [item for item in ref.removeprefix("/").split("/") if item]
@@ -259,6 +265,7 @@ def build_router(task_service, engine=None) -> APIRouter:
         messages = [{"role": m.role, "content": m.content} for m in payload.messages]
         if not messages:
             raise HTTPException(status_code=400, detail="messages 不能为空。")
+        messages = _apply_chat_rag(messages, payload)
 
         resolved_model = payload.model or _default_model or ""
 
@@ -301,6 +308,7 @@ def build_router(task_service, engine=None) -> APIRouter:
         messages = [{"role": m.role, "content": m.content} for m in payload.messages]
         if not messages:
             raise HTTPException(status_code=400, detail="messages 不能为空。")
+        messages = _apply_chat_rag(messages, payload)
 
         resolved_model = payload.model or _default_model or ""
 
