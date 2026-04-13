@@ -102,6 +102,42 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
                 },
             )
 
+    def test_run_task_fails_fast_when_novel_rag_library_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class MissingRagService:
+                def is_ready(self) -> bool:
+                    return False
+
+                def readiness_error(self) -> str:
+                    return "小说RAG知识库尚未构建，请先前往设置页完成索引构建。"
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=MissingRagService(),
+            )
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "小说RAG知识库尚未构建"):
+                service.run_task(task.id)
+
     def test_workspace_contains_model_capabilities_and_context_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

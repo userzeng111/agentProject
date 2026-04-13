@@ -111,6 +111,12 @@ class RagService:
         self.config = config
         self.search_backend = search_backend or EmbeddingProjectSearchBackend(config)
 
+    def is_ready(self) -> bool:
+        return self.config.faiss_index_path.exists() and self.config.sqlite_path.exists()
+
+    def readiness_error(self) -> str:
+        return "小说RAG知识库尚未构建，请先前往设置页完成索引构建。"
+
     def search(
         self,
         query: str,

@@ -13,13 +13,14 @@ import {
   useTheme,
   useMediaQuery,
 } from "@mui/material";
-import { Menu as MenuIcon, Create as CreateIcon, Home as HomeIcon, Archive as ArchiveIcon, SmartToy as ChatIcon } from "@mui/icons-material";
+import { Create as CreateIcon, Home as HomeIcon, Archive as ArchiveIcon, SmartToy as ChatIcon, Settings as SettingsIcon } from "@mui/icons-material";
 
 const NAV_LINKS = [
   { label: "首页", href: "/", icon: <HomeIcon fontSize="small" /> },
   { label: "AI 对话", href: "/chat", icon: <ChatIcon fontSize="small" /> },
   { label: "创建任务", href: "/create", icon: <CreateIcon fontSize="small" /> },
   { label: "归档", href: "/archive", icon: <ArchiveIcon fontSize="small" /> },
+  { label: "设置", href: "/settings", icon: <SettingsIcon fontSize="small" /> },
 ];
 
 export function AppHeader() {

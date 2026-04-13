@@ -457,3 +457,24 @@ export interface ChatMessage {
   reasoning_content?: string;
   isStreaming?: boolean;
 }
+
+export interface RagSyncResult {
+  success: boolean;
+  message: string;
+  scanned_files: number;
+  indexed_documents: number;
+  output_dir: string;
+  duration_ms: number;
+  finished_at?: string;
+  sources: string[];
+  warnings: string[];
+}
+
+export interface RagSettingsStatus {
+  available: boolean;
+  library_dir: string;
+  faiss_index_path: string;
+  sqlite_path: string;
+  sources: string[];
+  last_result?: RagSyncResult | null;
+}

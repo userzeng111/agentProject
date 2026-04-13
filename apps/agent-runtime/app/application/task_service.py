@@ -145,6 +145,8 @@ class TaskService:
         task = self.store.get(task_id)
         if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
             raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
+        if self.rag_service is not None and not self.rag_service.is_ready():
+            raise ValueError(self.rag_service.readiness_error())
         snapshot = self.store.mark_stage(
             task_id,
             status=TaskStatus.PLANNING,

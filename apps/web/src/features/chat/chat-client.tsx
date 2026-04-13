@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Box,
@@ -36,6 +37,7 @@ import {
   Menu as MenuIcon,
 } from "@mui/icons-material";
 import { streamChat } from "@/lib/api";
+import { getRagSettings } from "@/lib/api";
 import type { ChatStreamChunk, ChatMessage } from "@/lib/types";
 import {
   type StoredConversation,
@@ -112,6 +114,7 @@ export function ChatClient() {
   const [loading, setLoading] = useState(false);
   const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [ragAvailable, setRagAvailable] = useState<boolean | null>(null);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" | "info" }>({
     open: false,
     message: "",
@@ -154,6 +157,18 @@ export function ChatClient() {
     setMessages([]);
     refreshList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    async function loadRagStatus() {
+      try {
+        const status = await getRagSettings();
+        setRagAvailable(Boolean(status.available));
+      } catch {
+        setRagAvailable(false);
+      }
+    }
+    void loadRagStatus();
   }, []);
 
   // ── 消息变化后持久化（非流式期间） ──
@@ -274,6 +289,7 @@ export function ChatClient() {
     await streamChat(
       apiMessages,
       undefined,
+      Boolean(ragAvailable),
       (chunk: ChatStreamChunk) => {
         if (chunk.reasoning_content) {
           reasoningAccum += chunk.reasoning_content;
@@ -336,7 +352,7 @@ export function ChatClient() {
         streamingRef.current = false;
       },
     );
-  }, [input, loading, messages, scrollToBottom]);
+  }, [input, loading, messages, ragAvailable, scrollToBottom]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -505,6 +521,16 @@ export function ChatClient() {
             </Typography>
           </Box>
         </Box>
+
+        {ragAvailable === false ? (
+          <Alert severity="info" sx={{ mx: 2, mt: 2 }}>
+            当前小说知识库未构建，本页仍可继续对话，但不会使用小说 RAG。请先前往
+            {" "}
+            <Link href="/settings">设置页</Link>
+            {" "}
+            完成索引构建。
+          </Alert>
+        ) : null}
 
         {/* 消息列表 */}
         <Box

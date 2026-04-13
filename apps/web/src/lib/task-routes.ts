@@ -13,3 +13,7 @@ export function resultHref(taskId: string) {
 export function archiveDetailHref(taskId: string) {
   return `/archive/detail/?id=${encodeURIComponent(taskId)}`;
 }
+
+export function settingsHref() {
+  return "/settings";
+}

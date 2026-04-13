@@ -13,7 +13,7 @@ from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
 
-def build_router(task_service, engine=None, rag_service=None) -> APIRouter:
+def build_router(task_service, engine=None, rag_service=None, rag_rebuild_service=None) -> APIRouter:
     router = APIRouter()
     # 从 engine 获取 gateway_client 用于流式聊天
     _gateway_client = engine.gateway_client if engine else None
@@ -69,6 +69,40 @@ def build_router(task_service, engine=None, rag_service=None) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
+
+    @router.get("/settings/rag")
+    def get_rag_status():
+        if rag_rebuild_service is None:
+            return {
+                "available": False,
+                "library_dir": "",
+                "faiss_index_path": "",
+                "sqlite_path": "",
+                "sources": [],
+                "last_result": None,
+            }
+        try:
+            return rag_rebuild_service.get_status()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"读取 RAG 设置失败：{exc}") from exc
+
+    @router.post("/settings/rag/rebuild")
+    def rebuild_rag_library():
+        if rag_rebuild_service is None:
+            raise HTTPException(status_code=503, detail="RAG 重建服务未配置。")
+        try:
+            return rag_rebuild_service.rebuild()
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": str(exc),
+                "scanned_files": 0,
+                "indexed_documents": 0,
+                "output_dir": "",
+                "duration_ms": 0,
+                "sources": [],
+                "warnings": [],
+            }
 
     @router.post("/tasks")
     def create_task(payload: TaskCreateRequest):

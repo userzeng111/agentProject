@@ -1,5 +1,11 @@
 # 历史问题索引
 
+- 标题：小说 RAG 全链路测试
+  路径：`worklog/archive/功能开发/20260413-01-小说RAG全链路测试.md`
+  摘要：完成前后端冒烟、全量 API 自检以及真实小说 RAG 建库和问答验证，确认全链路可用。
+- 标题：小说 RAG 语料库隔离与设置同步入口
+  路径：`worklog/archive/功能开发/20260411-02-小说RAG语料库隔离与设置同步入口.md`
+  摘要：为小说项目建立独立 RAG 数据库，新增设置页全量重建入口，并将建库模式与创作检索模式分离。
 - 标题：AgentProject 接入 embeddingProject 实现小说 RAG
   路径：`worklog/archive/功能开发/20260411-01-AgentProject接入embeddingProject实现小说RAG.md`
   摘要：在主项目中新增统一 RAG 适配层，接入小说任务流与聊天问答，并通过后端全量测试验证。

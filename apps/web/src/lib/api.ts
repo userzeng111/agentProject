@@ -6,6 +6,8 @@ import {
   DashboardResponse,
   ResultResponse,
   ReviewResponse,
+  RagSettingsStatus,
+  RagSyncResult,
   TaskCreatePayload,
   TaskRecord,
   WorkspaceResponse,
@@ -51,6 +53,16 @@ export async function updateDefaultModel(modelId: string) {
   return request<{ default_model: string; supported_models: string[] }>("/api/settings/default-model", {
     method: "PATCH",
     body: JSON.stringify({ model_id: modelId }),
+  });
+}
+
+export function getRagSettings() {
+  return request<RagSettingsStatus>("/api/settings/rag");
+}
+
+export function rebuildRagLibrary() {
+  return request<RagSyncResult>("/api/settings/rag/rebuild", {
+    method: "POST",
   });
 }
 
@@ -219,6 +231,7 @@ import { ChatStreamChunk, ChatDoneEvent } from "@/lib/types";
 export async function streamChat(
   messages: Array<{ role: string; content: string }>,
   model: string | undefined,
+  ragEnabled: boolean,
   onChunk: (chunk: ChatStreamChunk) => void,
   onDone: (event: ChatDoneEvent | null) => void,
   onError: (message: string) => void,
@@ -226,7 +239,7 @@ export async function streamChat(
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, model, stream: true }),
+    body: JSON.stringify({ messages, model, stream: true, rag_enabled: ragEnabled }),
   });
 
   if (!response.ok) {

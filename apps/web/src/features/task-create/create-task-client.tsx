@@ -21,9 +21,9 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { createTask, getModels, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
-import { workspaceHref } from "@/lib/task-routes";
-import { ModelOption, TaskCreatePayload, TaskMode } from "@/lib/types";
+import { createTask, getModels, getRagSettings, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { settingsHref, workspaceHref } from "@/lib/task-routes";
+import { ModelOption, RagSettingsStatus, TaskCreatePayload, TaskMode } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
   mode: "short_story",
@@ -89,6 +89,7 @@ export default function CreateTaskClient() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [retryLoaded, setRetryLoaded] = useState(false);
+  const [ragStatus, setRagStatus] = useState<RagSettingsStatus | null>(null);
 
   useEffect(() => {
     async function loadModels() {
@@ -108,6 +109,24 @@ export default function CreateTaskClient() {
     }
 
     void loadModels();
+  }, []);
+
+  useEffect(() => {
+    async function loadRagStatus() {
+      try {
+        setRagStatus(await getRagSettings());
+      } catch {
+        setRagStatus({
+          available: false,
+          library_dir: "",
+          faiss_index_path: "",
+          sqlite_path: "",
+          sources: [],
+          last_result: null,
+        });
+      }
+    }
+    void loadRagStatus();
   }, []);
 
   // 检查 URL 中是否有 retry_from 参数，加载原始任务数据预填充表单
@@ -181,6 +200,10 @@ export default function CreateTaskClient() {
   };
 
   const handleSubmit = async () => {
+    if (!ragStatus?.available) {
+      setError("当前小说知识库尚未构建，请先前往设置页完成全量重建索引。");
+      return;
+    }
     try {
       setSubmitting(true);
       setError("");
@@ -218,6 +241,19 @@ export default function CreateTaskClient() {
           填写创作需求，开始生成大纲，审核通过后继续生成正文。
         </Typography>
       </Stack>
+
+      {ragStatus?.available === false ? (
+        <Alert
+          severity="warning"
+          action={
+            <Button component={Link} href={settingsHref()} color="inherit" size="small">
+              前往设置
+            </Button>
+          }
+        >
+          当前小说知识库未构建，请先前往设置页完成全量重建索引，再开始创作。
+        </Alert>
+      ) : null}
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
