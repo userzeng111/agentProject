@@ -558,16 +558,20 @@ function ChapterPairReview({
   const completed = review.completed_count ?? 0;
   const total = review.total_chapters ?? 0;
   const revisionCount = review.chapter_pair_revision_count ?? 0;
-  const pairNumber = Math.floor(batchIndex / 2) + 1;
+  const batchEnd = Math.min(batchIndex + Math.max(chapters.length, 1), total);
 
   return (
     <>
       <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-        章节对审核
+        章节批次审核
       </Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
         <Chip label={review.meta.title || review.meta.task_id} size="small" />
-        <Chip label={`第 ${pairNumber} 对`} size="small" color="primary" />
+        <Chip
+          label={batchEnd <= batchIndex + 1 ? `第 ${batchIndex + 1} 章` : `第 ${batchIndex + 1}-${batchEnd} 章`}
+          size="small"
+          color="primary"
+        />
         <Chip label={`${completed}/${total} 章`} size="small" variant="outlined" />
         {revisionCount > 0 && (
           <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
@@ -589,7 +593,8 @@ function ChapterPairReview({
               sx={{ height: 8, borderRadius: 4 }}
             />
             <Typography variant="body2" color="text.secondary">
-              已完成 {completed} / {total} 章，正在审核第 {batchIndex + 1}–{Math.min(batchIndex + 2, total)} 章
+              已完成 {completed} / {total} 章，正在审核
+              {batchEnd <= batchIndex + 1 ? ` 第 ${batchIndex + 1} 章` : ` 第 ${batchIndex + 1}-${batchEnd} 章`}
             </Typography>
           </Stack>
         </CardContent>
@@ -599,7 +604,7 @@ function ChapterPairReview({
         <CardContent>
           <Stack spacing={2}>
             <Typography variant="h5">审核摘要</Typography>
-            <Typography>{review.summary || review.meta.summary || "请审核这对章节是否符合大纲要求。"}</Typography>
+            <Typography>{review.summary || review.meta.summary || "请审核本批章节是否符合大纲要求。"}</Typography>
           </Stack>
         </CardContent>
       </Card>

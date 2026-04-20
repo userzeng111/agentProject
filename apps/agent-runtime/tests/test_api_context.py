@@ -166,6 +166,51 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["review_type"], "outline_review")
         self.assertEqual(payload["revision_count"], 2)
 
+    def test_recover_endpoint_restores_outline_review_from_history(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇港口悬疑小说",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = self.store.get(task.id)
+        broken.status = broken.status.PLANNING
+        broken.current_stage = "planning"
+        broken.current_unit = "outline-revision"
+        broken.story_plan = None
+        broken.pending_review = None
+        self.store.save(broken)
+        self.store.write_message_history(
+            task.id,
+            stage="planning",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {
+                    "role": "assistant",
+                    "content": __import__("json").dumps(
+                        {
+                            "working_title": "恢复标题",
+                            "logline": "恢复梗概",
+                            "world_notes": ["港口"],
+                            "character_notes": ["档案员"],
+                            "chapter_plan": [{"number": 1, "title": "起始", "goal": "发现异常"}],
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            filename="outline-revision-history",
+        )
+
+        response = self.client.post(f"/api/tasks/{task.id}/recover")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "waiting_outline_review")
+        self.assertEqual(payload["current_stage"], "waiting_outline_review")
+
     def test_result_and_archive_endpoints_expose_json_refs_and_sources(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(

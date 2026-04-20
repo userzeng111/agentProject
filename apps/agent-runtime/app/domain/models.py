@@ -42,6 +42,7 @@ class TaskInput(BaseModel):
     prompt: str
     genre: str = ""
     style: str = ""
+    style_profile_id: str = ""
     target_words: int = 1800
     audience: str = ""
     banned: str = ""
@@ -51,7 +52,7 @@ class TaskInput(BaseModel):
 class TaskCreateRequest(TaskInput):
     mode: TaskMode
     model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
-    auto_review: bool = False  # 是否开启自动审核 [NEW]
+    auto_review: bool | None = None  # 是否开启自动审核 [NEW]
 
 
 class ResumeRequest(BaseModel):
@@ -228,7 +229,7 @@ class TaskRecord(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     # 自动审核配置 [NEW]
-    auto_review: bool = False
+    auto_review: bool | None = None
     auto_review_policy: dict[str, Any] = Field(default_factory=dict)
     auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None
@@ -247,6 +248,7 @@ class TaskSummary(BaseModel):
     progress: int
     updated_at: datetime
     summary: str
+    error_message: str | None = None
     storage_state: str
     entry_refs: dict[str, str] | None = None
 

@@ -40,7 +40,7 @@ import {
   ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
 import { Collapse, CircularProgress, Tooltip } from "@mui/material";
-import { getApiBase, getCurrentChapters, getWorkspace, runTask } from "@/lib/api";
+import { getApiBase, getCurrentChapters, getWorkspace, recoverTask, runTask } from "@/lib/api";
 import { resultHref, reviewHref } from "@/lib/task-routes";
 import {
   ContextStatus,
@@ -145,6 +145,23 @@ function resolveResponseCacheStatus(workspace: WorkspaceResponse): ResponseCache
 
 function resolveModelCapabilities(workspace: WorkspaceResponse): ModelCapabilities | undefined {
   return workspace.request_preview?.model_capabilities || workspace.meta.model_capabilities;
+}
+
+function resolveRecoveryReason(workspace: WorkspaceResponse) {
+  const event = [...(workspace.recent_events || [])]
+    .reverse()
+    .find((item) => item.event_type === "task.recovery.blocked" && typeof item.payload?.reason === "string");
+  return event?.payload?.reason || "";
+}
+
+function formatRecoveryReason(reason: string) {
+  if (!reason) {
+    return "";
+  }
+  const labels: Record<string, string> = {
+    missing_stable_state: "缺少可恢复的稳定产物",
+  };
+  return labels[reason] || reason;
 }
 
 function formatContextWindowLabel(capabilities?: ModelCapabilities) {
@@ -436,6 +453,19 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
   }
 
+  async function handleRecover() {
+    try {
+      setRunning(true);
+      await recoverTask(resolvedTaskId);
+      await refreshWorkspace();
+      setError("");
+    } catch (recoverError) {
+      setError(recoverError instanceof Error ? recoverError.message : "恢复任务失败");
+    } finally {
+      setRunning(false);
+    }
+  }
+
   async function handleChapterClick(chapterNumber: number, chapterTitle: string) {
     try {
       const data = await getCurrentChapters(resolvedTaskId);
@@ -501,6 +531,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
+  const recoveryReason = resolveRecoveryReason(workspace);
 
   const canReview = [
     "waiting_outline_review",
@@ -587,6 +618,27 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       </Card>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {!error && workspace.meta.status === "waiting_manual_action" && workspace.meta.error_message ? (
+        <Alert severity="warning">
+          <Stack spacing={1}>
+            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+              当前任务需要人工处理
+            </Typography>
+            <Typography variant="body2">{workspace.meta.error_message}</Typography>
+            {recoveryReason ? (
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="caption" color="text.secondary">
+                  恢复阻塞原因：
+                </Typography>
+                <Chip label={formatRecoveryReason(recoveryReason)} size="small" variant="outlined" />
+              </Stack>
+            ) : null}
+            <Typography variant="caption" color="text.secondary">
+              可先点击“恢复任务”尝试回填最近稳定阶段；若仍无法恢复，再考虑基于原任务重建新任务。
+            </Typography>
+          </Stack>
+        </Alert>
+      ) : null}
 
       {/* 请求摘要卡片 */}
       <Card>
@@ -600,6 +652,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 {["created", "sources_ingested"].includes(workspace.meta.status) && (
                   <Button variant="contained" disabled={running} onClick={handleRun} size="small">
                     {running ? "启动中..." : "开始执行"}
+                  </Button>
+                )}
+                {workspace.meta.status === "waiting_manual_action" && (
+                  <Button variant="contained" disabled={running} onClick={handleRecover} size="small">
+                    {running ? "恢复中..." : "恢复任务"}
                   </Button>
                 )}
                 {canReview && (

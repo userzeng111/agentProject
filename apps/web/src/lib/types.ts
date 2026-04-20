@@ -17,6 +17,7 @@ export interface TaskInput {
   prompt: string;
   genre: string;
   style: string;
+  style_profile_id?: string;
   target_words: number;
   audience: string;
   banned: string;
@@ -66,6 +67,17 @@ export interface ModelMetadata {
   profile_version?: string;
 }
 
+export interface StyleProfile {
+  id: string;
+  name: string;
+  source_novel: string;
+  source_author: string;
+  genre: string;
+  description: string;
+  fidelity_score: number;
+  trigger_keywords: string[];
+}
+
 export interface ModelOption {
   id: string;
   object?: string;
@@ -82,6 +94,10 @@ export interface ModelListResponse {
     default_model?: string;
     capability_schema_version?: string;
   };
+}
+
+export interface StyleProfileListResponse {
+  items: StyleProfile[];
 }
 
 export interface ContextStatus {
@@ -137,6 +153,7 @@ export interface TaskCardSummary {
   progress?: number;
   updated_at: string;
   summary: string;
+  error_message?: string | null;
   storage_state?: string;
 }
 
@@ -171,6 +188,7 @@ export interface WorkspaceMeta {
   progress: number;
   updated_at?: string;
   summary?: string;
+  error_message?: string | null;
   context_status?: ContextStatus;
 }
 
@@ -194,6 +212,7 @@ export interface WorkspaceEvent {
     detail?: string;
     approved?: boolean;
     comment?: string;
+    reason?: string;
     // 思考链（model.thinking 事件）
     reasoning_chunk?: string;
     accumulated_length?: number;
@@ -218,6 +237,10 @@ export interface WorkspaceResponse {
     model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
+    style_profile_id?: string;
+    style_profile_name?: string;
+    style_guidance?: string;
+    style_profile?: Record<string, unknown>;
     target_words?: number;
     audience?: string;
     banned?: string;
@@ -422,6 +445,10 @@ export interface ArchiveDetailResponse {
     model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
+    style_profile_id?: string;
+    style_profile_name?: string;
+    style_guidance?: string;
+    style_profile?: Record<string, unknown>;
     target_words?: number;
     audience?: string;
     banned?: string;

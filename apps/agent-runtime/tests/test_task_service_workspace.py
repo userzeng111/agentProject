@@ -53,6 +53,48 @@ class FakeEngine:
 
 
 class TaskServiceWorkspaceTests(unittest.TestCase):
+    def test_task_level_auto_review_false_must_override_global_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                auto_review=True,
+                auto_review_policy={
+                    "auditor_model": "auditor-x",
+                    "synthesis_model": "synthesis-y",
+                },
+            )
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                    auto_review=False,
+                )
+            )
+            stored = service.get_task(task.id)
+            initial_state = service._initial_state(stored)
+
+            self.assertFalse(stored.auto_review)
+            self.assertFalse(initial_state["auto_review"])
+            self.assertEqual(
+                initial_state["auto_review_policy"],
+                {
+                    "auditor_model": "auditor-x",
+                    "synthesis_model": "synthesis-y",
+                },
+            )
+
     def test_create_task_persists_task_level_auto_review_and_initial_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
@@ -247,6 +289,35 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertNotIn(waiting_manual.id, continue_ids)
             self.assertNotIn(assembling.id, running_ids)
             self.assertNotIn(cancelled.id, continue_ids)
+
+    def test_workspace_meta_exposes_error_message_for_waiting_manual_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="任务一",
+                    model_id="gpt-5.4",
+                )
+            )
+            store.set_waiting_manual_action(task.id, "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。")
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(workspace.meta.status, TaskStatus.WAITING_MANUAL_ACTION)
+            self.assertEqual(
+                workspace.meta.error_message,
+                "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。",
+            )
 
     def test_second_equivalent_task_hits_context_and_response_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

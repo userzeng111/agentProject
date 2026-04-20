@@ -173,11 +173,13 @@ class RagService:
         spec: dict[str, Any],
         story_plan: dict[str, Any] | None,
         batch_index: int,
+        batch_size: int = 2,
         completed_chapters: list[dict[str, Any]],
     ) -> RagSearchResult:
         plan = story_plan or {}
         chapter_plan = [item for item in (plan.get("chapter_plan") or []) if isinstance(item, dict)]
-        current = chapter_plan[batch_index : batch_index + 2]
+        effective_batch_size = max(batch_size, 1)
+        current = chapter_plan[batch_index : batch_index + effective_batch_size]
         current_summary = " ".join(
             f"第{item.get('number')}章 {item.get('title')} {item.get('goal')}"
             for item in current

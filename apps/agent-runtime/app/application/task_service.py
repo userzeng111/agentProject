@@ -39,6 +39,7 @@ from app.graph.main_graph import (
     _chapter_pair_instruction,
     _outline_instruction,
     _resolve_model_profile,
+    build_normalized_spec,
     build_graph,
 )
 from app.graph.supervisor_graph import build_initial_supervisor_plan
@@ -64,6 +65,8 @@ class TaskService:
         model_catalog: ModelCatalogService | None = None,
         context_manager: ContextManager | None = None,
         rag_service: RagService | None = None,
+        novel_skill_service: Any | None = None,
+        style_profile_service: Any | None = None,
         auto_review: bool = False,
         auto_review_policy: dict[str, Any] | None = None,
     ) -> None:
@@ -82,6 +85,8 @@ class TaskService:
             )
         )
         self.rag_service = rag_service
+        self.novel_skill_service = novel_skill_service
+        self.style_profile_service = style_profile_service
         self.auto_review = auto_review
         self.auto_review_policy = auto_review_policy or {}
         checkpoint_db_path = str(Path(self.store.root_dir) / "checkpoints.db")
@@ -92,6 +97,8 @@ class TaskService:
             history_loader=self._load_message_history,
             checkpoint_db_path=checkpoint_db_path,
             rag_service=self.rag_service,
+            novel_skill_service=self.novel_skill_service,
+            style_profile_service=self.style_profile_service,
             auto_review=auto_review,
             auto_review_policy=self.auto_review_policy,
         )
@@ -110,7 +117,7 @@ class TaskService:
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         task = self.store.create_task(payload)
         task.supervisor_plan = build_initial_supervisor_plan(payload)
-        if task.auto_review and not task.auto_review_policy:
+        if self._resolve_task_auto_review(task) and not task.auto_review_policy:
             task.auto_review_policy = dict(self.auto_review_policy)
         task = self.store.save(task)
         return self._sync_supervisor_plan(task.id)
@@ -120,7 +127,28 @@ class TaskService:
         return self.store.add_source(task_id, source)
 
     def get_task(self, task_id: str) -> TaskRecord:
-        return self.store.get(task_id)
+        return self.recover_task(task_id)
+
+    def recover_task(self, task_id: str, force: bool = False) -> TaskRecord:
+        task = self.store.get(task_id)
+        if not self._should_attempt_recovery(task, force=force):
+            return task
+
+        recovered = self._recover_task_from_stable_state(task, force=force)
+        if recovered is not None:
+            return self._sync_supervisor_plan(task_id)
+
+        if task.status is not TaskStatus.WAITING_MANUAL_ACTION or force:
+            return self.store.set_waiting_manual_action(
+                task_id,
+                "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。",
+                payload={
+                    "summary": "任务无法自动恢复，已转入待人工处理。",
+                    "display_level": "public",
+                    "reason": "missing_stable_state",
+                },
+            )
+        return task
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
@@ -160,12 +188,14 @@ class TaskService:
         return snapshot
 
     def resume_task(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
-        task = self.store.get(task_id)
         valid_statuses = {
             TaskStatus.WAITING_OUTLINE_REVIEW,
             TaskStatus.WAITING_CHAPTER_REVIEW,
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }
+        task = self.store.get(task_id)
+        if task.status not in valid_statuses or task.pending_review is None:
+            task = self.recover_task(task_id)
         if task.status not in valid_statuses or task.pending_review is None:
             raise ValueError("当前任务没有待恢复的审核节点。")
         review_type = task.pending_review.type
@@ -324,7 +354,7 @@ class TaskService:
         )
 
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
-        task = self.store.get(task_id)
+        task = self.recover_task(task_id)
         recent_events = task.events[-20:]
         return WorkspaceResponse(
             meta=self._to_summary(task),
@@ -348,7 +378,7 @@ class TaskService:
         return payload
 
     def get_review(self, task_id: str) -> ReviewResponse:
-        task = self.store.get(task_id)
+        task = self.recover_task(task_id)
         review = task.pending_review
         auto_review_trace = task.auto_review_trace or []
         if review is None:
@@ -476,6 +506,7 @@ class TaskService:
 
     def _initial_state(self, task: TaskRecord) -> dict[str, Any]:
         reference_text = "\n\n".join(source.content for source in task.sources)
+        resolved_auto_review = self._resolve_task_auto_review(task)
         return {
             "task_id": task.id,
             "input_payload": {
@@ -484,6 +515,7 @@ class TaskService:
                 "prompt": task.input.prompt,
                 "genre": task.input.genre,
                 "style": task.input.style,
+                "style_profile_id": task.input.style_profile_id,
                 "target_words": task.input.target_words,
                 "audience": task.input.audience,
                 "banned": task.input.banned,
@@ -491,9 +523,241 @@ class TaskService:
             },
             "reference_text": reference_text,
             "source_assets": [source.model_dump(mode="json") for source in task.sources],
-            "auto_review": task.auto_review or self.auto_review,
+            "auto_review": resolved_auto_review,
             "auto_review_policy": task.auto_review_policy or dict(self.auto_review_policy),
         }
+
+    def _resolve_task_auto_review(self, task: TaskRecord) -> bool:
+        if task.auto_review is None:
+            return self.auto_review
+        return task.auto_review
+
+    def _should_attempt_recovery(self, task: TaskRecord, *, force: bool = False) -> bool:
+        if force:
+            return True
+        if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
+            return task.pending_review is None or task.story_plan is None
+        if task.status is TaskStatus.WAITING_CHAPTER_REVIEW:
+            return task.pending_review is None or task.story_plan is None
+        if task.status is TaskStatus.WAITING_VERIFICATION_REVIEW:
+            return task.pending_review is None or task.story_plan is None
+        if (
+            task.status is TaskStatus.PLANNING
+            and str(task.current_unit or "").startswith("outline")
+            and task.pending_review is None
+            and task.story_plan is None
+        ):
+            return True
+        return False
+
+    def _recover_task_from_stable_state(self, task: TaskRecord, *, force: bool = False) -> TaskRecord | None:
+        if self._can_recover_outline_review(task):
+            return self._recover_outline_review(task)
+        if self._can_recover_chapter_review(task, force=force):
+            return self._recover_chapter_review(task)
+        if self._can_recover_verification_review(task, force=force):
+            return self._recover_verification_review(task)
+        return None
+
+    def _can_recover_outline_review(self, task: TaskRecord) -> bool:
+        if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
+            return task.pending_review is None or task.story_plan is None
+        return (
+            task.status is TaskStatus.PLANNING
+            and str(task.current_unit or "").startswith("outline")
+            and task.pending_review is None
+            and task.story_plan is None
+        )
+
+    def _can_recover_chapter_review(self, task: TaskRecord, *, force: bool = False) -> bool:
+        if task.pending_review is None or task.pending_review.type != "chapter_pair_review":
+            return False
+        return (
+            task.status in {TaskStatus.WAITING_CHAPTER_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}
+            and (
+                task.story_plan is None
+                or force
+                or self._chapter_pair_payload_is_dirty(task)
+            )
+        )
+
+    def _can_recover_verification_review(self, task: TaskRecord, *, force: bool = False) -> bool:
+        return (
+            task.status in {TaskStatus.WAITING_VERIFICATION_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}
+            and task.pending_review is not None
+            and task.pending_review.type == "verification_review"
+            and (task.story_plan is None or force)
+        )
+
+    def _recover_outline_review(self, task: TaskRecord) -> TaskRecord | None:
+        story_plan = self._load_story_plan_from_history(task.id)
+        if story_plan is None:
+            return None
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请确认大纲是否可以进入正文起草。",
+            story_plan=story_plan,
+            risk_flags=[
+                "demo 版本，大纲以稳定展示工作流为优先。",
+                "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
+            ],
+            revision_count=self._outline_revision_count_from_history(task.id),
+        )
+        record = self.store.set_waiting_review(
+            task.id,
+            review,
+            story_plan,
+            task.auto_review_trace or None,
+        )
+        self.store.append_event(
+            task.id,
+            stage="waiting_outline_review",
+            message="已从历史大纲快照恢复到待大纲审核。",
+            event_type="task.recovered",
+            payload={
+                "summary": "任务已恢复到待大纲审核。",
+                "display_level": "public",
+                "source": "outline_history",
+            },
+        )
+        return self.store.save(self.store.get(record.id))
+
+    def _recover_chapter_review(self, task: TaskRecord) -> TaskRecord | None:
+        story_plan = task.story_plan or self._load_story_plan_from_history(task.id)
+        if story_plan is None or task.pending_review is None:
+            return None
+        rebuilt_chapter_pair = self._rebuild_chapter_pair_from_history(task, story_plan, task.pending_review)
+        if rebuilt_chapter_pair:
+            task.pending_review.chapter_pair = rebuilt_chapter_pair
+        current_task = self.store.get(task.id)
+        current_task.story_plan = story_plan
+        current_task.pending_review = task.pending_review
+        self.store.save(current_task)
+        record = self.store.set_waiting_chapter_review(
+            task.id,
+            task.pending_review,
+            task.auto_review_trace or None,
+        )
+        self.store.append_event(
+            task.id,
+            stage="waiting_chapter_review",
+            message="已从历史大纲快照恢复章节审核所需状态。",
+            event_type="task.recovered",
+            payload={
+                "summary": "任务已恢复到待章节审核。",
+                "display_level": "public",
+                "source": "outline_history",
+            },
+        )
+        return self.store.save(self.store.get(record.id))
+
+    def _recover_verification_review(self, task: TaskRecord) -> TaskRecord | None:
+        story_plan = task.story_plan or self._load_story_plan_from_history(task.id)
+        if story_plan is None or task.pending_review is None:
+            return None
+        current_task = self.store.get(task.id)
+        current_task.story_plan = story_plan
+        self.store.save(current_task)
+        record = self.store.set_waiting_verification_review(
+            task.id,
+            task.pending_review,
+            task.auto_review_trace or None,
+        )
+        self.store.append_event(
+            task.id,
+            stage="waiting_verification_review",
+            message="已从历史快照恢复验证审核所需状态。",
+            event_type="task.recovered",
+            payload={
+                "summary": "任务已恢复到待验证审核。",
+                "display_level": "public",
+                "source": "verification_snapshot",
+            },
+        )
+        return self.store.save(self.store.get(record.id))
+
+    def _load_story_plan_from_history(self, task_id: str) -> StoryPlan | None:
+        for snapshot_name in ("outline-revision-history", "outline-history"):
+            history = self._load_context_snapshot(task_id, stage="planning", snapshot_name=snapshot_name)
+            if not isinstance(history, dict):
+                continue
+            messages = history.get("messages") or []
+            for message in reversed(messages):
+                if message.get("role") != "assistant":
+                    continue
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                try:
+                    return StoryPlan.model_validate_json(content)
+                except Exception:
+                    try:
+                        return StoryPlan.model_validate(json.loads(content))
+                    except Exception:
+                        continue
+        return None
+
+    def _outline_revision_count_from_history(self, task_id: str) -> int:
+        history = self._load_context_snapshot(task_id, stage="planning", snapshot_name="outline-revision-history")
+        if not isinstance(history, dict):
+            return 0
+        messages = history.get("messages") or []
+        return 1 if any(item.get("role") == "assistant" for item in messages if isinstance(item, dict)) else 0
+
+    def _chapter_pair_payload_is_dirty(self, task: TaskRecord) -> bool:
+        review = task.pending_review
+        if review is None or review.type != "chapter_pair_review":
+            return False
+        story_plan = task.story_plan
+        if story_plan is None:
+            return False
+        total_chapters = review.total_chapters or len(story_plan.chapter_plan)
+        completed_count = review.completed_count or 0
+        mode = str((task.normalized_spec or {}).get("mode") or task.mode.value)
+        expected = 2
+        if mode == TaskMode.STYLE_REMIX.value and total_chapters > 2:
+            expected = 2 if completed_count == 0 else 1
+        current = len(review.chapter_pair or [])
+        return current != expected
+
+    def _rebuild_chapter_pair_from_history(
+        self,
+        task: TaskRecord,
+        story_plan: StoryPlan,
+        review: ReviewPayload,
+    ) -> list[ChapterDraft] | None:
+        batch_index = review.batch_index or 0
+        completed_count = review.completed_count or 0
+        total_chapters = review.total_chapters or len(story_plan.chapter_plan)
+        mode = str((task.normalized_spec or {}).get("mode") or task.mode.value)
+        batch_size = 2
+        if mode == TaskMode.STYLE_REMIX.value and total_chapters > 2:
+            batch_size = 2 if completed_count == 0 else 1
+
+        rebuilt: list[ChapterDraft] = []
+        for chapter_number in range(batch_index + 1, min(batch_index + batch_size, total_chapters) + 1):
+            history = self._load_context_snapshot(
+                task.id,
+                stage="drafting",
+                snapshot_name=f"chapter-{chapter_number:02d}-history",
+            )
+            messages = history.get("messages") if isinstance(history, dict) else []
+            if not isinstance(messages, list):
+                continue
+            for message in reversed(messages):
+                if message.get("role") != "assistant":
+                    continue
+                content = str(message.get("content") or "").strip()
+                if not content:
+                    continue
+                try:
+                    payload = ChapterDraft.model_validate_json(content)
+                except Exception:
+                    continue
+                rebuilt.append(payload)
+                break
+        return rebuilt or None
 
     def _config(self, task_id: str) -> dict[str, Any]:
         return {"configurable": {"thread_id": task_id}, "recursion_limit": 100}
@@ -686,13 +950,15 @@ class TaskService:
         values = snapshot.values if snapshot and hasattr(snapshot, "values") else {}
         normalized_spec = values.get("normalized_spec")
         if normalized_spec:
-            self.store.update_normalized_spec(task_id, normalized_spec)
-            self._emit_trace_summary(
-                task_id,
-                kind="spec",
-                title="创作要求已标准化",
-                detail="已整理用户诉求、风格、字数和参考材料，开始生成大纲。",
-            )
+            current_task = self.store.get(task_id)
+            if current_task.normalized_spec != normalized_spec:
+                self.store.update_normalized_spec(task_id, normalized_spec)
+                self._emit_trace_summary(
+                    task_id,
+                    kind="spec",
+                    title="创作要求已标准化",
+                    detail="已整理用户诉求、风格、字数和参考材料，开始生成大纲。",
+                )
 
         outline_context_snapshot = values.get("outline_context_snapshot")
         if isinstance(outline_context_snapshot, dict):
@@ -737,6 +1003,7 @@ class TaskService:
                 batch_index = values.get("batch_index", 0)
                 completed = values.get("completed_chapters") or []
                 chapter_plan = (story_plan_data or {}).get("chapter_plan") or []
+                batch_end = min(batch_index + len(current_chapter_pair), len(chapter_plan))
                 review.batch_index = batch_index
                 review.completed_count = len(completed)
                 review.total_chapters = len(chapter_plan)
@@ -745,8 +1012,12 @@ class TaskService:
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",
-                    title=f"章节对 {batch_index // 2 + 1} 已生成",
-                    detail=f"第 {batch_index + 1}-{min(batch_index + 2, len(chapter_plan))} 章已起草，等待审核。",
+                    title="章节批次已生成",
+                    detail=(
+                        f"第 {batch_index + 1} 章已起草，等待审核。"
+                        if batch_end <= batch_index + 1
+                        else f"第 {batch_index + 1}-{batch_end} 章已起草，等待审核。"
+                    ),
                     unit_id=f"chapter-pair-{batch_index}",
                 )
                 return record
@@ -816,6 +1087,19 @@ class TaskService:
                 kind="outline",
                 title="开始生成大纲",
                 detail="正在结合提示词、风格和参考文本收敛故事骨架。",
+            )
+            initial_payload = self._initial_state(task)["input_payload"]
+            normalized_spec = build_normalized_spec(
+                initial_payload,
+                novel_skill_service=self.novel_skill_service,
+                style_profile_service=self.style_profile_service,
+            )
+            self.store.update_normalized_spec(task_id, normalized_spec)
+            self._emit_trace_summary(
+                task_id,
+                kind="spec",
+                title="创作要求已标准化",
+                detail="已整理用户诉求、方法论、风格、字数和参考材料，开始生成大纲。",
             )
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
@@ -913,6 +1197,7 @@ class TaskService:
             progress=task.progress,
             updated_at=task.updated_at,
             summary=summary,
+            error_message=task.error_message,
             storage_state=task.storage_state,
             entry_refs={
                 "meta_json": f"tasklog/{task.storage_state}/{task.id}/meta.json",
@@ -1398,6 +1683,8 @@ class TaskService:
             "model_capabilities": self._model_capabilities(model_id),
             "genre": task.input.genre,
             "style": task.input.style,
+            "style_profile_id": task.input.style_profile_id,
+            "style_profile_name": str(task.normalized_spec.get("style_profile_name") or ""),
             "target_words": task.input.target_words,
             "audience": task.input.audience,
             "banned": task.input.banned,

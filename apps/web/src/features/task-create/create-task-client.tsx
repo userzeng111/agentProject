@@ -21,15 +21,16 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { createTask, getModels, getRagSettings, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { createTask, getModels, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
-import { ModelOption, RagSettingsStatus, TaskCreatePayload, TaskMode } from "@/lib/types";
+import { ModelOption, RagSettingsStatus, StyleProfile, TaskCreatePayload, TaskMode } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
   mode: "short_story",
   prompt: "",
   genre: "",
   style: "",
+  style_profile_id: "",
   target_words: 1800,
   audience: "",
   banned: "",
@@ -80,11 +81,36 @@ function formatCompressionLabel(model?: ModelOption) {
   return "压缩：未启用";
 }
 
+function formatStyleProfileSummary(profile: StyleProfile) {
+  const parts = [
+    profile.source_novel ? `《${profile.source_novel}》` : "",
+    profile.source_author ? `作者：${profile.source_author}` : "",
+    profile.genre ? `题材：${profile.genre}` : "",
+  ].filter(Boolean);
+  return parts.length ? `${profile.name} · ${parts.join(" · ")}` : profile.name;
+}
+
+function formatStyleProfileHelper(profile?: StyleProfile) {
+  if (!profile) {
+    return "当前模式下尚未选择风格实例。";
+  }
+  const parts = [
+    profile.source_novel ? `原作《${profile.source_novel}》` : "",
+    profile.source_author ? `作者 ${profile.source_author}` : "",
+    profile.genre ? `题材 ${profile.genre}` : "",
+    typeof profile.fidelity_score === "number" ? `保真度 ${profile.fidelity_score}` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 export default function CreateTaskClient() {
   const router = useRouter();
   const [payload, setPayload] = useState(defaultPayload);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [styleProfiles, setStyleProfiles] = useState<StyleProfile[]>([]);
+  const [styleProfilesLoading, setStyleProfilesLoading] = useState(true);
+  const [styleProfilesError, setStyleProfilesError] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -109,6 +135,23 @@ export default function CreateTaskClient() {
     }
 
     void loadModels();
+  }, []);
+
+  useEffect(() => {
+    async function loadStyleProfiles() {
+      try {
+        setStyleProfilesLoading(true);
+        setStyleProfilesError("");
+        setStyleProfiles(await getStyleProfiles());
+      } catch (loadError) {
+        setStyleProfiles([]);
+        setStyleProfilesError(loadError instanceof Error ? loadError.message : "读取风格实例列表失败");
+      } finally {
+        setStyleProfilesLoading(false);
+      }
+    }
+
+    void loadStyleProfiles();
   }, []);
 
   useEffect(() => {
@@ -154,6 +197,7 @@ export default function CreateTaskClient() {
           title_hint: input.title_hint ?? current.title_hint,
           mode: task.mode ?? current.mode,
           model_id: input.model_id ?? current.model_id,
+          style_profile_id: input.style_profile_id ?? current.style_profile_id,
         }));
       } catch (loadError) {
         // 重试数据加载失败不影响正常创建流程
@@ -180,6 +224,11 @@ export default function CreateTaskClient() {
   );
 
   const selectedModelCapabilities = selectedModel?.capabilities;
+  const selectedStyleProfile = useMemo(
+    () => styleProfiles.find((item) => item.id === payload.style_profile_id) ?? null,
+    [payload.style_profile_id, styleProfiles],
+  );
+  const canSubmit = Boolean(payload.prompt.trim()) && (payload.mode !== "style_remix" || Boolean(selectedStyleProfile));
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -188,12 +237,32 @@ export default function CreateTaskClient() {
     [selectedModelCapabilities],
   );
 
+  useEffect(() => {
+    if (payload.mode !== "style_remix") {
+      return;
+    }
+    setPayload((current) => {
+      if (current.mode !== "style_remix" || current.style_profile_id || !styleProfiles.length) {
+        return current;
+      }
+      return {
+        ...current,
+        style_profile_id: styleProfiles[0].id,
+      };
+    });
+  }, [payload.mode, styleProfiles]);
+
   const updateField =
     (field: keyof TaskCreatePayload) =>
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       const value = field === "target_words" ? Number(event.target.value) : event.target.value;
       setPayload((current) => ({ ...current, [field]: value }));
     };
+
+  const handleModeChange = (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const nextMode = event.target.value as TaskMode;
+    setPayload((current) => ({ ...current, mode: nextMode }));
+  };
 
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
     setFile(event.target.files?.[0] ?? null);
@@ -202,6 +271,10 @@ export default function CreateTaskClient() {
   const handleSubmit = async () => {
     if (!ragStatus?.available) {
       setError("当前小说知识库尚未构建，请先前往设置页完成全量重建索引。");
+      return;
+    }
+    if (payload.mode === "style_remix" && !selectedStyleProfile) {
+      setError("请先选择一个有效的风格实例。");
       return;
     }
     try {
@@ -265,7 +338,7 @@ export default function CreateTaskClient() {
               select
               label="任务模式"
               value={payload.mode}
-              onChange={updateField("mode")}
+              onChange={handleModeChange}
             >
               {modeOptions.map((option) => (
                 <MenuItem key={option.value} value={option.value}>
@@ -367,6 +440,110 @@ export default function CreateTaskClient() {
               </Box>
             )}
 
+            {payload.mode === "style_remix" ? (
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  backgroundColor: "rgba(39, 100, 81, 0.03)",
+                }}
+              >
+                <Stack spacing={2}>
+                  <Stack
+                    direction={{ xs: "column", sm: "row" }}
+                    spacing={1}
+                    justifyContent="space-between"
+                    alignItems={{ xs: "flex-start", sm: "center" }}
+                  >
+                    <Box>
+                      <Typography variant="subtitle1">风格实例</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        从后端 `GET /api/style-profiles` 拉取实例列表，选择后会作为风格复刻基础。
+                      </Typography>
+                    </Box>
+                    {selectedStyleProfile && (
+                      <Chip size="small" variant="outlined" label={`已选：${selectedStyleProfile.name}`} />
+                    )}
+                  </Stack>
+
+                  {styleProfilesLoading ? (
+                    <Skeleton variant="rounded" height={56} />
+                  ) : (
+                    <TextField
+                      select
+                      label="风格实例"
+                      value={payload.style_profile_id}
+                      onChange={updateField("style_profile_id")}
+                      helperText={
+                        styleProfilesError
+                          ? styleProfilesError
+                          : styleProfiles.length
+                            ? "选择一个已蒸馏的实例，再用下方文本补充具体写作要求。"
+                            : "当前没有可用的风格实例，普通模式不受影响。"
+                      }
+                      error={Boolean(styleProfilesError)}
+                      disabled={Boolean(styleProfilesError) && !styleProfiles.length}
+                    >
+                      {styleProfiles.length ? (
+                        styleProfiles.map((profile) => (
+                          <MenuItem key={profile.id} value={profile.id}>
+                            <Stack spacing={0.25} sx={{ py: 0.5 }}>
+                              <Typography variant="body2">{profile.name}</Typography>
+                              <Typography variant="caption" color="text.secondary">
+                                {formatStyleProfileSummary(profile)}
+                              </Typography>
+                            </Stack>
+                          </MenuItem>
+                        ))
+                      ) : (
+                        <MenuItem value="" disabled>
+                          暂无可用实例
+                        </MenuItem>
+                      )}
+                    </TextField>
+                  )}
+
+                  {selectedStyleProfile ? (
+                    <Box
+                      sx={{
+                        p: 2,
+                        borderRadius: 2,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        backgroundColor: "rgba(29, 42, 39, 0.02)",
+                      }}
+                    >
+                      <Stack spacing={1.25}>
+                        <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                          <Typography variant="subtitle2">{selectedStyleProfile.name}</Typography>
+                          <Chip size="small" label={`保真度 ${selectedStyleProfile.fidelity_score}`} />
+                        </Stack>
+                        <Typography variant="body2" color="text.secondary">
+                          {formatStyleProfileHelper(selectedStyleProfile)}
+                        </Typography>
+                        {selectedStyleProfile.description ? (
+                          <Typography variant="body2">{selectedStyleProfile.description}</Typography>
+                        ) : null}
+                        {selectedStyleProfile.trigger_keywords.length ? (
+                          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                            {selectedStyleProfile.trigger_keywords.map((keyword) => (
+                              <Chip key={keyword} size="small" variant="outlined" label={keyword} />
+                            ))}
+                          </Stack>
+                        ) : (
+                          <Typography variant="body2" color="text.secondary">
+                            当前实例没有返回触发关键词。
+                          </Typography>
+                        )}
+                      </Stack>
+                    </Box>
+                  ) : null}
+                </Stack>
+              </Box>
+            ) : null}
+
             <TextField
               label="创意提示词"
               value={payload.prompt}
@@ -384,7 +561,16 @@ export default function CreateTaskClient() {
               }}
             >
               <TextField label="题材" value={payload.genre} onChange={updateField("genre")} />
-              <TextField label="风格" value={payload.style} onChange={updateField("style")} />
+              <TextField
+                label={payload.mode === "style_remix" ? "补充风格要求" : "风格"}
+                value={payload.style}
+                onChange={updateField("style")}
+                placeholder={
+                  payload.mode === "style_remix"
+                    ? "例如：保留原作的克制叙事，但把人物关系处理得更冷峻，避免过度抒情。"
+                    : undefined
+                }
+              />
               <TextField
                 label="目标字数"
                 type="number"
@@ -434,7 +620,7 @@ export default function CreateTaskClient() {
             </Stack>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !payload.prompt.trim()} onClick={handleSubmit} variant="contained">
+              <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
                 {submitting ? "正在创建..." : "创建并进入任务页"}
               </Button>
               <Button onClick={() => setPayload(resetPayload)} variant="text">

@@ -8,6 +8,7 @@ import {
   ReviewResponse,
   RagSettingsStatus,
   RagSyncResult,
+  StyleProfileListResponse,
   TaskCreatePayload,
   TaskRecord,
   WorkspaceResponse,
@@ -49,6 +50,11 @@ export async function getModels() {
   return response.data ?? [];
 }
 
+export async function getStyleProfiles() {
+  const response = await request<StyleProfileListResponse>("/api/style-profiles");
+  return Array.isArray(response.items) ? response.items : [];
+}
+
 export async function updateDefaultModel(modelId: string) {
   return request<{ default_model: string; supported_models: string[] }>("/api/settings/default-model", {
     method: "PATCH",
@@ -85,6 +91,12 @@ export function resumeTask(taskId: string, approved: boolean, comment: string) {
   return request<TaskRecord>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
     body: JSON.stringify({ approved, comment }),
+  });
+}
+
+export function recoverTask(taskId: string) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/recover`, {
+    method: "POST",
   });
 }
 

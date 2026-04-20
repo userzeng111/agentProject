@@ -30,7 +30,7 @@ def upsert_task_index(task: TaskRecord) -> None:
         row.progress = task.progress
         row.title = title
         row.storage_state = task.storage_state
-        row.auto_review = task.auto_review
+        row.auto_review = bool(task.auto_review)
         row.created_at = task.created_at
         row.updated_at = task.updated_at
         session.commit()

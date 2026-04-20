@@ -8,7 +8,7 @@ if not hasattr(datetime, "UTC"):
     datetime.UTC = datetime.timezone.utc
 
 from app.application.task_service import TaskService
-from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
+from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
@@ -42,6 +42,246 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
         service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
         return tmp_dir, store, service
+
+    def _write_outline_history(
+        self,
+        store,
+        task_id: str,
+        *,
+        filename: str,
+        title: str = "恐怖短篇",
+        chapter_count: int = 2,
+    ) -> None:
+        chapter_plan = [
+            {"number": number, "title": f"第{number}章", "goal": f"目标{number}"}
+            for number in range(1, chapter_count + 1)
+        ]
+        payload = {
+            "working_title": title,
+            "logline": f"{title} 梗概",
+            "world_notes": ["旧公寓"],
+            "character_notes": ["独居主角"],
+            "chapter_plan": chapter_plan,
+        }
+        store.write_message_history(
+            task_id,
+            stage="planning",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": __import__('json').dumps(payload, ensure_ascii=False)},
+            ],
+            filename=filename,
+        )
+
+    def test_recover_task_restores_outline_review_from_latest_outline_history(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.PLANNING
+        broken.current_stage = "planning"
+        broken.current_unit = "outline-revision"
+        broken.story_plan = None
+        broken.pending_review = None
+        store.save(broken)
+
+        self._write_outline_history(store, task.id, filename="outline-history", title="旧标题", chapter_count=2)
+        self._write_outline_history(store, task.id, filename="outline-revision-history", title="新标题", chapter_count=3)
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(recovered.current_stage, "waiting_outline_review")
+        self.assertIsNotNone(recovered.story_plan)
+        assert recovered.story_plan is not None
+        self.assertEqual(recovered.story_plan.working_title, "新标题")
+        self.assertIsNotNone(recovered.pending_review)
+        assert recovered.pending_review is not None
+        self.assertEqual(recovered.pending_review.type, "outline_review")
+        self.assertEqual(recovered.pending_review.revision_count, 1)
+
+    def test_recover_task_restores_missing_story_plan_for_waiting_chapter_review(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.story_plan = None
+        broken.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=2,
+            chapter_pair=[
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "章节摘要",
+                    "content": "第三章正文",
+                }
+            ],
+            completed_count=2,
+            total_chapters=4,
+        )
+        broken.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        broken.current_stage = "waiting_chapter_review"
+        broken.current_unit = "chapter-pair-2"
+        store.save(broken)
+
+        self._write_outline_history(store, task.id, filename="outline-history", title="章节恢复标题", chapter_count=4)
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.WAITING_CHAPTER_REVIEW)
+        self.assertIsNotNone(recovered.story_plan)
+        assert recovered.story_plan is not None
+        self.assertEqual(recovered.story_plan.working_title, "章节恢复标题")
+        response = service.get_review(task.id)
+        self.assertEqual(response.review_type, "chapter_pair_review")
+        self.assertIsNotNone(response.outline_markdown)
+
+    def test_recover_task_marks_unrecoverable_task_waiting_manual_action(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.PLANNING
+        broken.current_stage = "planning"
+        broken.current_unit = "outline-revision"
+        broken.story_plan = None
+        broken.pending_review = None
+        store.save(broken)
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.WAITING_MANUAL_ACTION)
+        self.assertEqual(recovered.current_stage, "waiting_manual_action")
+        self.assertIn("无法恢复", recovered.error_message or "")
+
+    def test_get_review_auto_recovers_outline_review_from_history(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.PLANNING
+        broken.current_stage = "planning"
+        broken.current_unit = "outline-revision"
+        broken.story_plan = None
+        broken.pending_review = None
+        store.save(broken)
+        self._write_outline_history(store, task.id, filename="outline-revision-history", title="自动恢复标题", chapter_count=2)
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.review_type, "outline_review")
+        restored = store.get(task.id)
+        self.assertEqual(restored.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+
+    def test_recover_task_rebuilds_corrupted_chapter_pair_from_history(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.STYLE_REMIX,
+                prompt="写一篇学院玄幻长篇",
+                model_id="gpt-5.4",
+                target_words=8000,
+            )
+        )
+        broken = store.get(task.id)
+        broken.normalized_spec = {
+            "mode": "style_remix",
+            "prompt": "写一篇学院玄幻长篇",
+            "genre": "玄幻",
+            "style": "热血成长",
+            "requested_target_words": 8000,
+            "target_words": 8000,
+            "audience": "",
+            "banned": "",
+            "title_hint": "",
+            "model_id": "gpt-5.4",
+        }
+        broken.story_plan = None
+        broken.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": number,
+                    "title": f"脏章节{number}",
+                    "summary": "脏摘要",
+                    "content": "脏正文",
+                }
+                for number in range(1, 9)
+            ],
+            completed_count=0,
+            total_chapters=8,
+        )
+        broken.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        broken.current_stage = "waiting_chapter_review"
+        broken.current_unit = "chapter-pair-0"
+        store.save(broken)
+        self._write_outline_history(store, task.id, filename="outline-history", title="恢复标题", chapter_count=8)
+        store.write_message_history(
+            task.id,
+            stage="drafting",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "{\"number\": 1, \"title\": \"第一章\", \"summary\": \"摘要\", \"content\": \"第一章正文\"}"},
+            ],
+            filename="chapter-01-history",
+        )
+        store.write_message_history(
+            task.id,
+            stage="drafting",
+            history=[
+                {"role": "system", "content": "s"},
+                {"role": "user", "content": "u"},
+                {"role": "assistant", "content": "{\"number\": 2, \"title\": \"第二章\", \"summary\": \"摘要\", \"content\": \"第二章正文\"}"},
+            ],
+            filename="chapter-02-history",
+        )
+
+        recovered = service.recover_task(task.id, force=True)
+
+        assert recovered.pending_review is not None
+        self.assertEqual(len(recovered.pending_review.chapter_pair or []), 2)
+        self.assertEqual(
+            [item.title for item in (recovered.pending_review.chapter_pair or [])],
+            ["第一章", "第二章"],
+        )
 
     def test_verification_reject_moves_task_into_background_processing_and_blocks_duplicate_submit(self) -> None:
         tmp_dir, store, service = self._build_service()

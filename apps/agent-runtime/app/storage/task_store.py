@@ -210,15 +210,21 @@ class TaskLogStore:
         batch = review.batch_index or 0
         total = review.total_chapters or 0
         completed = review.completed_count or 0
+        chapter_items = review.chapter_pair or []
+        batch_end = min(batch + len(chapter_items), total) if total > 0 else batch + len(chapter_items)
         task.progress = 55 + int(35 * completed / total) if total > 0 else 60
         if auto_review_trace is not None:
             task.auto_review_trace = auto_review_trace
         self.append_event(
             task_id,
             stage="waiting_chapter_review",
-            message=f"第 {batch + 1}-{min(batch + 2, total)} 章已生成（{completed}/{total}），等待审核。",
+            message=(
+                f"第 {batch + 1} 章已生成（{completed}/{total}），等待审核。"
+                if batch_end <= batch + 1
+                else f"第 {batch + 1}-{batch_end} 章已生成（{completed}/{total}），等待审核。"
+            ),
             event_type="review.waiting",
-            payload={"summary": f"章节对审核等待中 ({completed}/{total})", "display_level": "public"},
+            payload={"summary": f"章节批次审核等待中 ({completed}/{total})", "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -368,6 +374,28 @@ class TaskLogStore:
             message=message,
             event_type="task.failed",
             payload={"summary": message, "display_level": "public"},
+            task=task,
+        )
+        return self.save(task)
+
+    def set_waiting_manual_action(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        payload: dict[str, Any] | None = None,
+    ) -> TaskRecord:
+        task = self.get(task_id)
+        task.status = TaskStatus.WAITING_MANUAL_ACTION
+        task.current_stage = "waiting_manual_action"
+        task.current_unit = None
+        task.error_message = message
+        self.append_event(
+            task_id,
+            stage="waiting_manual_action",
+            message=message,
+            event_type="task.recovery.blocked",
+            payload=payload or {"summary": message, "display_level": "public"},
             task=task,
         )
         return self.save(task)
@@ -717,6 +745,7 @@ class TaskLogStore:
             f"- prompt: {task.input.prompt}",
             f"- genre: {task.input.genre}",
             f"- style: {task.input.style}",
+            f"- style_profile_id: {task.input.style_profile_id or '无'}",
             f"- target_words: {task.input.target_words}",
             "",
             "## 参考材料",

@@ -36,6 +36,10 @@ def _create_checkpointer(db_path: str | Path | None = None):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False)
         return SqliteSaver(conn)
+    if db_path and not _HAS_SQLITE:
+        logger.warning(
+            "未检测到 langgraph-checkpoint-sqlite，当前退回内存 checkpoint，服务重启后将无法恢复待审核状态。"
+        )
     return MemorySaver()
 
 
@@ -78,6 +82,68 @@ MAX_CHAPTER_PAIR_REVISIONS = 5
 MAX_VERIFICATION_REVISIONS = 3
 
 
+def build_normalized_spec(
+    payload: dict[str, Any],
+    *,
+    novel_skill_service: Any | None = None,
+    style_profile_service: Any | None = None,
+) -> dict[str, Any]:
+    requested_target_words = int(payload.get("target_words", 1800) or 1800)
+    style = str(payload.get("style", "")).strip()
+    style_profile_id = str(payload.get("style_profile_id", "")).strip()
+    runtime_context: dict[str, Any] = {}
+    if novel_skill_service is not None and hasattr(novel_skill_service, "build_runtime_context"):
+        runtime_context = novel_skill_service.build_runtime_context(
+            mode=payload["mode"],
+            style_profile_id=style_profile_id,
+            custom_style=style,
+        )
+    else:
+        runtime_profile = None
+        if (
+            style_profile_service is not None
+            and payload.get("mode") == "style_remix"
+            and style_profile_id
+        ):
+            runtime_profile = style_profile_service.build_runtime_profile(style_profile_id, style)
+        runtime_context = {
+            "workflow_guidance": "",
+            "style_profile_id": style_profile_id,
+            "style_profile_name": str((runtime_profile or {}).get("name") or ""),
+            "style_profile": runtime_profile or {},
+            "style_guidance": str((runtime_profile or {}).get("compiled_summary") or style),
+            "active_package_ids": [],
+        }
+    return {
+        "mode": payload["mode"],
+        "prompt": str(payload.get("prompt", "")).strip(),
+        "genre": str(payload.get("genre", "")).strip(),
+        "style": style,
+        "workflow_guidance": str(runtime_context.get("workflow_guidance") or ""),
+        "style_profile_id": str(runtime_context.get("style_profile_id") or style_profile_id),
+        "style_profile_name": str(runtime_context.get("style_profile_name") or ""),
+        "style_profile": runtime_context.get("style_profile") or {},
+        "style_guidance": str(runtime_context.get("style_guidance") or style),
+        "novel_skill_packages": list(runtime_context.get("active_package_ids") or []),
+        "requested_target_words": requested_target_words,
+        "target_words": _normalize_target_words(payload["mode"], requested_target_words),
+        "audience": str(payload.get("audience", "")).strip(),
+        "banned": str(payload.get("banned", "")).strip(),
+        "title_hint": str(payload.get("title_hint", "")).strip(),
+        "model_id": str(payload.get("model_id", payload.get("model", ""))).strip(),
+    }
+
+
+def _chapter_batch_size(spec: dict[str, Any], *, completed_count: int, total_chapters: int) -> int:
+    remaining = max(total_chapters - completed_count, 0)
+    if remaining <= 0:
+        return 0
+    default_batch_size = 2
+    if spec.get("mode") == "style_remix" and total_chapters > 2:
+        default_batch_size = 2 if completed_count == 0 else 1
+    return min(default_batch_size, remaining)
+
+
 def build_graph(
     engine: StoryEngine,
     context_manager: ContextManager | None = None,
@@ -85,6 +151,8 @@ def build_graph(
     history_loader: Callable[[str, str, str], list[dict[str, str]]] | None = None,
     checkpoint_db_path: str | Path | None = None,
     rag_service: Any | None = None,
+    novel_skill_service: Any | None = None,
+    style_profile_service: Any | None = None,
     auto_review: bool = False,
     auto_review_policy: dict[str, Any] | None = None,
 ):
@@ -154,7 +222,7 @@ def build_graph(
             {
                 "type": "chapter_pair_review",
                 "version": "v1",
-                "summary": "请审核这对章节是否符合大纲要求。",
+                "summary": "请审核本批章节是否符合大纲要求。",
                 "story_plan": state.get("story_plan"),
                 "batch_index": state.get("batch_index", 0),
                 "chapter_pair": state.get("current_chapter_pair", []),
@@ -184,20 +252,12 @@ def build_graph(
         payload = state["input_payload"]
         task_auto_review = bool(state.get("auto_review", auto_review))
         policy = state.get("auto_review_policy") or auto_review_policy or {}
-        requested_target_words = int(payload.get("target_words", 1800) or 1800)
         return {
-            "normalized_spec": {
-                "mode": payload["mode"],
-                "prompt": payload["prompt"].strip(),
-                "genre": payload.get("genre", "").strip(),
-                "style": payload.get("style", "").strip(),
-                "requested_target_words": requested_target_words,
-                "target_words": _normalize_target_words(payload["mode"], requested_target_words),
-                "audience": payload.get("audience", "").strip(),
-                "banned": payload.get("banned", "").strip(),
-                "title_hint": payload.get("title_hint", "").strip(),
-                "model_id": payload.get("model_id", payload.get("model", "")).strip(),
-            },
+            "normalized_spec": build_normalized_spec(
+                payload,
+                novel_skill_service=novel_skill_service,
+                style_profile_service=style_profile_service,
+            ),
             "batch_index": 0,
             "chapter_pair_revision_count": 0,
             "verification_revision_count": 0,
@@ -351,16 +411,31 @@ def build_graph(
         total_chapters = len(chapter_plan)
         completed = state.get("completed_chapters") or []
         completed_count = len(completed)
+        batch_size = _chapter_batch_size(
+            state["normalized_spec"],
+            completed_count=completed_count,
+            total_chapters=total_chapters,
+        )
         references = _build_references(state)
         if rag_service is not None:
+            try:
+                chapter_result = rag_service.search_for_story_chapter(
+                    spec=state["normalized_spec"],
+                    story_plan=state.get("story_plan"),
+                    batch_index=batch_index,
+                    batch_size=batch_size,
+                    completed_chapters=completed,
+                )
+            except TypeError:
+                chapter_result = rag_service.search_for_story_chapter(
+                    spec=state["normalized_spec"],
+                    story_plan=state.get("story_plan"),
+                    batch_index=batch_index,
+                    completed_chapters=completed,
+                )
             references.extend(
                 rag_service.build_reference_materials(
-                    rag_service.search_for_story_chapter(
-                        spec=state["normalized_spec"],
-                        story_plan=state.get("story_plan"),
-                        batch_index=batch_index,
-                        completed_chapters=completed,
-                    ),
+                    chapter_result,
                     prefix="章节RAG",
                 )
             )
@@ -381,6 +456,7 @@ def build_graph(
             "total_chapters": total_chapters,
             "completed_count": completed_count,
             "batch_index": batch_index,
+            "current_batch_size": batch_size,
         }
 
     def draft_chapter_pair(state: WorkflowState) -> WorkflowState:
@@ -415,7 +491,7 @@ def build_graph(
                 chapters = state.get("current_chapter_pair") or []
                 payload = ReviewPayload(
                     type="chapter_pair_review",
-                    summary="请审核这对章节是否符合大纲要求。",
+                    summary="请审核本批章节是否符合大纲要求。",
                     story_plan=sp,
                     batch_index=state.get("batch_index", 0),
                     chapter_pair=chapters,
@@ -849,6 +925,8 @@ def _outline_instruction(spec: dict[str, Any]) -> str:
         f"模式：{spec.get('mode', '')}\n"
         f"题材：{spec.get('genre', '')}\n"
         f"风格：{spec.get('style', '')}\n"
+        f"风格实例：{spec.get('style_profile_name', '')}\n"
+        f"风格约束：{spec.get('style_guidance', '')}\n"
         f"用户目标字数：{spec.get('requested_target_words', spec.get('target_words', ''))}\n"
         f"目标字数：{spec.get('target_words', '')}\n"
         f"受众：{spec.get('audience', '')}\n"
@@ -870,8 +948,10 @@ def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] |
         f"一句话梗概：{logline}\n"
         f"目标字数：{spec.get('target_words', '')}\n"
         f"风格要求：{spec.get('style', '')}\n"
+        f"风格实例：{spec.get('style_profile_name', '')}\n"
+        f"风格约束：{spec.get('style_guidance', '')}\n"
         f"禁忌要求：{spec.get('banned', '')}\n"
-        f"正文任务：基于既定大纲连续起草小说正文，每次生成一对章节。"
+        f"正文任务：基于既定大纲连续起草小说正文，首批可生成两章，后续批次按单章续写。"
     ).strip()
 
 

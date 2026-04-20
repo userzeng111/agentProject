@@ -29,6 +29,62 @@ class FakeGatewayClient:
 
 
 class StoryEngineContextTests(unittest.TestCase):
+    def test_generate_chapter_pair_injects_compiled_style_profile_into_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "number": 1,
+                        "title": "第一章",
+                        "summary": "主角完成首次觉醒",
+                        "content": "第一章内容",
+                    }
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            engine.generate_chapter_pair(
+                spec={
+                    "mode": "style_remix",
+                    "prompt": "写一篇学院流玄幻故事",
+                    "genre": "玄幻",
+                    "style": "保留热血成长感",
+                    "style_profile_id": "douluo",
+                    "style_profile_name": "唐家三少风格实例",
+                    "style_guidance": "实例：唐家三少风格实例\n语言规则：术语密集\n情节规则：力量升级驱动",
+                    "model_id": "gpt-5.4",
+                    "target_words": 2600,
+                },
+                story_plan={
+                    "working_title": "魂环初现",
+                    "logline": "少年踏入魂师学院",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "觉醒武魂"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="学院、武魂、魂环。",
+                context_packet={
+                    "memory_text": "保持少年热血。",
+                    "references_text": "学院、武魂、魂环。",
+                },
+                model="gpt-5.4",
+            )
+
+            first_call_messages = fake_gateway.calls[0]["messages"]
+            rendered_prompt = first_call_messages[-1]["content"]
+            self.assertIn("唐家三少风格实例", rendered_prompt)
+            self.assertIn("力量升级驱动", rendered_prompt)
+            self.assertNotIn("保留冷静克制的中文叙事风格", rendered_prompt)
+
     def test_generate_draft_reuses_previous_turns_as_message_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(

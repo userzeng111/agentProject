@@ -13,8 +13,16 @@ from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
 
-def build_router(task_service, engine=None, rag_service=None, rag_rebuild_service=None) -> APIRouter:
+def build_router(
+    task_service,
+    engine=None,
+    rag_service=None,
+    rag_rebuild_service=None,
+    style_profile_service=None,
+    novel_skill_service=None,
+) -> APIRouter:
     router = APIRouter()
+    active_style_service = novel_skill_service or style_profile_service
     # 从 engine 获取 gateway_client 用于流式聊天
     _gateway_client = engine.gateway_client if engine else None
     _default_model = engine.resolve_model(None) if engine else None
@@ -104,6 +112,17 @@ def build_router(task_service, engine=None, rag_service=None, rag_rebuild_servic
                 "warnings": [],
             }
 
+    @router.get("/style-profiles")
+    def list_style_profiles():
+        if active_style_service is None:
+            return {"items": []}
+        try:
+            if hasattr(active_style_service, "list_style_profiles"):
+                return {"items": active_style_service.list_style_profiles()}
+            return {"items": active_style_service.list_profiles()}
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"读取风格实例失败：{exc}") from exc
+
     @router.post("/tasks")
     def create_task(payload: TaskCreateRequest):
         return task_service.create_task(payload)
@@ -186,6 +205,13 @@ def build_router(task_service, engine=None, rag_service=None, rag_rebuild_servic
                 approved=payload.approved,
                 comment=payload.comment,
             )
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
+    @router.post("/tasks/{task_id}/recover")
+    def recover_task(task_id: str):
+        try:
+            return task_service.recover_task(task_id, force=True)
         except Exception as exc:
             raise _handle_error(exc) from exc
 

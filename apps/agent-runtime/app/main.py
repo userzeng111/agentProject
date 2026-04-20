@@ -12,8 +12,10 @@ from app.api.dynamic_routes import build_dynamic_router
 from app.application.task_service import TaskService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
+from app.novel_skills import NovelSkillService
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
 from app.settings.config import get_settings
+from app.style_profiles import StyleProfileService
 from app.storage.task_store import TaskLogStore
 
 
@@ -41,6 +43,8 @@ engine = StoryEngine(settings)
 model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
 rag_service = RagService(RagConfig.from_env())
 rag_rebuild_service = NovelCorpusRebuildService(RagConfig.from_env())
+style_profile_service = StyleProfileService()
+novel_skill_service = NovelSkillService(style_profile_service=style_profile_service)
 auto_review_policy = {
     "auditor_model": settings.auto_review_auditor_model,
     "synthesis_model": settings.auto_review_synthesis_model,
@@ -56,6 +60,8 @@ task_service = TaskService(
     engine=engine,
     model_catalog=model_catalog,
     rag_service=rag_service,
+    novel_skill_service=novel_skill_service,
+    style_profile_service=style_profile_service,
     auto_review=settings.auto_review,
     auto_review_policy=auto_review_policy,
 )
@@ -89,6 +95,8 @@ app.include_router(
         engine=engine,
         rag_service=rag_service,
         rag_rebuild_service=rag_rebuild_service,
+        novel_skill_service=novel_skill_service,
+        style_profile_service=style_profile_service,
     ),
     prefix="/api",
 )

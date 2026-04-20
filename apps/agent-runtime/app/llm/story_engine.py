@@ -70,7 +70,7 @@ class StoryEngine(BaseAgent):
                     "请基于以下信息生成小说大纲，并严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n"
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
                     "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
                     "{structure_hint}\n用户要求：{prompt}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
@@ -106,8 +106,9 @@ class StoryEngine(BaseAgent):
                     "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
                     "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
+                    "风格目标：{style}\n风格约束：{style_requirements}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
-                    "要求：当前章节内容控制在 {chapter_word_range} 字，保留冷静克制的中文叙事风格。",
+                    "要求：当前章节内容控制在 {chapter_word_range} 字，严格遵守上述风格约束，不得退回默认通用风格。",
                 ),
             ]
         )
@@ -123,7 +124,7 @@ class StoryEngine(BaseAgent):
                     "请严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n"
+                    "模式：{mode}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
                     "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
                     "{structure_hint}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
@@ -144,8 +145,9 @@ class StoryEngine(BaseAgent):
                     "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
                     "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
                     "已完成章节摘要：{completed_summaries}\n"
+                    "风格目标：{style}\n风格约束：{style_requirements}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
-                    "要求：内容控制在 {chapter_word_range} 字，叙事语气保持一致，保留冷静克制的中文风格。",
+                    "要求：内容控制在 {chapter_word_range} 字，叙事语气保持一致，并严格遵守上述风格约束。",
                 ),
             ]
         )
@@ -277,6 +279,7 @@ class StoryEngine(BaseAgent):
                 mode=spec["mode"],
                 genre=spec.get("genre", ""),
                 style=spec.get("style", ""),
+                style_requirements=self._style_requirements(spec),
                 requested_target_words=self._requested_target_words(spec),
                 target_words=spec.get("target_words", 1800),
                 structure_hint=self._structure_hint(spec),
@@ -298,6 +301,7 @@ class StoryEngine(BaseAgent):
             mode=spec["mode"],
             genre=spec.get("genre", ""),
             style=spec.get("style", ""),
+            style_requirements=self._style_requirements(spec),
             requested_target_words=self._requested_target_words(spec),
             target_words=spec.get("target_words", 1800),
             structure_hint=self._structure_hint(spec),
@@ -367,6 +371,8 @@ class StoryEngine(BaseAgent):
                 chapter_goal=item["goal"],
                 chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
                 completed_summaries="；".join(completed_summaries) if completed_summaries else "无",
+                style=self._style_label(spec),
+                style_requirements=self._style_requirements(spec),
                 context_memory=self._context_memory(context_packet),
                 reference_excerpt=self._context_reference(reference_text, context_packet),
             )
@@ -425,21 +431,19 @@ class StoryEngine(BaseAgent):
         model: str | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> list[ChapterDraft]:
-        """生成一对章节（第 2N-1 章 + 第 2N 章）。"""
+        """按当前批次生成章节：首批可为两章，后续批次可为单章。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_progress_callback = progress_callback or self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
+        batch_size = self._chapter_batch_size(
+            spec,
+            completed_count=len(completed_chapters),
+            total_chapters=len(chapter_plan),
+        )
 
-        # 取当前章节对
-        ch1_idx = batch_index
-        ch2_idx = batch_index + 1
-        pair_plans = []
-        if ch1_idx < len(chapter_plan):
-            pair_plans.append(chapter_plan[ch1_idx])
-        if ch2_idx < len(chapter_plan):
-            pair_plans.append(chapter_plan[ch2_idx])
+        pair_plans = list(chapter_plan[batch_index : batch_index + batch_size])
 
         if not pair_plans:
             return []
@@ -481,6 +485,8 @@ class StoryEngine(BaseAgent):
                 chapter_goal=plan["goal"],
                 chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
                 completed_summaries=completed_text,
+                style=self._style_label(spec),
+                style_requirements=self._style_requirements(spec),
                 context_memory=self._context_memory(context_packet),
                 reference_excerpt=self._context_reference(reference_text, context_packet),
             )
@@ -550,6 +556,8 @@ class StoryEngine(BaseAgent):
             target_words=spec.get("target_words", 1800),
             chapter_word_range=chapter_word_range,
             completed_summaries=completed_text,
+            style=self._style_label(spec),
+            style_requirements=self._style_requirements(spec),
             context_memory=self._context_memory(context_packet),
             reference_excerpt=self._context_reference(reference_text, context_packet),
         )
@@ -914,6 +922,28 @@ class StoryEngine(BaseAgent):
 
     def _requested_target_words(self, spec: dict[str, Any]) -> int:
         return int(spec.get("requested_target_words", spec.get("target_words", 1800)) or 1800)
+
+    def _chapter_batch_size(self, spec: dict[str, Any], *, completed_count: int, total_chapters: int) -> int:
+        remaining = max(total_chapters - completed_count, 0)
+        if remaining <= 0:
+            return 0
+        default_batch_size = 2
+        if spec.get("mode") == TaskMode.STYLE_REMIX.value and total_chapters > 2:
+            default_batch_size = 2 if completed_count == 0 else 1
+        return min(default_batch_size, remaining)
+
+    def _style_label(self, spec: dict[str, Any]) -> str:
+        profile_name = str(spec.get("style_profile_name") or "").strip()
+        style = str(spec.get("style") or "").strip()
+        if profile_name and style:
+            return f"{profile_name} + {style}"
+        return profile_name or style or "未指定"
+
+    def _style_requirements(self, spec: dict[str, Any]) -> str:
+        workflow_guidance = str(spec.get("workflow_guidance") or "").strip()
+        guidance = str(spec.get("style_guidance") or "").strip()
+        parts = [part for part in (workflow_guidance, guidance or self._style_label(spec)) if part]
+        return "\n".join(parts)
 
     def _structure_hint(self, spec: dict[str, Any]) -> str:
         if spec.get("mode") == TaskMode.SHORT_STORY.value:
