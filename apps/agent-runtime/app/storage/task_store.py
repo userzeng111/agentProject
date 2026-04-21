@@ -229,6 +229,24 @@ class TaskLogStore:
         )
         return self.save(task)
 
+    def set_ready_for_batch(self, task_id: str, story_plan: StoryPlan, message: str = "大纲审核通过，等待继续创作。") -> TaskRecord:
+        task = self.get(task_id)
+        task.story_plan = story_plan
+        task.pending_review = None
+        task.status = TaskStatus.READY_FOR_BATCH
+        task.current_stage = "ready_for_batch"
+        task.current_unit = None
+        task.progress = max(task.progress, 58)
+        self.append_event(
+            task_id,
+            stage="ready_for_batch",
+            message=message,
+            event_type="task.ready_for_batch",
+            payload={"summary": message, "display_level": "public"},
+            task=task,
+        )
+        return self.save(task)
+
     def set_waiting_verification_review(self, task_id: str, review: ReviewPayload, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
         task = self.get(task_id)
         task.pending_review = review
@@ -695,6 +713,9 @@ class TaskLogStore:
             "task_id": task.id,
             "title": title,
             "mode": task.mode.value,
+            "creative_mode": task.creative_mode.value if task.creative_mode else "",
+            "novel_size": task.novel_size.value if task.novel_size else "",
+            "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
             "status": task.status.value,
             "current_stage": task.current_stage,
@@ -716,6 +737,9 @@ class TaskLogStore:
             "task_id": task.id,
             "title": title,
             "mode": task.mode.value,
+            "creative_mode": task.creative_mode.value if task.creative_mode else "",
+            "novel_size": task.novel_size.value if task.novel_size else "",
+            "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
             "status": task.status.value,
             "current_stage": task.current_stage,
@@ -730,6 +754,9 @@ class TaskLogStore:
         return {
             "task_id": task.id,
             "mode": task.mode.value,
+            "creative_mode": task.creative_mode.value if task.creative_mode else "",
+            "novel_size": task.novel_size.value if task.novel_size else "",
+            "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
             "input": task.input.model_dump(mode="json"),
             "sources": [source.model_dump(mode="json") for source in task.sources],
@@ -741,12 +768,14 @@ class TaskLogStore:
             "",
             f"- task_id: {task.id}",
             f"- mode: {task.mode.value}",
+            f"- creative_mode: {task.creative_mode.value if task.creative_mode else '无'}",
+            f"- novel_size: {task.novel_size.value if task.novel_size else '无'}",
             f"- model_id: {task.model_id or 'gpt-5.4'}",
             f"- prompt: {task.input.prompt}",
             f"- genre: {task.input.genre}",
             f"- style: {task.input.style}",
             f"- style_profile_id: {task.input.style_profile_id or '无'}",
-            f"- target_words: {task.input.target_words}",
+            f"- chapter_word_min: {task.chapter_word_min or task.input.target_words or 1800}",
             "",
             "## 参考材料",
             "",

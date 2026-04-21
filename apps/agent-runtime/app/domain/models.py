@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -23,11 +23,24 @@ class TaskMode(str, Enum):
     STYLE_REMIX = "style_remix"
 
 
+class CreativeMode(str, Enum):
+    ORIGINAL = "original"
+    FANFIC = "fanfic"
+    STYLE_REMIX = "style_remix"
+
+
+class NovelSize(str, Enum):
+    SHORT = "short"
+    MEDIUM = "medium"
+    LONG = "long"
+
+
 class TaskStatus(str, Enum):
     CREATED = "created"
     SOURCES_INGESTED = "sources_ingested"
     PLANNING = "planning"
     WAITING_OUTLINE_REVIEW = "waiting_outline_review"
+    READY_FOR_BATCH = "ready_for_batch"
     DRAFTING = "drafting"
     ASSEMBLING = "assembling"
     WAITING_MANUAL_ACTION = "waiting_manual_action"
@@ -43,21 +56,115 @@ class TaskInput(BaseModel):
     genre: str = ""
     style: str = ""
     style_profile_id: str = ""
-    target_words: int = 1800
+    creative_mode: CreativeMode | None = None
+    novel_size: NovelSize | None = None
+    target_chapter_count: int | None = None
+    chapter_word_min: int | None = Field(default=None, validation_alias=AliasChoices("chapter_word_min", "target_words"))
     audience: str = ""
     banned: str = ""
     title_hint: str = ""
+    mode: TaskMode | None = Field(default=None, exclude=True, validation_alias=AliasChoices("mode", "legacy_mode"))
+
+    @model_validator(mode="after")
+    def _normalize_internal_fields(self) -> "TaskInput":
+        if self.creative_mode is not None or self.novel_size is not None:
+            self.mode = self._derive_mode()
+        elif self.mode is None:
+            self.mode = self._derive_mode()
+        if self.creative_mode is None and self.mode is not None:
+            self.creative_mode = self._derive_creative_mode(self.mode)
+        if self.novel_size is None and self.mode is not None:
+            self.novel_size = self._derive_novel_size(self.mode)
+        if self.target_chapter_count is None:
+            self.target_chapter_count = self._default_target_chapter_count(self.novel_size or NovelSize.SHORT)
+        if self.chapter_word_min is None:
+            self.chapter_word_min = 1800
+        return self
+
+    @property
+    def target_words(self) -> int:
+        return int(self.chapter_word_min or 1800)
+
+    def _derive_mode(self) -> TaskMode:
+        creative_mode = self.creative_mode or CreativeMode.ORIGINAL
+        novel_size = self.novel_size or NovelSize.SHORT
+        return self._resolve_mode(creative_mode, novel_size)
+
+    @staticmethod
+    def _resolve_mode(creative_mode: CreativeMode, novel_size: NovelSize) -> TaskMode:
+        if creative_mode == CreativeMode.FANFIC:
+            return TaskMode.FANFIC
+        if creative_mode == CreativeMode.STYLE_REMIX:
+            return TaskMode.STYLE_REMIX
+        if novel_size == NovelSize.SHORT:
+            return TaskMode.SHORT_STORY
+        return TaskMode.LONG_STORY
+
+    @staticmethod
+    def _derive_creative_mode(mode: TaskMode) -> CreativeMode:
+        if mode == TaskMode.FANFIC:
+            return CreativeMode.FANFIC
+        if mode == TaskMode.STYLE_REMIX:
+            return CreativeMode.STYLE_REMIX
+        return CreativeMode.ORIGINAL
+
+    @staticmethod
+    def _derive_novel_size(mode: TaskMode) -> NovelSize:
+        if mode == TaskMode.SHORT_STORY:
+            return NovelSize.SHORT
+        if mode == TaskMode.FANFIC:
+            return NovelSize.MEDIUM
+        if mode == TaskMode.STYLE_REMIX:
+            return NovelSize.LONG
+        return NovelSize.LONG
+
+    @staticmethod
+    def _default_target_chapter_count(novel_size: NovelSize) -> int:
+        if novel_size == NovelSize.SHORT:
+            return 8
+        if novel_size == NovelSize.MEDIUM:
+            return 80
+        return 400
+
+    @property
+    def chapter_count_min(self) -> int:
+        target = int(self.target_chapter_count or self._default_target_chapter_count(self.novel_size or NovelSize.SHORT))
+        return max(1, int(target * 0.9))
+
+    @property
+    def chapter_count_max(self) -> int:
+        lower = self.chapter_count_min
+        target = int(self.target_chapter_count or self._default_target_chapter_count(self.novel_size or NovelSize.SHORT))
+        return max(lower, int(-(-target * 11 // 10)))
 
 
 class TaskCreateRequest(TaskInput):
-    mode: TaskMode
     model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
     auto_review: bool | None = None  # 是否开启自动审核 [NEW]
+
+    @model_validator(mode="after")
+    def _ensure_task_mode_fields(self) -> "TaskCreateRequest":
+        if self.mode is None:
+            self.mode = self._derive_mode()
+        if self.creative_mode is None:
+            self.creative_mode = self._derive_creative_mode(self.mode)
+        if self.novel_size is None:
+            self.novel_size = self._derive_novel_size(self.mode)
+        if self.target_chapter_count is None:
+            self.target_chapter_count = self._default_target_chapter_count(self.novel_size)
+        if self.chapter_word_min is None:
+            self.chapter_word_min = 1800
+        return self
 
 
 class ResumeRequest(BaseModel):
     approved: bool
     comment: str = ""
+
+
+class ContinueDraftRequest(BaseModel):
+    requested_chapter_count: int
+    continue_request_id: str
 
 
 class SourceAsset(BaseModel):
@@ -79,6 +186,7 @@ class StoryPlan(BaseModel):
     logline: str
     world_notes: list[str] = Field(default_factory=list)
     character_notes: list[str] = Field(default_factory=list)
+    planned_chapter_count: int | None = None
     chapter_plan: list[ChapterPlan] = Field(default_factory=list)
 
     @field_validator("world_notes", "character_notes", mode="before")
@@ -103,6 +211,12 @@ class StoryPlan(BaseModel):
             else:
                 result.append(str(item))
         return result
+
+    @model_validator(mode="after")
+    def _normalize_planned_chapter_count(self) -> "StoryPlan":
+        if self.planned_chapter_count is None:
+            self.planned_chapter_count = len(self.chapter_plan)
+        return self
 
 
 class ReviewPayload(BaseModel):
@@ -211,6 +325,12 @@ class SupervisorPlan(BaseModel):
 class TaskRecord(BaseModel):
     id: str = Field(default_factory=lambda: new_id("task"))
     mode: TaskMode
+    creative_mode: CreativeMode | None = None
+    novel_size: NovelSize | None = None
+    target_chapter_count: int | None = None
+    chapter_count_min: int | None = None
+    chapter_count_max: int | None = None
+    chapter_word_min: int | None = None
     model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "model"))
     status: TaskStatus = TaskStatus.CREATED
     current_stage: str = "created"
@@ -235,11 +355,43 @@ class TaskRecord(BaseModel):
     supervisor_plan: SupervisorPlan | None = None
     agent_runs: list[AgentRunRecord] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _normalize_task_record(self) -> "TaskRecord":
+        input_data = self.input
+        if self.creative_mode is None:
+            self.creative_mode = input_data.creative_mode or TaskInput._derive_creative_mode(self.mode)
+        if self.novel_size is None:
+            self.novel_size = input_data.novel_size or TaskInput._derive_novel_size(self.mode)
+        if self.target_chapter_count is None:
+            self.target_chapter_count = input_data.target_chapter_count or TaskInput._default_target_chapter_count(
+                self.novel_size
+            )
+        if self.chapter_count_min is None:
+            self.chapter_count_min = input_data.chapter_count_min
+        if self.chapter_count_max is None:
+            self.chapter_count_max = input_data.chapter_count_max
+        if self.chapter_word_min is None:
+            self.chapter_word_min = input_data.chapter_word_min or 1800
+        if input_data.mode is None:
+            input_data.mode = self.mode
+        if input_data.creative_mode is None:
+            input_data.creative_mode = self.creative_mode
+        if input_data.novel_size is None:
+            input_data.novel_size = self.novel_size
+        if input_data.target_chapter_count is None:
+            input_data.target_chapter_count = self.target_chapter_count
+        if input_data.chapter_word_min is None:
+            input_data.chapter_word_min = self.chapter_word_min
+        return self
+
 
 class TaskSummary(BaseModel):
     task_id: str
     title: str
     mode: TaskMode
+    creative_mode: CreativeMode | None = None
+    novel_size: NovelSize | None = None
+    chapter_word_min: int | None = None
     model_id: str
     model_capabilities: dict[str, Any] | None = None
     status: TaskStatus
@@ -274,6 +426,7 @@ class WorkspaceResponse(BaseModel):
     request_preview: dict[str, Any] = Field(default_factory=dict)
     context_status: dict[str, Any] = Field(default_factory=dict)
     response_cache_status: dict[str, Any] = Field(default_factory=dict)
+    novel_progress: dict[str, Any] = Field(default_factory=dict)
     sources: list[SourceAsset] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None
     agent_runs: list[AgentRunRecord] = Field(default_factory=list)

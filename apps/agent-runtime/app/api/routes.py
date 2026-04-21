@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from app.domain.models import ChatRequest, ResumeRequest, TaskCreateRequest
+from app.domain.models import ChatRequest, ContinueDraftRequest, ResumeRequest, TaskCreateRequest
 from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
@@ -25,7 +25,6 @@ def build_router(
     active_style_service = novel_skill_service or style_profile_service
     # 从 engine 获取 gateway_client 用于流式聊天
     _gateway_client = engine.gateway_client if engine else None
-    _default_model = engine.resolve_model(None) if engine else None
 
     def _handle_error(exc: Exception) -> HTTPException:
         if isinstance(exc, TaskNotFoundError):
@@ -44,6 +43,14 @@ def build_router(
             return messages
         augmented_messages, _ = rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
         return augmented_messages
+
+    def _resolve_chat_model(requested_model: str | None) -> str:
+        candidate = (requested_model or "").strip()
+        if candidate:
+            return candidate
+        if engine is not None and hasattr(engine, "resolve_model"):
+            return str(engine.resolve_model(None) or "").strip()
+        return ""
 
     def _split_file_ref(ref: str) -> tuple[str, str]:
         parts = [item for item in ref.removeprefix("/").split("/") if item]
@@ -125,7 +132,10 @@ def build_router(
 
     @router.post("/tasks")
     def create_task(payload: TaskCreateRequest):
-        return task_service.create_task(payload)
+        try:
+            return task_service.create_task(payload)
+        except Exception as exc:
+            raise _handle_error(exc) from exc
 
     @router.get("/dashboard")
     def get_dashboard():
@@ -205,6 +215,13 @@ def build_router(
                 approved=payload.approved,
                 comment=payload.comment,
             )
+        except Exception as exc:
+            raise _handle_error(exc) from exc
+
+    @router.post("/tasks/{task_id}/continue")
+    def continue_task(task_id: str, payload: ContinueDraftRequest):
+        try:
+            return task_service.continue_task(task_id, payload)
         except Exception as exc:
             raise _handle_error(exc) from exc
 
@@ -327,7 +344,7 @@ def build_router(
             raise HTTPException(status_code=400, detail="messages 不能为空。")
         messages = _apply_chat_rag(messages, payload)
 
-        resolved_model = payload.model or _default_model or ""
+        resolved_model = _resolve_chat_model(payload.model)
 
         async def _sse_stream():
             try:
@@ -370,7 +387,7 @@ def build_router(
             raise HTTPException(status_code=400, detail="messages 不能为空。")
         messages = _apply_chat_rag(messages, payload)
 
-        resolved_model = payload.model or _default_model or ""
+        resolved_model = _resolve_chat_model(payload.model)
 
         if payload.stream:
             # 流式模式：以 OpenAI 兼容 SSE 格式返回

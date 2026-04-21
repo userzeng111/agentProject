@@ -1,9 +1,12 @@
 export type TaskMode = "short_story" | "long_story" | "fanfic" | "style_remix";
+export type CreativeMode = "original" | "fanfic" | "style_remix";
+export type NovelSize = "short" | "medium" | "long";
 export type TaskStatus =
   | "created"
   | "sources_ingested"
   | "planning"
   | "waiting_outline_review"
+  | "ready_for_batch"
   | "drafting"
   | "waiting_manual_action"
   | "assembling"
@@ -15,10 +18,14 @@ export type TaskStatus =
 
 export interface TaskInput {
   prompt: string;
+  creative_mode: CreativeMode;
+  novel_size: NovelSize;
+  target_chapter_count?: number;
   genre: string;
   style: string;
   style_profile_id?: string;
-  target_words: number;
+  chapter_word_min: number;
+  target_words?: number;
   audience: string;
   banned: string;
   title_hint: string;
@@ -26,7 +33,6 @@ export interface TaskInput {
 }
 
 export interface TaskCreatePayload extends TaskInput {
-  mode: TaskMode;
   auto_review?: boolean;
 }
 
@@ -134,6 +140,12 @@ export interface ResponseCacheStatus {
 export interface TaskRecord {
   id: string;
   mode: TaskMode;
+  creative_mode?: CreativeMode;
+  novel_size?: NovelSize;
+  target_chapter_count?: number;
+  chapter_count_min?: number;
+  chapter_count_max?: number;
+  chapter_word_min?: number;
   status: TaskStatus;
   current_stage: string;
   progress: number;
@@ -147,6 +159,9 @@ export interface TaskCardSummary {
   task_id: string;
   title: string;
   mode: TaskMode;
+  creative_mode?: CreativeMode;
+  novel_size?: NovelSize;
+  chapter_word_min?: number;
   model_id?: string;
   status: TaskStatus;
   current_stage: string;
@@ -181,6 +196,9 @@ export interface WorkspaceMeta {
   task_id: string;
   title: string;
   mode: TaskMode;
+  creative_mode?: CreativeMode;
+  novel_size?: NovelSize;
+  chapter_word_min?: number;
   model_id?: string;
   model_capabilities?: ModelCapabilities;
   status: TaskStatus;
@@ -234,6 +252,9 @@ export interface WorkspaceResponse {
   available_tabs?: string[];
   request_preview?: {
     prompt: string;
+    creative_mode?: CreativeMode;
+    novel_size?: NovelSize;
+    target_chapter_count?: number;
     model_id?: string;
     model_capabilities?: ModelCapabilities;
     genre?: string;
@@ -241,7 +262,9 @@ export interface WorkspaceResponse {
     style_profile_id?: string;
     style_profile_name?: string;
     style_guidance?: string;
+    canon_guidance?: string;
     style_profile?: Record<string, unknown>;
+    chapter_word_min?: number;
     target_words?: number;
     audience?: string;
     banned?: string;
@@ -250,9 +273,24 @@ export interface WorkspaceResponse {
   context_status?: ContextStatus;
   response_cache_status?: ResponseCacheStatus;
   context_snapshot?: ContextStatus;
+  novel_progress?: {
+    target_chapter_count?: number;
+    chapter_count_min?: number;
+    chapter_count_max?: number;
+    planned_chapter_count?: number;
+    completed_chapter_count?: number;
+    next_chapter_number?: number;
+    remaining_chapter_count?: number;
+    default_batch_size?: number;
+  };
   sources?: SourceAsset[];
   supervisor_plan?: SupervisorPlanSnapshot | null;
   agent_runs?: AgentRunItem[];
+}
+
+export interface ContinueDraftPayload {
+  requested_chapter_count: number;
+  continue_request_id: string;
 }
 
 export type SupervisorSubtaskStatus =
@@ -411,6 +449,9 @@ export interface ArchiveMeta {
   task_id: string;
   title: string;
   mode: TaskMode;
+  creative_mode?: CreativeMode;
+  novel_size?: NovelSize;
+  chapter_word_min?: number;
   model_id?: string;
   status: TaskStatus;
   current_stage: string;
@@ -442,6 +483,8 @@ export interface ArchiveDetailResponse {
   meta: WorkspaceMeta;
   request_preview?: {
     prompt: string;
+    creative_mode?: CreativeMode;
+    novel_size?: NovelSize;
     model_id?: string;
     model_capabilities?: ModelCapabilities;
     genre?: string;
@@ -449,7 +492,9 @@ export interface ArchiveDetailResponse {
     style_profile_id?: string;
     style_profile_name?: string;
     style_guidance?: string;
+    canon_guidance?: string;
     style_profile?: Record<string, unknown>;
+    chapter_word_min?: number;
     target_words?: number;
     audience?: string;
     banned?: string;

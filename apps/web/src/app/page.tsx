@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import { Replay as ReplayIcon } from "@mui/icons-material";
 import { getDashboard, getModels, updateDefaultModel } from "@/lib/api";
+import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
 
@@ -30,6 +31,7 @@ const statusLabelMap: Record<TaskStatus, string> = {
   sources_ingested: "已入库",
   planning: "规划中",
   waiting_outline_review: "待大纲审核",
+  ready_for_batch: "可继续创作",
   drafting: "正文生成中",
   waiting_manual_action: "待人工处理",
   assembling: "结果整理中",
@@ -113,7 +115,15 @@ function TaskListItem({ task }: { task: TaskCardSummary }) {
             {task.summary}
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            {task.current_stage} · {task.mode} · {new Date(task.updated_at).toLocaleString()}
+            {task.current_stage}
+            {" · "}
+            {formatTaskTypeLabel({
+              creativeMode: task.creative_mode,
+              novelSize: task.novel_size,
+              mode: task.mode,
+            })}
+            {" · "}
+            {new Date(task.updated_at).toLocaleString()}
           </Typography>
         </Stack>
       </CardContent>

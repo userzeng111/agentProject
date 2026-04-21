@@ -29,6 +29,59 @@ class FakeGatewayClient:
 
 
 class StoryEngineContextTests(unittest.TestCase):
+    def test_story_engine_validates_planned_chapter_count_within_target_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+
+            self.assertTrue(hasattr(engine, "validate_story_plan"))
+            validate_story_plan = getattr(engine, "validate_story_plan", None)
+            self.assertIsNotNone(validate_story_plan)
+            with self.assertRaises(ValueError):
+                validate_story_plan(
+                    {
+                        "working_title": "测试书名",
+                        "logline": "测试梗概",
+                        "planned_chapter_count": 120,
+                        "chapter_plan": [
+                            {"number": number, "title": f"第{number}章", "goal": "推进"}
+                            for number in range(1, 101)
+                        ],
+                    },
+                    chapter_count_min=90,
+                    chapter_count_max=110,
+                )
+
+    def test_story_engine_validates_chapter_plan_length_matches_planned_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+
+            self.assertTrue(hasattr(engine, "validate_story_plan"))
+            validate_story_plan = getattr(engine, "validate_story_plan", None)
+            self.assertIsNotNone(validate_story_plan)
+            with self.assertRaises(ValueError):
+                validate_story_plan(
+                    {
+                        "working_title": "测试书名",
+                        "logline": "测试梗概",
+                        "planned_chapter_count": 10,
+                        "chapter_plan": [{"number": 1, "title": "第一章", "goal": "推进"}],
+                    },
+                    chapter_count_min=8,
+                    chapter_count_max=12,
+                )
+
     def test_generate_chapter_pair_injects_compiled_style_profile_into_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -53,6 +106,8 @@ class StoryEngineContextTests(unittest.TestCase):
             engine.generate_chapter_pair(
                 spec={
                     "mode": "style_remix",
+                    "creative_mode": "style_remix",
+                    "novel_size": "long",
                     "prompt": "写一篇学院流玄幻故事",
                     "genre": "玄幻",
                     "style": "保留热血成长感",
@@ -60,7 +115,8 @@ class StoryEngineContextTests(unittest.TestCase):
                     "style_profile_name": "唐家三少风格实例",
                     "style_guidance": "实例：唐家三少风格实例\n语言规则：术语密集\n情节规则：力量升级驱动",
                     "model_id": "gpt-5.4",
-                    "target_words": 2600,
+                    "chapter_word_min": 2600,
+                    "chapter_word_max": 3380,
                 },
                 story_plan={
                     "working_title": "魂环初现",
@@ -83,6 +139,7 @@ class StoryEngineContextTests(unittest.TestCase):
             rendered_prompt = first_call_messages[-1]["content"]
             self.assertIn("唐家三少风格实例", rendered_prompt)
             self.assertIn("力量升级驱动", rendered_prompt)
+            self.assertIn("2600 到 3380", rendered_prompt)
             self.assertNotIn("保留冷静克制的中文叙事风格", rendered_prompt)
 
     def test_generate_draft_reuses_previous_turns_as_message_history(self) -> None:
@@ -115,9 +172,13 @@ class StoryEngineContextTests(unittest.TestCase):
             draft = engine.generate_draft(
                 spec={
                     "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
                     "prompt": "写一篇追查夜航记录的悬疑故事",
                     "genre": "悬疑",
                     "style": "冷静克制",
+                    "chapter_word_min": 2200,
+                    "chapter_word_max": 2860,
                     "model_id": "gpt-5.4",
                 },
                 story_plan={
@@ -168,9 +229,13 @@ class StoryEngineContextTests(unittest.TestCase):
             engine.generate_draft(
                 spec={
                     "mode": "short_story",
+                    "creative_mode": "original",
+                    "novel_size": "short",
                     "prompt": "写一篇追查夜航记录的悬疑故事",
                     "genre": "悬疑",
                     "style": "冷静克制",
+                    "chapter_word_min": 1500,
+                    "chapter_word_max": 1950,
                     "model_id": "gpt-5.4",
                 },
                 story_plan={
@@ -365,7 +430,60 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertEqual(plan.working_title, "雨夜监控室")
             self.assertEqual(len(fake_gateway.calls), 2)
-            self.assertIn("请重新输出一个完整、可解析的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("更精简且完整的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("planned_chapter_count", fake_gateway.calls[1]["messages"][-1]["content"])
+
+    def test_build_story_plan_retry_requests_compact_outline_json_after_truncated_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="MiniMax-M2.7-highspeed",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    "```json\n{\"working_title\":\"神级武魂：混沌龙主\",\"logline\":\"过长输出被截断\",\"world_notes\":[\"斗罗大陆魂师体系极其复杂\"",
+                    {
+                        "working_title": "神级武魂：混沌龙主",
+                        "logline": "凌天觉醒神级武魂，在斗罗大陆崛起。",
+                        "world_notes": ["斗罗大陆以魂师与魂兽体系为核心。"],
+                        "character_notes": ["凌天拥有混沌龙魂武魂。"],
+                        "planned_chapter_count": 12,
+                        "chapter_plan": [
+                            {"number": 1, "title": "武魂觉醒", "goal": "主角初登场"},
+                            {"number": 2, "title": "学院入学", "goal": "进入主线"},
+                        ],
+                    },
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            plan = engine.build_story_plan(
+                spec={
+                    "mode": "fanfic",
+                    "creative_mode": "fanfic",
+                    "novel_size": "short",
+                    "prompt": "主角拥有神级武魂，在斗罗开后宫。",
+                    "genre": "玄幻",
+                    "style": "",
+                    "chapter_word_min": 3000,
+                    "chapter_word_max": 3900,
+                    "chapter_count_range_text": "8 到 80 章",
+                    "model_id": "MiniMax-M2.7-highspeed",
+                },
+                reference_text="",
+                context_packet=None,
+                model="MiniMax-M2.7-highspeed",
+            )
+
+            self.assertEqual(plan.working_title, "神级武魂：混沌龙主")
+            self.assertEqual(len(fake_gateway.calls), 2)
+            retry_prompt = fake_gateway.calls[1]["messages"][-1]["content"]
+            self.assertIn("压缩 world_notes", retry_prompt)
+            self.assertIn("planned_chapter_count", retry_prompt)
+            self.assertIn("只返回最终 JSON 对象", retry_prompt)
 
     def test_build_story_plan_revision_retries_once_when_first_revision_response_is_invalid(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -419,7 +537,8 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertEqual(plan.working_title, "修订后标题")
             self.assertEqual(len(fake_gateway.calls), 2)
-            self.assertIn("请重新输出一个完整、可解析的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("更精简且完整的 JSON 对象", fake_gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("planned_chapter_count", fake_gateway.calls[1]["messages"][-1]["content"])
 
 
 if __name__ == "__main__":

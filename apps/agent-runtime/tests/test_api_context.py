@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import build_router
 from app.application.task_service import TaskService
-from app.domain.models import DraftResult, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
+from app.domain.models import CreativeMode, DraftResult, NovelSize, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.gateway_client import StreamChunk
 from app.llm.story_engine import StoryEngine
@@ -47,11 +47,32 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertIn("capabilities", payload["data"][0])
         self.assertIn("context_window", payload["data"][0]["capabilities"])
 
+    def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "prompt": "写一个修罗场都市医生故事",
+                "creative_mode": "style_remix",
+                "novel_size": "long",
+                "chapter_word_min": 2200,
+                "genre": "都市",
+                "style": "保留原文风格，但有新东西",
+                "style_profile_id": "wozhenmeixiangchongshengya",
+                "title_hint": "文艺",
+                "model_id": "K2.6",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("未完成兼容性验证", response.json()["detail"])
+
     def test_workspace_endpoint_returns_context_status(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
-                mode=TaskMode.SHORT_STORY,
                 prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
                 model_id="gpt-5.4",
             )
         )
@@ -77,6 +98,9 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["meta"]["model_capabilities"]["context_window"]["max_input_tokens"], 256000)
+        self.assertEqual(payload["meta"]["creative_mode"], "original")
+        self.assertEqual(payload["meta"]["novel_size"], "short")
+        self.assertEqual(payload["meta"]["chapter_word_min"], 1800)
         self.assertEqual(payload["context_status"]["stage"], "planning")
         self.assertTrue(payload["context_status"]["cache_hit"])
         self.assertTrue(payload["context_status"]["compression_applied"])
@@ -86,11 +110,46 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
 
+    def test_workspace_endpoint_returns_novel_progress_for_ready_batch_task(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇都市医生长篇",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.LONG,
+                target_chapter_count=100,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="白衣修罗场",
+            logline="年轻医生在都市修罗场中崛起。",
+            world_notes=["现代都市医院体系"],
+            character_notes=["男主是年轻医生"],
+            planned_chapter_count=96,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "入院风波"},
+                {"number": 2, "title": "第二章", "goal": "夜班急诊"},
+            ],
+        )
+        self.store.set_ready_for_batch(task.id, story_plan)
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["novel_progress"]["target_chapter_count"], 100)
+        self.assertEqual(payload["novel_progress"]["planned_chapter_count"], 96)
+        self.assertEqual(payload["novel_progress"]["next_chapter_number"], 1)
+        self.assertEqual(payload["novel_progress"]["default_batch_size"], 3)
+
     def test_supervisor_endpoint_returns_supervisor_plan_and_agent_runs(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
-                mode=TaskMode.SHORT_STORY,
                 prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
                 model_id="gpt-5.4",
             )
         )
@@ -103,11 +162,53 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(len(payload["subtasks"]), 6)
         self.assertEqual(payload["agent_runs"], [])
 
+    def test_create_task_response_exposes_new_input_fields(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "prompt": "写一个都市医生修罗场故事",
+                "creative_mode": "style_remix",
+                "novel_size": "long",
+                "chapter_word_min": 2600,
+                "style_profile_id": "wozhenmeixiangchongshengya",
+                "model_id": "gpt-5.4",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["creative_mode"], "style_remix")
+        self.assertEqual(payload["novel_size"], "long")
+        self.assertEqual(payload["chapter_word_min"], 2600)
+        self.assertEqual(payload["mode"], "style_remix")
+
+    def test_create_task_response_exposes_target_chapter_count_and_range(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "prompt": "写一个长篇都市医生修罗场故事",
+                "creative_mode": "original",
+                "novel_size": "long",
+                "target_chapter_count": 100,
+                "chapter_word_min": 2400,
+                "model_id": "gpt-5.4",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["input"]["target_chapter_count"], 100)
+        self.assertEqual(payload["target_chapter_count"], 100)
+        self.assertEqual(payload["chapter_count_min"], 90)
+        self.assertEqual(payload["chapter_count_max"], 110)
+
     def test_workspace_endpoint_returns_response_cache_status_separately(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
-                mode=TaskMode.SHORT_STORY,
                 prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
                 model_id="gpt-5.4",
             )
         )
@@ -138,8 +239,10 @@ class ApiContextIntegrationTests(unittest.TestCase):
     def test_review_endpoint_returns_outline_revision_count(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
-                mode=TaskMode.SHORT_STORY,
                 prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
                 model_id="gpt-5.4",
             )
         )
@@ -165,6 +268,67 @@ class ApiContextIntegrationTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["review_type"], "outline_review")
         self.assertEqual(payload["revision_count"], 2)
+
+    def test_continue_endpoint_generates_chapter_batch(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇都市医生长篇",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.LONG,
+                target_chapter_count=100,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        task = self.store.get(task.id)
+        task.normalized_spec = {
+            "mode": "long_story",
+            "creative_mode": "original",
+            "novel_size": "long",
+            "prompt": "写一篇都市医生长篇",
+            "genre": "都市",
+            "style": "",
+            "chapter_word_min": 1800,
+            "chapter_word_max": 2340,
+            "model_id": "gpt-5.4",
+        }
+        self.store.save(task)
+        story_plan = StoryPlan(
+            working_title="白衣修罗场",
+            logline="年轻医生在都市修罗场中崛起。",
+            world_notes=["现代都市医院体系"],
+            character_notes=["男主是年轻医生"],
+            planned_chapter_count=3,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "入院风波"},
+                {"number": 2, "title": "第二章", "goal": "夜班急诊"},
+                {"number": 3, "title": "第三章", "goal": "权贵病人"},
+            ],
+        )
+        self.store.set_ready_for_batch(task.id, story_plan)
+        self.task_service.engine.generate_chapter_pair = lambda **kwargs: [
+            {
+                "number": 1,
+                "title": "第一章",
+                "summary": "第一章摘要",
+                "content": "第一章正文",
+            },
+            {
+                "number": 2,
+                "title": "第二章",
+                "summary": "第二章摘要",
+                "content": "第二章正文",
+            },
+        ]
+
+        response = self.client.post(
+            f"/api/tasks/{task.id}/continue",
+            json={"requested_chapter_count": 2, "continue_request_id": "req-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "waiting_chapter_review")
 
     def test_recover_endpoint_restores_outline_review_from_history(self) -> None:
         task = self.task_service.create_task(
@@ -308,6 +472,52 @@ class ApiContextIntegrationTests(unittest.TestCase):
         call_messages = fake_engine.gateway_client.calls[0]["messages"]
         self.assertEqual(call_messages[0]["role"], "system")
         self.assertIn("港口档案", call_messages[0]["content"])
+
+    def test_chat_completions_uses_updated_runtime_default_model_when_request_model_missing(self) -> None:
+        class FakeGateway:
+            def __init__(self) -> None:
+                self.calls = []
+
+            def list_models(self):
+                return [
+                    {"id": "gpt-5.4", "object": "model", "owned_by": "custom"},
+                    {"id": "glm-5.1", "object": "model", "owned_by": "custom"},
+                ]
+
+            async def complete_stream(self, messages, model=None):
+                self.calls.append({"messages": [dict(item) for item in messages], "model": model})
+                yield StreamChunk(content="这是回答")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                LLM_API_KEY="",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = FakeGateway()
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            app = FastAPI()
+            app.include_router(build_router(task_service, engine=engine), prefix="/api")
+            client = TestClient(app)
+
+            update_response = client.patch("/api/settings/default-model", json={"model_id": "glm-5.1"})
+            self.assertEqual(update_response.status_code, 200)
+
+            response = client.post(
+                "/api/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "现在用默认模型回答"}],
+                    "stream": False,
+                },
+            )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(engine.gateway_client.calls[0]["model"], "glm-5.1")
+            self.assertEqual(response.json()["model"], "glm-5.1")
 
 
 if __name__ == "__main__":

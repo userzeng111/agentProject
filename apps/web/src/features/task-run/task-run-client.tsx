@@ -26,6 +26,7 @@ import {
   Stack,
   Tab,
   Tabs,
+  TextField,
   Typography,
 } from "@mui/material";
 import {
@@ -40,7 +41,8 @@ import {
   ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
 import { Collapse, CircularProgress, Tooltip } from "@mui/material";
-import { getApiBase, getCurrentChapters, getWorkspace, recoverTask, runTask } from "@/lib/api";
+import { continueTask, getApiBase, getCurrentChapters, getWorkspace, recoverTask, runTask } from "@/lib/api";
+import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
 import {
   ContextStatus,
@@ -58,6 +60,7 @@ const statusMap: Record<TaskStatus, { label: string; color: "default" | "success
   sources_ingested: { label: "素材已入库", color: "default" },
   planning: { label: "规划中", color: "warning" },
   waiting_outline_review: { label: "待大纲审核", color: "warning" },
+  ready_for_batch: { label: "可继续创作", color: "success" },
   drafting: { label: "正文生成中", color: "warning" },
   waiting_manual_action: { label: "待人工处理", color: "warning" },
   assembling: { label: "结果整理中", color: "warning" },
@@ -93,6 +96,7 @@ function getStepIndex(status: TaskStatus): number {
     status === "waiting_outline_review" ||
     status === "waiting_chapter_review" ||
     status === "waiting_verification_review" ||
+    status === "ready_for_batch" ||
     status === "drafting" ||
     status === "assembling"
   )
@@ -356,7 +360,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [chapterDialogOpen, setChapterDialogOpen] = useState(false);
   const [selectedChapter, setSelectedChapter] = useState<{ number: number; title: string; summary: string; content: string } | null>(null);
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
+  const [requestedChapterCount, setRequestedChapterCount] = useState(3);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const continueRequestIdRef = useRef<string | null>(null);
 
   const refreshWorkspace = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -380,6 +386,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   useEffect(() => {
     void refreshWorkspace();
   }, [refreshWorkspace]);
+
+  useEffect(() => {
+    const nextDefault = workspace?.novel_progress?.default_batch_size;
+    if (typeof nextDefault === "number" && Number.isFinite(nextDefault) && nextDefault > 0) {
+      setRequestedChapterCount(nextDefault);
+    }
+  }, [workspace?.novel_progress?.default_batch_size]);
 
   useEffect(() => {
     if (!resolvedTaskId) {
@@ -466,6 +479,25 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
   }
 
+  async function handleContinueDraft() {
+    try {
+      setRunning(true);
+      const requestId = continueRequestIdRef.current ?? crypto.randomUUID();
+      continueRequestIdRef.current = requestId;
+      await continueTask(resolvedTaskId, {
+        requested_chapter_count: requestedChapterCount,
+        continue_request_id: requestId,
+      });
+      await refreshWorkspace();
+      setError("");
+    } catch (continueError) {
+      setError(continueError instanceof Error ? continueError.message : "继续创作失败");
+    } finally {
+      continueRequestIdRef.current = null;
+      setRunning(false);
+    }
+  }
+
   async function handleChapterClick(chapterNumber: number, chapterTitle: string) {
     try {
       const data = await getCurrentChapters(resolvedTaskId);
@@ -532,6 +564,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
   const recoveryReason = resolveRecoveryReason(workspace);
+  const novelProgress = workspace.novel_progress;
 
   const canReview = [
     "waiting_outline_review",
@@ -659,6 +692,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                     {running ? "恢复中..." : "恢复任务"}
                   </Button>
                 )}
+                {workspace.meta.status === "ready_for_batch" && (
+                  <Button variant="contained" disabled={running} onClick={handleContinueDraft} size="small">
+                    {running ? "生成中..." : "继续创作"}
+                  </Button>
+                )}
                 {canReview && (
                   <Button component={Link} href={reviewHref(workspace.meta.task_id)} variant="contained" size="small">
                     进入审核
@@ -676,7 +714,15 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             </Stack>
             <Typography>{workspace.request_preview?.prompt || workspace.meta.summary || "暂无请求摘要"}</Typography>
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
-              <Chip label={`模式: ${workspace.meta.mode}`} size="small" variant="outlined" />
+              <Chip
+                label={`类型: ${formatTaskTypeLabel({
+                  creativeMode: workspace.meta.creative_mode,
+                  novelSize: workspace.meta.novel_size,
+                  mode: workspace.meta.mode,
+                })}`}
+                size="small"
+                variant="outlined"
+              />
               {workspace.request_preview?.genre && <Chip label={`题材: ${workspace.request_preview.genre}`} size="small" variant="outlined" />}
               {workspace.request_preview?.style && <Chip label={`风格: ${workspace.request_preview.style}`} size="small" variant="outlined" />}
               {workspace.available_tabs?.map((tab) => (
@@ -687,6 +733,38 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               <Typography variant="body2" color="text.secondary">
                 执行摘要：{workspace.active_trace_summary}
               </Typography>
+            )}
+
+            {workspace.meta.status === "ready_for_batch" && novelProgress && (
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  backgroundColor: "rgba(39, 100, 81, 0.03)",
+                }}
+              >
+                <Stack spacing={2}>
+                  <Typography variant="subtitle1">继续创作</Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Chip label={`目标章节：${novelProgress.target_chapter_count ?? "未设定"}`} size="small" variant="outlined" />
+                    <Chip label={`规划章节：${novelProgress.planned_chapter_count ?? "未设定"}`} size="small" variant="outlined" />
+                    <Chip label={`已完成：${novelProgress.completed_chapter_count ?? 0}`} size="small" variant="outlined" />
+                    <Chip label={`下一章：${novelProgress.next_chapter_number ?? 1}`} size="small" variant="outlined" />
+                    <Chip label={`剩余：${novelProgress.remaining_chapter_count ?? 0}`} size="small" variant="outlined" />
+                  </Stack>
+                  <TextField
+                    label="本次创建章节数"
+                    type="number"
+                    value={requestedChapterCount}
+                    onChange={(event) => setRequestedChapterCount(Math.max(1, Number(event.target.value) || 1))}
+                    inputProps={{ min: 1, step: 1 }}
+                    helperText={`默认批次值：${novelProgress.default_batch_size ?? 3}`}
+                    sx={{ maxWidth: 280 }}
+                  />
+                </Stack>
+              </Box>
             )}
 
             <Box
@@ -1057,9 +1135,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 {" · "}
                 {formatCompressionLabel(modelCapabilities, contextStatus)}
               </Typography>
-              {typeof workspace.request_preview?.target_words === "number" && (
+              {typeof (workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min) === "number" && (
                 <Typography variant="body2" color="text.secondary">
-                  目标字数：{workspace.request_preview.target_words} · 读者：{workspace.request_preview.audience || "未指定"}
+                  单章字数下限：
+                  {workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min}
+                  {" · "}读者：{workspace.request_preview?.audience || "未指定"}
                 </Typography>
               )}
               {workspace.meta.current_unit && (

@@ -23,15 +23,18 @@ import {
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { createTask, getModels, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
-import { ModelOption, RagSettingsStatus, StyleProfile, TaskCreatePayload, TaskMode } from "@/lib/types";
+import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
+import { CreativeMode, ModelOption, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
-  mode: "short_story",
+  creative_mode: "original",
+  novel_size: "short",
+  target_chapter_count: 8,
   prompt: "",
   genre: "",
   style: "",
   style_profile_id: "",
-  target_words: 1800,
+  chapter_word_min: 1800,
   audience: "",
   banned: "",
   title_hint: "",
@@ -39,11 +42,16 @@ const defaultPayload: TaskCreatePayload = {
   auto_review: true,
 };
 
-const modeOptions: { value: TaskMode; label: string }[] = [
-  { value: "short_story", label: "短篇生成" },
-  { value: "long_story", label: "长篇生成" },
+const creativeModeOptions: { value: CreativeMode; label: string }[] = [
+  { value: "original", label: "全新原创" },
   { value: "fanfic", label: "同人创作" },
   { value: "style_remix", label: "风格复刻" },
+];
+
+const novelSizeOptions: { value: NovelSize; label: string }[] = [
+  { value: "short", label: "短篇（8-80章）" },
+  { value: "medium", label: "中篇（80-400章）" },
+  { value: "long", label: "长篇（400章以上）" },
 ];
 
 function formatTokenCount(value?: number) {
@@ -193,13 +201,15 @@ export default function CreateTaskClient() {
         setPayload((current) => ({
           ...current,
           prompt: input.prompt ?? current.prompt,
+          creative_mode: input.creative_mode ?? task.creative_mode ?? resolveCreativeMode(undefined, task.mode),
+          novel_size: input.novel_size ?? task.novel_size ?? resolveNovelSize(undefined, task.mode),
+          target_chapter_count: input.target_chapter_count ?? task.target_chapter_count ?? current.target_chapter_count,
           genre: input.genre ?? current.genre,
           style: input.style ?? current.style,
-          target_words: input.target_words ?? current.target_words,
+          chapter_word_min: input.chapter_word_min ?? input.target_words ?? task.chapter_word_min ?? current.chapter_word_min,
           audience: input.audience ?? current.audience,
           banned: input.banned ?? current.banned,
           title_hint: input.title_hint ?? current.title_hint,
-          mode: task.mode ?? current.mode,
           model_id: input.model_id ?? current.model_id,
           style_profile_id: input.style_profile_id ?? current.style_profile_id,
         }));
@@ -236,10 +246,22 @@ export default function CreateTaskClient() {
     () => styleProfiles.find((item) => item.id === payload.style_profile_id) ?? null,
     [payload.style_profile_id, styleProfiles],
   );
+  const currentCreativeMode = payload.creative_mode;
+  const requiresStyleProfile = needsStyleProfile(currentCreativeMode);
+  const chapterCountRangeText = useMemo(() => {
+    const target = Number(payload.target_chapter_count || 0);
+    if (!Number.isFinite(target) || target <= 0) {
+      return "请输入目标总章节数";
+    }
+    const lower = Math.max(1, Math.floor(target * 0.9));
+    const upper = Math.max(lower, Math.ceil(target * 1.1));
+    return `${lower}-${upper}`;
+  }, [payload.target_chapter_count]);
   const canSubmit =
     Boolean(payload.prompt.trim()) &&
     Boolean(selectedModel && isNovelTaskModelSupported(selectedModel)) &&
-    (payload.mode !== "style_remix" || Boolean(selectedStyleProfile));
+    Number(payload.target_chapter_count || 0) > 0 &&
+    (!requiresStyleProfile || Boolean(selectedStyleProfile));
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -262,11 +284,11 @@ export default function CreateTaskClient() {
   }, [selectedModel, selectableModels]);
 
   useEffect(() => {
-    if (payload.mode !== "style_remix") {
+    if (!requiresStyleProfile) {
       return;
     }
     setPayload((current) => {
-      if (current.mode !== "style_remix" || current.style_profile_id || !styleProfiles.length) {
+      if (!needsStyleProfile(current.creative_mode) || current.style_profile_id || !styleProfiles.length) {
         return current;
       }
       return {
@@ -274,19 +296,17 @@ export default function CreateTaskClient() {
         style_profile_id: styleProfiles[0].id,
       };
     });
-  }, [payload.mode, styleProfiles]);
+  }, [requiresStyleProfile, styleProfiles]);
 
   const updateField =
     (field: keyof TaskCreatePayload) =>
     (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-      const value = field === "target_words" ? Number(event.target.value) : event.target.value;
+      const value =
+        field === "chapter_word_min" || field === "target_chapter_count"
+          ? Number(event.target.value)
+          : event.target.value;
       setPayload((current) => ({ ...current, [field]: value }));
     };
-
-  const handleModeChange = (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    const nextMode = event.target.value as TaskMode;
-    setPayload((current) => ({ ...current, mode: nextMode }));
-  };
 
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
     setFile(event.target.files?.[0] ?? null);
@@ -301,8 +321,8 @@ export default function CreateTaskClient() {
       setError("当前所选模型未完成小说工作流兼容性验证，请改用已验证模型。");
       return;
     }
-    if (payload.mode === "style_remix" && !selectedStyleProfile) {
-      setError("请先选择一个有效的风格实例。");
+    if (requiresStyleProfile && !selectedStyleProfile) {
+      setError(`请先选择一个有效的${formatCreativeModeLabel(currentCreativeMode)}参考实例。`);
       return;
     }
     try {
@@ -362,18 +382,47 @@ export default function CreateTaskClient() {
       <Card>
         <CardContent>
           <Stack spacing={3}>
-            <TextField
-              select
-              label="任务模式"
-              value={payload.mode}
-              onChange={handleModeChange}
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+                gap: 2,
+              }}
             >
-              {modeOptions.map((option) => (
-                <MenuItem key={option.value} value={option.value}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </TextField>
+              <TextField
+                select
+                label="创作类型"
+                value={payload.creative_mode}
+                onChange={updateField("creative_mode")}
+              >
+                {creativeModeOptions.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                select
+                label="篇幅规模"
+                value={payload.novel_size}
+                onChange={updateField("novel_size")}
+                helperText={`当前：${formatNovelSizeLabel(payload.novel_size)}，仅作为规模标签，章节总量以下方手填值为准。`}
+              >
+                {novelSizeOptions.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </TextField>
+              <TextField
+                label="目标总章节数"
+                type="number"
+                value={payload.target_chapter_count ?? ""}
+                onChange={updateField("target_chapter_count")}
+                inputProps={{ min: 1, step: 1 }}
+                helperText={`允许浮动范围：${chapterCountRangeText}`}
+              />
+            </Box>
 
             {modelsLoading ? (
               <Skeleton variant="rounded" height={56} />
@@ -478,7 +527,7 @@ export default function CreateTaskClient() {
               </Box>
             )}
 
-            {payload.mode === "style_remix" ? (
+            {requiresStyleProfile ? (
               <Box
                 sx={{
                   p: 2,
@@ -496,9 +545,12 @@ export default function CreateTaskClient() {
                     alignItems={{ xs: "flex-start", sm: "center" }}
                   >
                     <Box>
-                      <Typography variant="subtitle1">风格实例</Typography>
+                      <Typography variant="subtitle1">参考实例</Typography>
                       <Typography variant="body2" color="text.secondary">
-                        从后端 `GET /api/style-profiles` 拉取实例列表，选择后会作为风格复刻基础。
+                        从后端 `GET /api/style-profiles` 拉取实例列表。
+                        {currentCreativeMode === "fanfic"
+                          ? "同人创作会把实例当作世界观与角色连续性约束。"
+                          : "风格复刻会把实例当作文风与叙事方式基础。"}
                       </Typography>
                     </Box>
                     {selectedStyleProfile && (
@@ -511,15 +563,15 @@ export default function CreateTaskClient() {
                   ) : (
                     <TextField
                       select
-                      label="风格实例"
+                      label={currentCreativeMode === "fanfic" ? "同人参考实例" : "风格参考实例"}
                       value={payload.style_profile_id}
                       onChange={updateField("style_profile_id")}
                       helperText={
                         styleProfilesError
                           ? styleProfilesError
                           : styleProfiles.length
-                            ? "选择一个已蒸馏的实例，再用下方文本补充具体写作要求。"
-                            : "当前没有可用的风格实例，普通模式不受影响。"
+                            ? "选择一个实例，再用下方文本补充额外创作要求。"
+                            : "当前没有可用实例。"
                       }
                       error={Boolean(styleProfilesError)}
                       disabled={Boolean(styleProfilesError) && !styleProfiles.length}
@@ -600,20 +652,29 @@ export default function CreateTaskClient() {
             >
               <TextField label="题材" value={payload.genre} onChange={updateField("genre")} />
               <TextField
-                label={payload.mode === "style_remix" ? "补充风格要求" : "风格"}
+                label={
+                  currentCreativeMode === "style_remix"
+                    ? "补充风格要求"
+                    : currentCreativeMode === "fanfic"
+                      ? "补充同人约束"
+                      : "风格"
+                }
                 value={payload.style}
                 onChange={updateField("style")}
                 placeholder={
-                  payload.mode === "style_remix"
+                  currentCreativeMode === "style_remix"
                     ? "例如：保留原作的克制叙事，但把人物关系处理得更冷峻，避免过度抒情。"
+                    : currentCreativeMode === "fanfic"
+                      ? "例如：延续原作世界观与人物关系，但把主线冲突改成都市医院修罗场。"
                     : undefined
                 }
               />
               <TextField
-                label="目标字数"
+                label="单章字数下限"
                 type="number"
-                value={payload.target_words}
-                onChange={updateField("target_words")}
+                value={payload.chapter_word_min}
+                onChange={updateField("chapter_word_min")}
+                helperText="系统会在此基础上按剧情需要上浮 10%-30%。"
               />
               <TextField label="标题倾向" value={payload.title_hint} onChange={updateField("title_hint")} />
               <TextField label="目标读者" value={payload.audience} onChange={updateField("audience")} />

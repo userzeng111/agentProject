@@ -525,7 +525,7 @@ function OutlineReview({
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <Button disabled={submitting} variant="contained" onClick={() => onDecision(true)}>
-                通过并进入正文
+                通过并进入继续创作
               </Button>
               <Button disabled={submitting} variant="outlined" color="error" onClick={() => onDecision(false)}>
                 拒绝并修订
@@ -643,7 +643,7 @@ function ChapterPairReview({
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <Button disabled={submitting} variant="contained" onClick={() => onDecision(true)}>
-                通过并继续
+                通过并返回继续创作
               </Button>
               <Button disabled={submitting} variant="outlined" color="error" onClick={() => onDecision(false)}>
                 拒绝并修订
@@ -832,6 +832,8 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       setError("");
       if (nextTask.status === "completed") {
         router.push(resultHref(resolvedTaskId));
+      } else if (approved && nextTask.status === "ready_for_batch") {
+        router.push(workspaceHref(resolvedTaskId));
       } else if (
         nextTask.status === "waiting_outline_review" ||
         nextTask.status === "waiting_chapter_review" ||

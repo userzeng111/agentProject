@@ -19,6 +19,15 @@ from app.settings.config import Settings
 
 logger = logging.getLogger(__name__)
 
+_OUTLINE_RETRY_JSON_PROMPT = (
+    "上一次返回的大纲 JSON 不完整、被截断或不可解析。"
+    "请重新输出一个更精简且完整的 JSON 对象。"
+    "必须保留字段：working_title, logline, world_notes, character_notes, planned_chapter_count, chapter_plan。"
+    "请压缩 world_notes 为最多 6 条短句，压缩 character_notes 为最多 6 条短句。"
+    "chapter_plan 中每章只保留 number、title、goal 三个字段，不要扩写，不要附加额外说明。"
+    "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+)
+
 _progress_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
     "story_engine_progress_callback",
     default=None,
@@ -68,10 +77,11 @@ class StoryEngine(BaseAgent):
                 (
                     "human",
                     "请基于以下信息生成小说大纲，并严格返回 JSON，结构必须包含："
-                    "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
+                    "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), planned_chapter_count(int), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
-                    "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
+                    "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
+                    "单章字数下限：{chapter_word_min}\n单章建议浮动范围：{chapter_word_range}\n"
+                    "章节范围硬约束：{chapter_count_range_text}\n"
                     "{structure_hint}\n用户要求：{prompt}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
@@ -102,8 +112,8 @@ class StoryEngine(BaseAgent):
                     "human",
                     "请只生成当前章节，并严格返回 JSON，结构必须包含："
                     "number(int), title(string), summary(string), content(string)。\n"
-                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
-                    "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
+                    "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "单章字数下限：{chapter_word_min}\n当前章节建议字数：{chapter_word_range}\n"
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
                     "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
                     "风格目标：{style}\n风格约束：{style_requirements}\n"
@@ -122,10 +132,11 @@ class StoryEngine(BaseAgent):
                     "修改意见：{revision_comment}\n\n"
                     "当前大纲：{original_plan_json}\n\n"
                     "请严格返回 JSON，结构必须包含："
-                    "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), "
+                    "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), planned_chapter_count(int), "
                     "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
-                    "模式：{mode}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
-                    "用户目标字数：{requested_target_words}\n最低成稿字数：{target_words}\n"
+                    "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
+                    "单章字数下限：{chapter_word_min}\n单章建议浮动范围：{chapter_word_range}\n"
+                    "章节范围硬约束：{chapter_count_range_text}\n"
                     "{structure_hint}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}",
                 ),
@@ -142,8 +153,8 @@ class StoryEngine(BaseAgent):
                     "当前章节内容：{current_chapters_json}\n\n"
                     "请严格返回 JSON 数组，每个元素结构为："
                     "{{number:int,title:string,summary:string,content:string}}。\n"
-                    "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n"
-                    "最低成稿字数：{target_words}\n当前章节建议字数：{chapter_word_range}\n"
+                    "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n作品标题：{title}\n一句话梗概：{logline}\n"
+                    "单章字数下限：{chapter_word_min}\n当前章节建议字数：{chapter_word_range}\n"
                     "已完成章节摘要：{completed_summaries}\n"
                     "风格目标：{style}\n风格约束：{style_requirements}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
@@ -277,11 +288,14 @@ class StoryEngine(BaseAgent):
                 revision_comment=revision_comment,
                 original_plan_json=json.dumps(original_plan, ensure_ascii=False),
                 mode=spec["mode"],
+                creative_mode=spec.get("creative_mode", spec["mode"]),
+                novel_size=spec.get("novel_size", ""),
                 genre=spec.get("genre", ""),
                 style=spec.get("style", ""),
                 style_requirements=self._style_requirements(spec),
-                requested_target_words=self._requested_target_words(spec),
-                target_words=spec.get("target_words", 1800),
+                chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
+                chapter_word_range=self._chapter_word_range_text(spec, original_plan.get("chapter_plan") or []),
+                chapter_count_range_text=spec.get("chapter_count_range_text", ""),
                 structure_hint=self._structure_hint(spec),
                 context_memory=self._context_memory(context_packet),
                 reference_excerpt=self._context_reference(reference_text, context_packet),
@@ -299,11 +313,14 @@ class StoryEngine(BaseAgent):
         request_messages = self._render_skill_prompt(
             "outline-planner",
             mode=spec["mode"],
+            creative_mode=spec.get("creative_mode", spec["mode"]),
+            novel_size=spec.get("novel_size", ""),
             genre=spec.get("genre", ""),
             style=spec.get("style", ""),
             style_requirements=self._style_requirements(spec),
-            requested_target_words=self._requested_target_words(spec),
-            target_words=spec.get("target_words", 1800),
+            chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
+            chapter_word_range=spec.get("chapter_word_range_text", self._chapter_word_range_text(spec, [])),
+            chapter_count_range_text=spec.get("chapter_count_range_text", ""),
             structure_hint=self._structure_hint(spec),
             prompt=spec.get("prompt", ""),
             context_memory=self._context_memory(context_packet),
@@ -362,9 +379,11 @@ class StoryEngine(BaseAgent):
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
                 mode=spec["mode"],
+                creative_mode=spec.get("creative_mode", spec["mode"]),
+                novel_size=spec.get("novel_size", ""),
                 title=title,
                 logline=summary,
-                target_words=spec.get("target_words", 1800),
+                chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
                 chapter_word_range=chapter_word_range,
                 chapter_number=item["number"],
                 chapter_title=item["title"],
@@ -406,7 +425,7 @@ class StoryEngine(BaseAgent):
                     }
                 )
 
-        if spec["mode"] == TaskMode.SHORT_STORY.value and len(chapters) <= 3:
+        if self._is_short_novel(spec) and len(chapters) <= 3:
             body = "\n\n".join(chapter.content for chapter in chapters)
         else:
             body = "\n\n".join(
@@ -430,6 +449,7 @@ class StoryEngine(BaseAgent):
         context_packet: dict[str, Any] | None = None,
         model: str | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        requested_batch_size: int | None = None,
     ) -> list[ChapterDraft]:
         """按当前批次生成章节：首批可为两章，后续批次可为单章。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
@@ -437,11 +457,13 @@ class StoryEngine(BaseAgent):
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        batch_size = self._chapter_batch_size(
-            spec,
-            completed_count=len(completed_chapters),
-            total_chapters=len(chapter_plan),
-        )
+        batch_size = int(requested_batch_size or 0)
+        if batch_size <= 0:
+            batch_size = self._chapter_batch_size(
+                spec,
+                completed_count=len(completed_chapters),
+                total_chapters=self._planned_chapter_count(story_plan),
+            )
 
         pair_plans = list(chapter_plan[batch_index : batch_index + batch_size])
 
@@ -476,9 +498,11 @@ class StoryEngine(BaseAgent):
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
                 mode=spec["mode"],
+                creative_mode=spec.get("creative_mode", spec["mode"]),
+                novel_size=spec.get("novel_size", ""),
                 title=title,
                 logline=summary,
-                target_words=spec.get("target_words", 1800),
+                chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
                 chapter_word_range=chapter_word_range,
                 chapter_number=plan["number"],
                 chapter_title=plan["title"],
@@ -551,9 +575,11 @@ class StoryEngine(BaseAgent):
             revision_comment=revision_comment,
             current_chapters_json=json.dumps(current_pair, ensure_ascii=False),
             mode=spec["mode"],
+            creative_mode=spec.get("creative_mode", spec["mode"]),
+            novel_size=spec.get("novel_size", ""),
             title=title,
             logline=summary,
-            target_words=spec.get("target_words", 1800),
+            chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
             chapter_word_range=chapter_word_range,
             completed_summaries=completed_text,
             style=self._style_label(spec),
@@ -850,7 +876,7 @@ class StoryEngine(BaseAgent):
                 attempt_messages = [dict(item) for item in request_messages] + [
                     {
                         "role": "user",
-                        "content": _RETRY_JSON_PROMPT,
+                        "content": _OUTLINE_RETRY_JSON_PROMPT,
                     }
                 ]
 
@@ -921,14 +947,16 @@ class StoryEngine(BaseAgent):
         return "短篇初稿"
 
     def _requested_target_words(self, spec: dict[str, Any]) -> int:
-        return int(spec.get("requested_target_words", spec.get("target_words", 1800)) or 1800)
+        return int(
+            spec.get("chapter_word_min", spec.get("requested_target_words", spec.get("target_words", 1800))) or 1800
+        )
 
     def _chapter_batch_size(self, spec: dict[str, Any], *, completed_count: int, total_chapters: int) -> int:
         remaining = max(total_chapters - completed_count, 0)
         if remaining <= 0:
             return 0
         default_batch_size = 2
-        if spec.get("mode") == TaskMode.STYLE_REMIX.value and total_chapters > 2:
+        if str(spec.get("creative_mode") or spec.get("mode") or "").strip() == TaskMode.STYLE_REMIX.value and total_chapters > 2:
             default_batch_size = 2 if completed_count == 0 else 1
         return min(default_batch_size, remaining)
 
@@ -941,30 +969,54 @@ class StoryEngine(BaseAgent):
 
     def _style_requirements(self, spec: dict[str, Any]) -> str:
         workflow_guidance = str(spec.get("workflow_guidance") or "").strip()
+        canon_guidance = str(spec.get("canon_guidance") or "").strip()
         guidance = str(spec.get("style_guidance") or "").strip()
-        parts = [part for part in (workflow_guidance, guidance or self._style_label(spec)) if part]
+        parts = [part for part in (workflow_guidance, canon_guidance, guidance or self._style_label(spec)) if part]
         return "\n".join(parts)
 
     def _structure_hint(self, spec: dict[str, Any]) -> str:
-        if spec.get("mode") == TaskMode.SHORT_STORY.value:
-            requested = self._requested_target_words(spec)
-            target = int(spec.get("target_words", requested) or requested)
-            return (
-                f"短篇模式规则：最低成稿字数必须达到 {target} 字，"
-                f"该值基于用户目标 {requested} 字上浮 100 字。"
-                "请按短篇悬疑结构规划，优先控制在 3 到 5 章，"
-                "不要按中长篇思路强行扩章。"
-            )
-        return "请按当前模式输出与目标字数匹配的章节结构。"
+        chapter_range = str(spec.get("chapter_count_range_text") or "").strip() or "未指定"
+        chapter_word_min = int(spec.get("chapter_word_min", spec.get("target_words", 1800)) or 1800)
+        chapter_word_max = int(spec.get("chapter_word_max", chapter_word_min) or chapter_word_min)
+        return (
+            f"章节规划硬约束：你必须先确定 planned_chapter_count，且总章节数必须落在 {chapter_range} 内。"
+            f"单章字数必须不低于 {chapter_word_min} 字，允许按剧情需要上浮到 {chapter_word_max} 字。"
+            "章节数由主规划 agent 决定，不要沿用旧的短篇/长篇固定章数套路。"
+        )
 
     def _chapter_word_range_text(
         self,
         spec: dict[str, Any],
         chapter_plan: list[dict[str, Any]] | list[ChapterPlan],
     ) -> str:
-        chapter_count = max(len(chapter_plan), 1)
-        total_target_words = int(spec.get("target_words", 1800) or 1800)
-        average_words = max(total_target_words // chapter_count, 220)
-        minimum_words = max(int(average_words * 0.85), 220)
-        maximum_words = max(int(average_words * 1.2), minimum_words + 80)
+        minimum_words = int(spec.get("chapter_word_min", spec.get("target_words", 1800)) or 1800)
+        maximum_words = int(spec.get("chapter_word_max", max(int(minimum_words * 1.3), minimum_words)) or minimum_words)
         return f"{minimum_words} 到 {maximum_words}"
+
+    def validate_story_plan(
+        self,
+        story_plan: dict[str, Any],
+        *,
+        chapter_count_min: int,
+        chapter_count_max: int,
+    ) -> StoryPlan:
+        plan = StoryPlan.model_validate(story_plan)
+        planned_count = int(plan.planned_chapter_count or 0)
+        chapter_count = len(plan.chapter_plan)
+        if planned_count < chapter_count_min or planned_count > chapter_count_max:
+            raise ValueError("大纲规划章节数超出允许范围。")
+        if chapter_count != planned_count:
+            raise ValueError("大纲章节列表数量与 planned_chapter_count 不一致。")
+        return plan
+
+    def _planned_chapter_count(self, story_plan: dict[str, Any]) -> int:
+        planned = int(story_plan.get("planned_chapter_count") or 0)
+        if planned > 0:
+            return planned
+        return len(story_plan.get("chapter_plan") or [])
+
+    def _is_short_novel(self, spec: dict[str, Any]) -> bool:
+        return str(spec.get("novel_size") or spec.get("mode") or "").strip() in {
+            "short",
+            TaskMode.SHORT_STORY.value,
+        }

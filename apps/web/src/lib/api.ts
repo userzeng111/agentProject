@@ -1,6 +1,7 @@
 import {
   ArchiveDetailResponse,
   ArchiveIndexResponse,
+  ContinueDraftPayload,
   ModelListResponse,
   ModelOption,
   DashboardResponse,
@@ -50,6 +51,10 @@ export async function getModels() {
   return response.data ?? [];
 }
 
+export function getModelCatalog() {
+  return request<ModelListResponse>("/api/models");
+}
+
 export async function getStyleProfiles() {
   const response = await request<StyleProfileListResponse>("/api/style-profiles");
   return Array.isArray(response.items) ? response.items : [];
@@ -91,6 +96,13 @@ export function resumeTask(taskId: string, approved: boolean, comment: string) {
   return request<TaskRecord>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
     body: JSON.stringify({ approved, comment }),
+  });
+}
+
+export function continueTask(taskId: string, payload: ContinueDraftPayload) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/continue`, {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 

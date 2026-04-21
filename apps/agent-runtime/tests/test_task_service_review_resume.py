@@ -179,6 +179,40 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(recovered.current_stage, "waiting_manual_action")
         self.assertIn("无法恢复", recovered.error_message or "")
 
+    def test_recover_task_restores_outline_review_from_waiting_manual_action_when_history_exists(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.FANFIC,
+                prompt="主角拥有神级武魂，在斗罗开后宫。",
+                model_id="gpt-5.4",
+                target_words=3000,
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.WAITING_MANUAL_ACTION
+        broken.current_stage = "waiting_manual_action"
+        broken.current_unit = None
+        broken.story_plan = None
+        broken.pending_review = None
+        broken.error_message = "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。"
+        store.save(broken)
+
+        self._write_outline_history(store, task.id, filename="outline-history", title="斗罗后宫录", chapter_count=12)
+
+        recovered = service.recover_task(task.id)
+
+        self.assertEqual(recovered.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(recovered.current_stage, "waiting_outline_review")
+        self.assertIsNotNone(recovered.story_plan)
+        assert recovered.story_plan is not None
+        self.assertEqual(recovered.story_plan.working_title, "斗罗后宫录")
+        self.assertIsNotNone(recovered.pending_review)
+        assert recovered.pending_review is not None
+        self.assertEqual(recovered.pending_review.type, "outline_review")
+
     def test_get_review_auto_recovers_outline_review_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)
@@ -390,6 +424,48 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         except ValueError as exc:  # pragma: no cover - 红灯断言
             self.fail(f"_resume_task_sync 不应拒绝 planning 状态: {exc}")
 
+    def test_outline_approve_moves_task_to_ready_for_batch_without_background_resume(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                prompt="写一个长篇都市医生修罗场故事",
+                creative_mode="original",
+                novel_size="long",
+                target_chapter_count=100,
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="白衣修罗场",
+            logline="年轻医生在都市权贵与情感纠葛中崛起。",
+            world_notes=["现代都市医院体系"],
+            character_notes=["男主是年轻医生"],
+            planned_chapter_count=100,
+            chapter_plan=[
+                {"number": 1, "title": "入院风波", "goal": "主角初登场"},
+                {"number": 2, "title": "夜班急诊", "goal": "建立职业能力"},
+            ],
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            story_plan=story_plan,
+        )
+        store.set_waiting_review(task.id, review, story_plan)
+
+        background_calls: list[tuple] = []
+        service._start_background = lambda *args, **kwargs: background_calls.append((args, kwargs))
+
+        snapshot = service.resume_task(task.id, approved=True, comment="通过")
+
+        self.assertEqual(snapshot.status.value, "ready_for_batch")
+        self.assertEqual(snapshot.current_stage, "ready_for_batch")
+        self.assertIsNone(snapshot.pending_review)
+        self.assertEqual(background_calls, [])
+
     def test_get_review_preserves_outline_revision_count(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)
@@ -485,7 +561,9 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
             "genre": "恐怖",
             "style": "冷静克制",
             "requested_target_words": 1500,
-            "target_words": 1600,
+            "target_words": 1500,
+            "chapter_word_min": 1500,
+            "chapter_word_max": 1950,
             "audience": "",
             "banned": "",
             "title_hint": "",
