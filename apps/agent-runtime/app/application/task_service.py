@@ -118,6 +118,8 @@ class TaskService:
             self.engine.set_runtime_default_model(runtime_default)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
+        requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
+        self.model_catalog.ensure_novel_generation_model_supported(requested_model)
         task = self.store.create_task(payload)
         task.supervisor_plan = build_initial_supervisor_plan(payload)
         if self._resolve_task_auto_review(task) and not task.auto_review_policy:

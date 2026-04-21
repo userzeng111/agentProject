@@ -119,6 +119,33 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             self.assertEqual(failed.status.value, "failed")
             self.assertIn("模拟网关请求失败", failed.error_message or "")
 
+    def test_create_task_rejects_unverified_gateway_only_model_for_novel_workflow(self) -> None:
+        class GatewayWithUnknownModel:
+            def list_models(self):
+                return [{"id": "K2.6", "object": "model", "owned_by": "custom"}]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="gpt-5.4",
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = GatewayWithUnknownModel()
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            with self.assertRaisesRegex(ValueError, "未完成兼容性验证"):
+                service.create_task(
+                    TaskCreateRequest(
+                        mode=TaskMode.STYLE_REMIX,
+                        prompt="写一个修罗场都市医生故事",
+                        model_id="K2.6",
+                        style_profile_id="wozhenmeixiangchongshengya",
+                    )
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

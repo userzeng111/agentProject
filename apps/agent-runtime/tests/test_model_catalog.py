@@ -110,6 +110,23 @@ class ModelCatalogServiceTests(unittest.TestCase):
             self.assertIsInstance(context_window["max_input_tokens"], int)
             self.assertGreater(context_window["max_input_tokens"], 0)
 
+    def test_unknown_gateway_model_is_marked_unverified_for_novel_workflow(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient(
+                [
+                    {"id": "K2.6", "object": "model", "owned_by": "custom"},
+                ]
+            ),
+        )
+
+        payload = catalog.list_models_payload()
+        model = next(item for item in payload["data"] if item["id"] == "K2.6")
+
+        self.assertEqual(model["metadata"]["source"], "gateway")
+        self.assertEqual(model["metadata"]["compatibility"], "unverified")
+        self.assertFalse(model["capabilities"]["features"]["novel_task_supported"])
+
 
 if __name__ == "__main__":
     unittest.main()

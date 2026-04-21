@@ -64,6 +64,7 @@ export interface ModelCapabilities {
 
 export interface ModelMetadata {
   source?: string;
+  compatibility?: string;
   profile_version?: string;
 }
 

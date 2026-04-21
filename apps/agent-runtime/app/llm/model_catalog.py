@@ -414,6 +414,7 @@ class ModelCatalogService:
         valid_ids = {item["id"] for item in self.list_models()}
         if model_id not in valid_ids:
             raise ValueError(f"模型 ID 不在可用模型列表中：{model_id}")
+        self.ensure_novel_generation_model_supported(model_id)
         self._runtime_default_model = model_id
         self._save_runtime_settings()
         # 清除模型列表缓存，使下次 list_models_payload 重新聚合
@@ -450,6 +451,17 @@ class ModelCatalogService:
             if item.get("id") == candidate:
                 return deepcopy(item)
         return self._build_model_item({"id": candidate}, source="default")
+
+    def ensure_novel_generation_model_supported(self, model_id: str | None) -> dict[str, Any]:
+        profile = self.get_model_profile(model_id)
+        compatibility = str((profile.get("metadata") or {}).get("compatibility") or "").strip()
+        supported = bool(((profile.get("capabilities") or {}).get("features") or {}).get("novel_task_supported"))
+        if compatibility == "verified" and supported:
+            return profile
+        raise ValueError(
+            f"模型 {profile.get('id') or model_id or ''} 未完成兼容性验证，暂不支持小说任务流。"
+            "请改用已验证模型，例如 gpt-5.4、glm-5.1 或 MiniMax-M2.7-highspeed。"
+        )
 
     def _load_gateway_models(self) -> list[dict[str, Any]]:
         if self.gateway_client is None:
@@ -496,6 +508,10 @@ class ModelCatalogService:
         capabilities = profile.get("capabilities") or self._unknown_capabilities()
         provider = profile.get("provider") or self.settings.llm_provider
         display_name = profile.get("display_name") or model_id
+        compatibility = "verified" if source in {"gateway+registry", "registry", "default+registry"} else "unverified"
+        capabilities.setdefault("features", {})
+        if isinstance(capabilities["features"], dict):
+            capabilities["features"].setdefault("novel_task_supported", compatibility == "verified")
         return {
             "id": model_id,
             "object": raw.get("object", "model"),
@@ -505,6 +521,7 @@ class ModelCatalogService:
             "capabilities": capabilities,
             "metadata": {
                 "source": source,
+                "compatibility": compatibility,
                 "profile_version": "2026-03-31",
                 "last_refreshed_at": None,
             },
@@ -531,8 +548,9 @@ class ModelCatalogService:
                 "strategy": "reference_truncate+memory_trim",
             },
             "features": {
-                "json_mode": True,
+                "json_mode": False,
                 "tool_calling": False,
                 "streaming": True,
+                "novel_task_supported": False,
             },
         }

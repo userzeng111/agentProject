@@ -81,6 +81,10 @@ function formatCompressionLabel(model?: ModelOption) {
   return "压缩：未启用";
 }
 
+function isNovelTaskModelSupported(model?: ModelOption) {
+  return model?.metadata?.compatibility === "verified";
+}
+
 function formatStyleProfileSummary(profile: StyleProfile) {
   const parts = [
     profile.source_novel ? `《${profile.source_novel}》` : "",
@@ -222,13 +226,20 @@ export default function CreateTaskClient() {
     () => models.find((item) => item.id === payload.model_id) ?? models[0],
     [models, payload.model_id],
   );
+  const selectableModels = useMemo(
+    () => models.filter((item) => isNovelTaskModelSupported(item)),
+    [models],
+  );
 
   const selectedModelCapabilities = selectedModel?.capabilities;
   const selectedStyleProfile = useMemo(
     () => styleProfiles.find((item) => item.id === payload.style_profile_id) ?? null,
     [payload.style_profile_id, styleProfiles],
   );
-  const canSubmit = Boolean(payload.prompt.trim()) && (payload.mode !== "style_remix" || Boolean(selectedStyleProfile));
+  const canSubmit =
+    Boolean(payload.prompt.trim()) &&
+    Boolean(selectedModel && isNovelTaskModelSupported(selectedModel)) &&
+    (payload.mode !== "style_remix" || Boolean(selectedStyleProfile));
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -236,6 +247,19 @@ export default function CreateTaskClient() {
         : [],
     [selectedModelCapabilities],
   );
+
+  useEffect(() => {
+    if (selectedModel && isNovelTaskModelSupported(selectedModel)) {
+      return;
+    }
+    if (!selectableModels.length) {
+      return;
+    }
+    setPayload((current) => ({
+      ...current,
+      model_id: selectableModels[0].id,
+    }));
+  }, [selectedModel, selectableModels]);
 
   useEffect(() => {
     if (payload.mode !== "style_remix") {
@@ -271,6 +295,10 @@ export default function CreateTaskClient() {
   const handleSubmit = async () => {
     if (!ragStatus?.available) {
       setError("当前小说知识库尚未构建，请先前往设置页完成全量重建索引。");
+      return;
+    }
+    if (!selectedModel || !isNovelTaskModelSupported(selectedModel)) {
+      setError("当前所选模型未完成小说工作流兼容性验证，请改用已验证模型。");
       return;
     }
     if (payload.mode === "style_remix" && !selectedStyleProfile) {
@@ -357,14 +385,16 @@ export default function CreateTaskClient() {
                 onChange={updateField("model_id")}
                 helperText={
                   models.length
-                    ? "模型选项来自后端 /api/models 接口，能力字段缺失时会自动兼容。"
+                    ? selectedModel && !isNovelTaskModelSupported(selectedModel)
+                      ? "当前模型未完成小说工作流兼容性验证，请改用已验证模型。"
+                      : "模型选项来自后端 /api/models 接口，能力字段缺失时会自动兼容。"
                     : "当前后端没有返回可用模型"
                 }
               >
                 {models.length ? (
                   models.map((option) => (
-                    <MenuItem key={option.id} value={option.id}>
-                      {option.display_name || option.id}
+                    <MenuItem key={option.id} value={option.id} disabled={!isNovelTaskModelSupported(option)}>
+                      {(option.display_name || option.id) + (!isNovelTaskModelSupported(option) ? "（未验证）" : "")}
                     </MenuItem>
                   ))
                 ) : (
@@ -401,6 +431,14 @@ export default function CreateTaskClient() {
                     </Box>
                     {selectedModel.metadata?.source && (
                       <Chip size="small" variant="outlined" label={`来源：${selectedModel.metadata.source}`} />
+                    )}
+                    {selectedModel.metadata?.compatibility && (
+                      <Chip
+                        size="small"
+                        variant="outlined"
+                        color={isNovelTaskModelSupported(selectedModel) ? "success" : "warning"}
+                        label={isNovelTaskModelSupported(selectedModel) ? "小说任务：已验证" : "小说任务：未验证"}
+                      />
                     )}
                   </Stack>
 

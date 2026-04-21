@@ -225,6 +225,10 @@ export function normalizeModelOptions(models: ModelOption[]) {
       metadata: item.metadata
         ? {
             source: typeof item.metadata.source === "string" && item.metadata.source.trim() ? item.metadata.source.trim() : undefined,
+            compatibility:
+              typeof item.metadata.compatibility === "string" && item.metadata.compatibility.trim()
+                ? item.metadata.compatibility.trim()
+                : undefined,
             profile_version:
               typeof item.metadata.profile_version === "string" && item.metadata.profile_version.trim()
                 ? item.metadata.profile_version.trim()
