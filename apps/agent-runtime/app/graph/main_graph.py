@@ -187,7 +187,11 @@ def build_graph(
         """统一的审核执行入口，根据配置选择动态/旧模式。"""
         if dynamic_review_bridge is not None:
             return dynamic_review_bridge.review(payload, policy)
+        if auto_review_manager is None:
+            raise RuntimeError("自动审核执行器不可用。")
         return auto_review_manager.review(payload, policy)
+
+    auto_review_executor_available = dynamic_review_bridge is not None or auto_review_manager is not None
 
     def _should_interrupt_manual_review(
         *,
@@ -305,7 +309,7 @@ def build_graph(
 
     def review_outline(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
-        if state.get("auto_review") and auto_review_manager is not None:
+        if state.get("auto_review") and auto_review_executor_available:
             policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
             force_manual = False
             try:
@@ -479,7 +483,7 @@ def build_graph(
 
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
-        if state.get("auto_review") and auto_review_manager is not None:
+        if state.get("auto_review") and auto_review_executor_available:
             policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
             force_manual = False
             try:
@@ -605,7 +609,7 @@ def build_graph(
 
     def review_verification(state: WorkflowState) -> WorkflowState:
         # 自动审核模式
-        if state.get("auto_review") and auto_review_manager is not None:
+        if state.get("auto_review") and auto_review_executor_available:
             policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
             force_manual = False
             try:

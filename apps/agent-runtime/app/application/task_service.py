@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from datetime import timedelta
 from pathlib import Path
@@ -53,6 +54,8 @@ from app.llm.story_engine import (
 )
 from app.rag.service import RagService
 from app.storage.task_store import TaskLogStore
+
+logger = logging.getLogger(__name__)
 
 
 class TaskService:
@@ -978,7 +981,7 @@ class TaskService:
 
         if "__interrupt__" in result:
             story_plan_data = values.get("story_plan")
-            review = ReviewPayload.model_validate(result["__interrupt__"][0].value)
+            review = ReviewPayload.model_validate(self._extract_interrupt_payload(result))
             review_type = review.type
             auto_review_trace = values.get("auto_review_trace") or []
 
@@ -987,8 +990,8 @@ class TaskService:
                     raise RuntimeError("工作流进入审核前未生成可用大纲。")
                 story_plan = StoryPlan.model_validate(story_plan_data)
                 record = self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
-                record = self._sync_supervisor_plan(task_id)
-                self._emit_trace_summary(
+                record = self._safe_sync_supervisor_plan(task_id, fallback=record)
+                self._safe_emit_trace_summary(
                     task_id,
                     kind="outline",
                     title="大纲已生成",
@@ -1008,8 +1011,8 @@ class TaskService:
                 review.completed_count = len(completed)
                 review.total_chapters = len(chapter_plan)
                 record = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
-                record = self._sync_supervisor_plan(task_id)
-                self._emit_trace_summary(
+                record = self._safe_sync_supervisor_plan(task_id, fallback=record)
+                self._safe_emit_trace_summary(
                     task_id,
                     kind="chapter",
                     title="章节批次已生成",
@@ -1026,8 +1029,8 @@ class TaskService:
                 verification_report = values.get("verification_report") or {}
                 review.verification_report = verification_report
                 record = self.store.set_waiting_verification_review(task_id, review, auto_review_trace)
-                record = self._sync_supervisor_plan(task_id)
-                self._emit_trace_summary(
+                record = self._safe_sync_supervisor_plan(task_id, fallback=record)
+                self._safe_emit_trace_summary(
                     task_id,
                     kind="verification",
                     title="全文验证完成",
@@ -1040,8 +1043,8 @@ class TaskService:
             if not story_plan_data:
                 raise RuntimeError("工作流进入审核前未生成可用大纲。")
             story_plan = StoryPlan.model_validate(story_plan_data)
-            self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
-            return self._sync_supervisor_plan(task_id)
+            record = self.store.set_waiting_review(task_id, review, story_plan, auto_review_trace)
+            return self._safe_sync_supervisor_plan(task_id, fallback=record)
 
         # 工作流正常结束
         story_plan_data = values.get("story_plan")
@@ -1050,7 +1053,7 @@ class TaskService:
         story_plan = StoryPlan.model_validate(story_plan_data)
         if values.get("cancelled"):
             self.store.set_cancelled(task_id, story_plan, review_comment)
-            return self._sync_supervisor_plan(task_id)
+            return self._safe_sync_supervisor_plan(task_id, fallback=self.store.get(task_id))
 
         draft_result_data = values.get("draft_result")
         if not draft_result_data:
@@ -1058,8 +1061,8 @@ class TaskService:
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
-        record = self._sync_supervisor_plan(task_id)
-        self._emit_trace_summary(
+        record = self._safe_sync_supervisor_plan(task_id, fallback=record)
+        self._safe_emit_trace_summary(
             task_id,
             kind="completed",
             title="正文生成完成",
@@ -1110,8 +1113,7 @@ class TaskService:
                 reset_exchange_callback(exchange_token)
             return self._sync_result(task_id, result)
         except Exception as exc:
-            self.store.set_failed(task_id, f"运行失败：{exc}")
-            self._sync_supervisor_plan(task_id)
+            self._mark_failed_unless_stable(task_id, f"运行失败：{exc}")
             raise
         finally:
             self._leave_active_run(task_id)
@@ -1161,8 +1163,7 @@ class TaskService:
                 reset_exchange_callback(exchange_token)
             return self._sync_result(task_id, result, review_comment=comment)
         except Exception as exc:
-            self.store.set_failed(task_id, f"恢复执行失败：{exc}")
-            self._sync_supervisor_plan(task_id)
+            self._mark_failed_unless_stable(task_id, f"恢复执行失败：{exc}")
             raise
         finally:
             self._leave_active_run(task_id)
@@ -1663,11 +1664,9 @@ class TaskService:
             except Exception as exc:
                 # 尝试标记任务为失败，防止永久卡在运行状态
                 try:
-                    self.store.set_failed(task_id, f"后台任务异常：{exc}")
-                    self._sync_supervisor_plan(task_id)
+                    self._mark_failed_unless_stable(task_id, f"后台任务异常：{exc}")
                 except Exception:
-                    import logging
-                    logging.getLogger(__name__).exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
+                    logger.exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
 
         threading.Thread(
             target=runner,
@@ -1690,6 +1689,56 @@ class TaskService:
             "banned": task.input.banned,
             "title_hint": task.input.title_hint,
         }
+
+    def _extract_interrupt_payload(self, result: dict[str, Any]) -> dict[str, Any]:
+        interrupts = result.get("__interrupt__")
+        if isinstance(interrupts, dict):
+            return interrupts
+        if not isinstance(interrupts, list) or not interrupts:
+            raise RuntimeError("工作流返回了空的中断结果，无法恢复审核状态。")
+        first_interrupt = interrupts[0]
+        if isinstance(first_interrupt, dict):
+            return first_interrupt
+        payload = getattr(first_interrupt, "value", None)
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("工作流中断结果结构不兼容，无法解析审核载荷。")
+
+    def _safe_sync_supervisor_plan(self, task_id: str, *, fallback: TaskRecord) -> TaskRecord:
+        try:
+            return self._sync_supervisor_plan(task_id)
+        except Exception:
+            logger.exception("supervisor 计划同步失败，保留已持久化任务状态，task_id=%s", task_id)
+            return self.store.get(task_id) if fallback.id == task_id else fallback
+
+    def _safe_emit_trace_summary(self, task_id: str, **kwargs: Any) -> None:
+        try:
+            self._emit_trace_summary(task_id, **kwargs)
+        except Exception:
+            logger.exception("trace 摘要写入失败，已保留任务主状态，task_id=%s", task_id)
+
+    def _has_stable_terminal_state(self, task: TaskRecord) -> bool:
+        return task.status in {
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+        }
+
+    def _mark_failed_unless_stable(self, task_id: str, message: str) -> TaskRecord:
+        current = self.store.get(task_id)
+        if self._has_stable_terminal_state(current):
+            logger.warning(
+                "任务已进入稳定状态，跳过失败覆盖。task_id=%s status=%s reason=%s",
+                task_id,
+                current.status.value,
+                message,
+            )
+            return current
+        record = self.store.set_failed(task_id, message)
+        return self._safe_sync_supervisor_plan(task_id, fallback=record)
 
     def _model_capabilities(self, model_id: str) -> dict[str, Any] | None:
         profile = self.model_catalog.get_model_profile(model_id)

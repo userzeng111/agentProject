@@ -1,19 +1,7 @@
 # 当前问题索引
-- 标题：后台线程异常与结果落盘链路排查
-  路径：`worklog/active/agent架构/20260417-03-后台线程异常与结果落盘链路排查.md`
-  摘要：只读追踪 `TaskService` 后台线程、结果同步与 store 写入链，判断 interrupt 后异常、结构兼容和未落盘风险。
-- 标题：运行时状态机阻塞只读排查 task_af31e4c58f
-  路径：`worklog/active/agent架构/20260417-02-运行时状态机阻塞只读排查-task-af31e4c58f.md`
-  摘要：只读核对 `task_af31e4c58f` 的 tasklog、checkpoint、`graph.get_state(config)` 与 `TaskService` 状态同步是否断裂。
-- 标题：固定两章一批实现与恢复逻辑分析
-  路径：`worklog/active/功能开发/20260417-06-固定两章一批实现与恢复逻辑分析.md`
-  摘要：只读定位“两章一批”生成与 review/resume 恢复逻辑，评估改成首批 2 章后续 1 章的最小改动面与回归风险。
-- 标题：normalized_spec 持久化写回时机分析
-  路径：`worklog/active/agent架构/20260417-01-normalized_spec持久化写回时机分析.md`
-  摘要：只读追踪 `normalized_spec` 从任务服务到持久化存储的写回时机，并解释运行中 `task.json` 仍为 `{}` 的原因。
-- 标题：8000 后端未更新导致 RAG 设置接口 405
-  路径：`worklog/active/功能开发/20260413-02-8000后端未更新导致RAG设置接口405.md`
-  摘要：排查并修复 8000 端口旧后端实例未加载最新代码，导致设置页重建接口返回 405。
+- 标题：剩余未提交内容提交必要性分析
+  路径：`worklog/active/功能开发/20260421-01-剩余未提交内容提交必要性分析.md`
+  摘要：只读分析当前工作区剩余未提交内容，判断哪些需要继续提交，哪些应保留本地。
 - 标题：小说 Agent 框架设计
   路径：`worklog/active/agent架构/20260330-01-小说-agent-框架设计.md`
   摘要：设计基于 `LangChain + LangGraph` 的小说生成与同人扩写 Agent 项目整体框架。
@@ -92,18 +80,3 @@
 - 标题：自动审核重写评分0分
   路径：`worklog/active/功能开发/20260406-02-自动审核重写评分0分.md`
   摘要：overall_score 未写入 trace，前端只能用子Agent均值估算，失败Agent拉低为0。
-- 标题：自动分配创建 Agent 功能设计
-  路径：`worklog/active/agent架构/20260407-01-自动分配创建agent功能设计.md`
-  摘要：设计 Master Agent + Planner Agent + Agent Factory 的动态 Agent 创建与任务分配架构。
-- 标题：动态 Agent 替换旧硬编码审核
-  路径：`worklog/active/agent架构/20260407-02-动态agent替换旧硬编码审核.md`
-  摘要：Phase 2：将 auto_reviewer.py 硬编码审核替换为动态 Agent 编排系统。
-- 标题：小说通用风格抽象边界对比设计
-  路径：`worklog/active/功能开发/20260417-03-小说通用风格抽象边界对比设计.md`
-  摘要：只读对比 bisheng-style 与当前小说任务流，提炼仅面向小说场景的最小公共抽象与运行边界。
-- 标题：novel_skill_service 主链路最小接入建议
-  路径：`worklog/active/功能开发/20260417-04-novel-skill-service主链路最小接入建议.md`
-  摘要：只读确认 `workflow_guidance` 和 `style_guidance` 要一起进入运行时所需的最小函数与字段接缝。
-- 标题：前端章节批次假设兼容性分析
-  路径：`worklog/active/功能开发/20260417-06-前端章节批次假设兼容性分析.md`
-  摘要：只读分析前端页面、共享类型与 SSE 事件里对章节批次的固定假设，区分必须联动修改项与兼容保留项。

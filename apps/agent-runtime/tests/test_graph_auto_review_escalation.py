@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from app.domain.models import ChapterDraft, ChapterPlan, ReviewDecision, StoryPlan
@@ -29,6 +30,11 @@ class FakeSnapshot:
 class FakeContextManager:
     def build_snapshot(self, task_id, stage, instruction, model_profile, references, memory_items):
         return FakeSnapshot(stage)
+
+
+class FakeStreamingGatewayClient:
+    def complete_stream_sync(self, messages, model=None):
+        return iter(())
 
 
 class FakeEngine:
@@ -115,6 +121,12 @@ class FakeEngine:
         return completed_chapters
 
 
+class FakeDynamicEngine(FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.gateway_client = FakeStreamingGatewayClient()
+
+
 class FakeAutoReviewManager:
     def __init__(self, decisions):
         self._decisions = list(decisions)
@@ -134,6 +146,20 @@ class FakeAutoReviewManager:
             comment="自动通过",
             reasoning="通过",
             overall_score=90,
+        )
+
+
+class FakeDynamicReviewBridge:
+    def __init__(self, *args, **kwargs) -> None:
+        self.calls: list[str] = []
+
+    def review(self, payload, policy):
+        self.calls.append(payload.type)
+        return ReviewDecision(
+            approved=True,
+            comment=f"动态审核通过：{payload.type}",
+            reasoning="bridge",
+            overall_score=91,
         )
 
 
@@ -294,6 +320,41 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         self.assertTrue(engine.seen_specs)
         self.assertEqual(engine.seen_specs[0]["requested_target_words"], 1500)
         self.assertEqual(engine.seen_specs[0]["target_words"], 1600)
+
+    def test_dynamic_review_bridge_can_run_without_legacy_auto_review_manager(self) -> None:
+        engine = FakeDynamicEngine()
+        bridge = FakeDynamicReviewBridge()
+
+        with patch("app.graph.main_graph.AutoReviewManager", return_value=None), patch(
+            "app.settings.config.get_settings",
+            return_value=SimpleNamespace(
+                dynamic_agent_review=True,
+                auto_review_auditor_model="gpt-5.4",
+            ),
+        ), patch(
+            "app.agents.dynamic.bridge.DynamicReviewBridge",
+            return_value=bridge,
+        ):
+            graph = build_graph(
+                engine,
+                context_manager=FakeContextManager(),
+                auto_review=True,
+                auto_review_policy={
+                    "allow_self_revisions": True,
+                    "max_auto_revisions": 0,
+                },
+            )
+
+        result = graph.invoke(
+            self._initial_state(),
+            config={"configurable": {"thread_id": "task-auto-review-dynamic"}},
+        )
+
+        self.assertNotIn("__interrupt__", result)
+        self.assertEqual(
+            bridge.calls,
+            ["outline_review", "chapter_pair_review", "verification_review"],
+        )
 
 
 if __name__ == "__main__":

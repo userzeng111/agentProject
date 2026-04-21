@@ -1,5 +1,39 @@
 # 历史问题索引
 
+- 标题：剩余 active 事项收敛执行规划
+  路径：`worklog/archive/功能开发/20260421-02-剩余active事项收敛执行规划.md`
+  摘要：完成当前 active 清单收敛，区分已完成可归档条目与仍需继续开发事项。
+- 标题：8000 后端未更新导致 RAG 设置接口 405
+  路径：`worklog/archive/功能开发/20260413-02-8000后端未更新导致RAG设置接口405.md`
+  摘要：确认旧实例问题已消失，并在当前运行实例上实测 RAG 设置查询与全量重建接口返回 200。
+- 标题：小说通用风格抽象边界对比设计
+  路径：`worklog/archive/功能开发/20260417-03-小说通用风格抽象边界对比设计.md`
+  摘要：提炼小说风格统一层的最小公共抽象，后续已由 style_profiles 与 novel_skills 运行时实现吸收。
+- 标题：novel_skill_service 主链路最小接入建议
+  路径：`worklog/archive/功能开发/20260417-04-novel-skill-service主链路最小接入建议.md`
+  摘要：明确 workflow_guidance 与 style_guidance 主链路接入点，后续实现已验证生效。
+- 标题：前端章节批次假设兼容性分析
+  路径：`worklog/archive/功能开发/20260417-06-前端章节批次假设兼容性分析.md`
+  摘要：完成章节批次展示假设梳理，相关前后端兼容改造已被后续实现吸收。
+- 标题：固定两章一批实现与恢复逻辑分析
+  路径：`worklog/archive/功能开发/20260417-06-固定两章一批实现与恢复逻辑分析.md`
+  摘要：定位批次与恢复逻辑风险点，后续首批两章后续单章策略与恢复修复已落地。
+- 标题：自动分配创建 Agent 功能设计
+  路径：`worklog/archive/agent架构/20260407-01-自动分配创建agent功能设计.md`
+  摘要：动态 Agent 编排能力已完成 API 级集成验证，包含 health、orchestrate 与 compare 路由测试。
+- 标题：动态 Agent 替换旧硬编码审核
+  路径：`worklog/archive/agent架构/20260407-02-动态agent替换旧硬编码审核.md`
+  摘要：主图已接入动态审核桥接并补齐兜底逻辑，验证旧审核器不可用时仍可由动态桥接接管。
+- 标题：normalized_spec 持久化写回时机分析
+  路径：`worklog/archive/agent架构/20260417-01-normalized_spec持久化写回时机分析.md`
+  摘要：运行前预写回方案已落地，并新增时序测试锁定 task.json 在 graph 返回前可见。
+- 标题：运行时状态机阻塞只读排查 task_af31e4c58f
+  路径：`worklog/archive/agent架构/20260417-02-运行时状态机阻塞只读排查-task-af31e4c58f.md`
+  摘要：阻塞根因已被后续 review 同步与恢复链路修复吸收，问题单完成归档。
+- 标题：后台线程异常与结果落盘链路排查
+  路径：`worklog/archive/agent架构/20260417-03-后台线程异常与结果落盘链路排查.md`
+  摘要：补齐 TaskService 稳态保护，避免 interrupt 或完成后被尾部异常覆盖为 failed，并通过回归验证。
+
 - 标题：waiting_manual_action 恢复原因前端展示缺失排查
   路径：`worklog/archive/agent架构/20260420-02-waiting_manual_action恢复原因前端展示缺失排查.md`
   摘要：补齐 waiting_manual_action 页面上的恢复原因展示，包含自然语言说明和结构化阻塞原因。
