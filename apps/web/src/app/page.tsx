@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -21,10 +21,11 @@ import {
   Typography,
 } from "@mui/material";
 import { Replay as ReplayIcon } from "@mui/icons-material";
-import { getDashboard, getModels, updateDefaultModel } from "@/lib/api";
+import { getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
+import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
-import { DashboardResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
+import { DashboardResponse, ModelListResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -227,11 +228,15 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
 function SidebarStats({
   dashboard,
   models,
+  modelMeta,
   onModelChange,
+  onRefreshModels,
 }: {
   dashboard: DashboardResponse;
   models: ModelOption[];
+  modelMeta: ModelListResponse["meta"] | null;
   onModelChange: (modelId: string) => void;
+  onRefreshModels: () => void;
 }) {
   const stats = [
     {
@@ -247,6 +252,8 @@ function SidebarStats({
   ];
 
   const currentDefault = dashboard.model_summary?.default_model ?? "";
+  const selectableModels: ModelOption[] = selectNovelTaskModels(models);
+  const selectValue = selectableModels.some((item) => item.id === currentDefault) ? currentDefault : "";
 
   return (
     <Stack spacing={2}>
@@ -275,13 +282,28 @@ function SidebarStats({
             <Typography variant="overline" color="text.secondary">
               默认模型
             </Typography>
+            <Stack direction="row" spacing={1}>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ReplayIcon />}
+                onClick={onRefreshModels}
+              >
+                刷新模型
+              </Button>
+            </Stack>
             <Select
               size="small"
-              value={currentDefault}
+              value={selectValue}
               onChange={(e) => onModelChange(e.target.value)}
               sx={{ fontSize: "0.9rem" }}
             >
-              {models.map((m) => (
+              {!selectableModels.length && (
+                <MenuItem value="" disabled>
+                  当前没有可用于小说任务流的在线模型
+                </MenuItem>
+              )}
+              {selectableModels.map((m) => (
                 <MenuItem key={m.id} value={m.id}>
                   <Stack spacing={0.25}>
                     <Typography sx={{ fontSize: "0.875rem", fontWeight: 500 }}>
@@ -297,7 +319,16 @@ function SidebarStats({
               ))}
             </Select>
             <Typography variant="caption" color="text.secondary">
-              支持 {dashboard.model_summary?.supported_models?.length ?? 0} 个模型 · 新任务默认使用
+              默认使用 Agent Team 当前默认模型；可在任务动作里临时覆盖。
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              可用小说模型 {selectableModels.length} 个
+              {typeof modelMeta?.cache_ttl_seconds === "number"
+                ? ` · 缓存 ${Math.round(modelMeta.cache_ttl_seconds)}s`
+                : ""}
+              {typeof modelMeta?.cache_age_seconds === "number"
+                ? ` · 当前缓存年龄 ${Math.round(modelMeta.cache_age_seconds)}s`
+                : ""}
             </Typography>
           </Stack>
         </CardContent>
@@ -344,6 +375,7 @@ function HomeSkeleton() {
 export default function Home() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelMeta, setModelMeta] = useState<ModelListResponse["meta"] | null>(null);
   const [error, setError] = useState("");
   const [modelUpdating, setModelUpdating] = useState(false);
 
@@ -358,20 +390,27 @@ export default function Home() {
       });
   };
 
-  const fetchModels = () => {
-    void getModels()
-      .then((data) => {
-        setModels(data ?? []);
+  const fetchModels = useCallback((refresh = false) => {
+    void getModelCatalog({ refresh })
+      .then((response) => {
+        setModels(normalizeModelOptions(response.data ?? []));
+        setModelMeta(response.meta ?? null);
       })
       .catch(() => {
         // 模型列表加载失败不影响主流程
       });
-  };
+  }, []);
 
   useEffect(() => {
     fetchDashboard();
-    fetchModels();
-  }, []);
+    fetchModels(true);
+  }, [fetchModels]);
+
+  useEffect(() => {
+    const handleFocus = () => fetchModels(true);
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, [fetchModels]);
 
   const handleModelChange = (modelId: string) => {
     if (modelUpdating) return;
@@ -380,7 +419,7 @@ export default function Home() {
       .then(() => {
         // 更新成功后刷新 dashboard 和模型列表
         fetchDashboard();
-        fetchModels();
+        fetchModels(true);
       })
       .catch((reason) => {
         setError(`切换模型失败：${reason instanceof Error ? reason.message : "未知错误"}`);
@@ -434,7 +473,9 @@ export default function Home() {
               <SidebarStats
                 dashboard={dashboard}
                 models={models}
+                modelMeta={modelMeta}
                 onModelChange={handleModelChange}
+                onRefreshModels={() => fetchModels(true)}
               />
             </Grid>
           </Grid>

@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, computed_field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -160,11 +160,17 @@ class TaskCreateRequest(TaskInput):
 class ResumeRequest(BaseModel):
     approved: bool
     comment: str = ""
+    model_id: str = ""
 
 
 class ContinueDraftRequest(BaseModel):
     requested_chapter_count: int
     continue_request_id: str
+    model_id: str = ""
+
+
+class TaskActionRequest(BaseModel):
+    model_id: str = ""
 
 
 class SourceAsset(BaseModel):
@@ -345,6 +351,8 @@ class TaskRecord(BaseModel):
     artifacts: list[ArtifactItem] = Field(default_factory=list)
     events: list[TaskEvent] = Field(default_factory=list)
     error_message: str | None = None
+    last_action_model_id: str = ""
+    last_action_kind: str = ""
     storage_state: str = "runs"
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -384,6 +392,11 @@ class TaskRecord(BaseModel):
             input_data.chapter_word_min = self.chapter_word_min
         return self
 
+    @computed_field
+    @property
+    def default_model_id(self) -> str:
+        return self.model_id
+
 
 class TaskSummary(BaseModel):
     task_id: str
@@ -393,6 +406,9 @@ class TaskSummary(BaseModel):
     novel_size: NovelSize | None = None
     chapter_word_min: int | None = None
     model_id: str
+    default_model_id: str = ""
+    last_action_model_id: str = ""
+    last_action_kind: str = ""
     model_capabilities: dict[str, Any] | None = None
     status: TaskStatus
     current_stage: str
@@ -564,6 +580,10 @@ class AgentResult(BaseModel):
     agent_id: str = Field(default_factory=lambda: new_id("agent"))
     agent_name: str  # 如 "OutlineAuditor", "StructureAgent"
     role: str  # 如 "structure", "consistency", "creativity", "synthesis"
+    execution_kind: str | None = None  # main_agent | subagent | synthesis
+    parent_agent_id: str | None = None
+    created_by: str | None = None
+    invocation_kind: str | None = None
     status: str = "pending"  # pending | running | completed | failed
     score: float | None = None  # 评分 0-100
     issues: list[dict[str, Any]] = Field(default_factory=list)  # 发现的问题列表

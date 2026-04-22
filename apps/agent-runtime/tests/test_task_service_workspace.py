@@ -14,7 +14,10 @@ class FakeGatewayClient:
         self.calls = []
 
     def list_models(self):
-        return [{"id": "gpt-5.4", "object": "model", "owned_by": "openai"}]
+        return [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+        ]
 
     def complete_json(self, messages, model=None):
         self.calls.append({"messages": [dict(item) for item in messages], "model": model})
@@ -228,6 +231,38 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             assert workspace.supervisor_plan is not None
             self.assertEqual(workspace.supervisor_plan.subtasks[0].kind, "reference_analysis")
             self.assertEqual(workspace.supervisor_plan.subtasks[0].status.value, "ready")
+
+    def test_workspace_exposes_default_and_last_action_model_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+            service._start_background = lambda *args, **kwargs: None
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            service.run_task(task.id, model_id="glm-5.1")
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(workspace.meta.model_id, "gpt-5.4")
+            self.assertEqual(workspace.meta.default_model_id, "gpt-5.4")
+            self.assertEqual(workspace.meta.last_action_model_id, "glm-5.1")
+            self.assertEqual(workspace.meta.last_action_kind, "run")
+            self.assertEqual(workspace.request_preview["default_model_id"], "gpt-5.4")
+            self.assertEqual(workspace.request_preview["last_action_model_id"], "glm-5.1")
+            self.assertEqual(workspace.request_preview["last_action_kind"], "run")
 
     def test_dashboard_treats_dead_statuses_as_failed_attention_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

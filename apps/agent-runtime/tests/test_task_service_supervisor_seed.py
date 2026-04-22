@@ -14,7 +14,10 @@ from app.storage.task_store import TaskLogStore
 
 class FakeGatewayClient:
     def list_models(self):
-        return [{"id": "gpt-5.4", "object": "model", "owned_by": "openai"}]
+        return [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+        ]
 
 
 class FakeEngine:
@@ -80,6 +83,34 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             assert snapshot.supervisor_plan is not None
             self.assertEqual(snapshot.supervisor_plan.subtasks[0].status.value, "completed")
             self.assertEqual(snapshot.supervisor_plan.subtasks[1].status.value, "running")
+
+    def test_run_task_action_model_override_does_not_persist_task_default_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            background_calls: list[tuple] = []
+            service._start_background = lambda *args, **kwargs: background_calls.append((args, kwargs))
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一个暴风雨海港里的疑案",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            service.run_task(task.id, model_id="glm-5.1")
+
+            self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
+            self.assertEqual(background_calls[0][0], (task.id, service._run_task_sync, task.id, "glm-5.1"))
 
     def test_sync_result_completed_advances_result_assembly_to_completed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -273,6 +304,64 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             record = service._run_task_sync(task.id)
 
             self.assertEqual(record.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+
+    def test_run_task_sync_persists_task_default_model_in_normalized_spec_after_action_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一个旧港追凶故事",
+                    model_id="gpt-5.4",
+                )
+            )
+            interrupt_payload = ReviewPayload(
+                type="outline_review",
+                version="v1",
+                summary="请审核大纲。",
+            )
+            service.graph = SimpleNamespace(
+                invoke=lambda *_args, **_kwargs: {"__interrupt__": [SimpleNamespace(value=interrupt_payload.model_dump(mode="json"))]},
+                get_state=lambda _config: SimpleNamespace(
+                    values={
+                        "normalized_spec": {
+                            "mode": "short_story",
+                            "prompt": "写一个旧港追凶故事",
+                            "genre": "",
+                            "style": "",
+                            "workflow_guidance": "",
+                            "style_guidance": "",
+                            "requested_target_words": 1800,
+                            "target_words": 1800,
+                            "audience": "",
+                            "banned": "",
+                            "title_hint": "",
+                            "model_id": "glm-5.1",
+                        },
+                        "story_plan": StoryPlan(
+                            working_title="旧港追凶",
+                            logline="档案员追查旧港血案。",
+                            world_notes=["海雾"],
+                            character_notes=["档案员"],
+                            chapter_plan=[{"number": 1, "title": "起始", "goal": "发现线索"}],
+                        ).model_dump(mode="json"),
+                    }
+                ),
+            )
+
+            service._run_task_sync(task.id, "glm-5.1")
+
+            self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
+            self.assertEqual(store.get(task.id).normalized_spec.get("model_id"), "gpt-5.4")
 
     def test_start_background_does_not_override_stable_waiting_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

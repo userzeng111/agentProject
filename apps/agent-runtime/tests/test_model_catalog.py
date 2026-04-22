@@ -127,6 +127,19 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(model["metadata"]["compatibility"], "unverified")
         self.assertFalse(model["capabilities"]["features"]["novel_task_supported"])
 
+    def test_registry_only_model_cannot_be_used_as_runtime_default(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient(
+                [
+                    {"id": "gpt-4.1-mini", "object": "model", "owned_by": "openai"},
+                ]
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "未接入网关"):
+            catalog.update_default_model("gpt-5.4")
+
 
 if __name__ == "__main__":
     unittest.main()

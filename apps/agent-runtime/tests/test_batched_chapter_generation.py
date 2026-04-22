@@ -14,7 +14,10 @@ from app.storage.task_store import TaskLogStore
 
 class FakeGatewayClient:
     def list_models(self):
-        return [{"id": "gpt-5.4", "object": "model", "owned_by": "openai"}]
+        return [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+        ]
 
 
 class FakeBatchEngine:
@@ -54,6 +57,7 @@ class FakeBatchEngine:
             {
                 "batch_index": batch_index,
                 "requested_batch_size": requested_batch_size,
+                "model": model,
                 "generated_numbers": [item["number"] for item in result],
             }
         )
@@ -277,6 +281,45 @@ class BatchedChapterGenerationTests(unittest.TestCase):
             self.assertIsNotNone(chapter)
             self.assertTrue(str(chapter.md_ref).endswith(".md"))
             self.assertTrue(str(chapter.json_ref).endswith(".json"))
+
+    def test_continue_task_failure_moves_task_to_waiting_manual_action_and_can_recover(self) -> None:
+        tmp_dir, store, service, _engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=3)
+
+        def raise_gateway_error(**_kwargs):
+            raise RuntimeError("模型网关暂时不可用")
+
+        service.engine.generate_chapter_pair = raise_gateway_error
+
+        snapshot = service.continue_task(
+            task.id,
+            {"requested_chapter_count": 2, "continue_request_id": "req-1", "model_id": "glm-5.1"},
+        )
+
+        self.assertEqual(snapshot.status, TaskStatus.WAITING_MANUAL_ACTION)
+        self.assertEqual(snapshot.current_stage, "waiting_manual_action")
+        self.assertEqual(snapshot.model_id, "gpt-5.4")
+        self.assertIn("继续创作失败", snapshot.error_message or "")
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+        self.assertEqual(recovered.current_stage, "ready_for_batch")
+
+    def test_continue_task_action_model_override_does_not_persist_task_default_model(self) -> None:
+        tmp_dir, store, service, engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=3)
+
+        snapshot = service.continue_task(
+            task.id,
+            {"requested_chapter_count": 2, "continue_request_id": "req-model", "model_id": "glm-5.1"},
+        )
+
+        self.assertEqual(snapshot.status, TaskStatus.WAITING_CHAPTER_REVIEW)
+        self.assertEqual(engine.generated_batches[-1]["model"], "glm-5.1")
+        self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
 
 
 if __name__ == "__main__":

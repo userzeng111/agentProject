@@ -1,4 +1,25 @@
 # 当前问题索引
+- 标题：章节审核恢复状态对账修复
+  路径：`worklog/active/功能开发/20260422-03-章节审核恢复状态对账修复.md`
+  摘要：修复任务文件状态仍停留在旧章节审核、但小说项目状态已推进后，审核提交因缺失 active batch 返回 400 的问题。
+- 标题：Agent 审核追踪轮次统计修复
+  路径：`worklog/active/agent架构/20260422-02-Agent审核追踪轮次统计修复.md`
+  摘要：修复 Agent 审核追踪把累计历史轮次误统计成当前轮次主/子 Agent 数量的问题。
+- 标题：聊天模型预选回归只读排查
+  路径：`worklog/active/功能开发/20260422-02-聊天模型预选回归只读排查.md`
+  摘要：确认 `/api/models` 仅返回 registry 模型时，前端是否误把不可用模型设为当前模型并传给后端覆盖默认值。
+- 标题：评审回归修复
+  路径：`worklog/active/功能开发/20260422-01-评审回归修复.md`
+  摘要：修复章节总数校验、章节范围硬约束和聊天模型预选逻辑的三处评审回归。
+- 标题：main_graph.py 章节数量与范围约束只读排查
+  路径：`worklog/active/功能开发/20260422-02-main_graph章节数量与范围约束只读排查.md`
+  摘要：只读核查章节总数一致性与章节范围硬约束是否绕过目标/最小/最大章节数配置。
+- 标题：MUI PaginationItem 样式告警修复
+  路径：`worklog/active/UI优化/20260422-01-MUI-PaginationItem样式告警修复.md`
+  摘要：修复前端开发服务中 `MuiPaginationItem` 主题覆盖写法不符合 MUI 状态类规范导致的持续告警。
+- 标题：Agent 审核追踪动态派发语义修正
+  路径：`worklog/active/agent架构/20260422-01-Agent审核追踪动态派发语义修正.md`
+  摘要：修正 Agent 审核追踪中主 Agent、subagent 与 tool/function call 的语义混淆，避免把 subagent 数量直接展示为独立 Agent 数量。
 - 标题：斗罗同人任务恢复卡死排查
   路径：`worklog/active/功能开发/20260421-06-斗罗同人任务恢复卡死排查.md`
   摘要：排查任务 `task_fa64bdc38c` 已有 outline-history 但仍被误判为不可恢复并转入待人工处理的问题。

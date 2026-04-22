@@ -10,6 +10,7 @@ import {
   RagSettingsStatus,
   RagSyncResult,
   StyleProfileListResponse,
+  TaskActionPayload,
   TaskCreatePayload,
   TaskRecord,
   WorkspaceResponse,
@@ -46,13 +47,13 @@ export function createTask(payload: TaskCreatePayload) {
   });
 }
 
-export async function getModels() {
-  const response = await request<ModelListResponse>("/api/models");
+export async function getModels(options?: { refresh?: boolean }) {
+  const response = await request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
   return response.data ?? [];
 }
 
-export function getModelCatalog() {
-  return request<ModelListResponse>("/api/models");
+export function getModelCatalog(options?: { refresh?: boolean }) {
+  return request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
 }
 
 export async function getStyleProfiles() {
@@ -86,16 +87,17 @@ export function uploadAsset(taskId: string, file: File) {
   });
 }
 
-export function runTask(taskId: string) {
+export function runTask(taskId: string, payload?: TaskActionPayload) {
   return request<TaskRecord>(`/api/tasks/${taskId}/run`, {
     method: "POST",
+    body: JSON.stringify(payload ?? {}),
   });
 }
 
-export function resumeTask(taskId: string, approved: boolean, comment: string) {
+export function resumeTask(taskId: string, approved: boolean, comment: string, modelId?: string) {
   return request<TaskRecord>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
-    body: JSON.stringify({ approved, comment }),
+    body: JSON.stringify({ approved, comment, model_id: modelId ?? "" }),
   });
 }
 
@@ -106,9 +108,10 @@ export function continueTask(taskId: string, payload: ContinueDraftPayload) {
   });
 }
 
-export function recoverTask(taskId: string) {
+export function recoverTask(taskId: string, payload?: TaskActionPayload) {
   return request<TaskRecord>(`/api/tasks/${taskId}/recover`, {
     method: "POST",
+    body: JSON.stringify(payload ?? {}),
   });
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Any
@@ -414,6 +415,7 @@ class ModelCatalogService:
         valid_ids = {item["id"] for item in self.list_models()}
         if model_id not in valid_ids:
             raise ValueError(f"模型 ID 不在可用模型列表中：{model_id}")
+        self.ensure_runtime_default_model_supported(model_id)
         self.ensure_novel_generation_model_supported(model_id)
         self._runtime_default_model = model_id
         self._save_runtime_settings()
@@ -424,20 +426,45 @@ class ModelCatalogService:
             "supported_models": [item["id"] for item in self.list_models()],
         }
 
-    def list_models(self) -> list[dict[str, Any]]:
-        return self.list_models_payload()["data"]
+    def ensure_runtime_default_model_supported(self, model_id: str | None) -> dict[str, Any]:
+        profile = self.get_model_profile(model_id)
+        metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
+        source = str(metadata.get("source") or "").strip()
+        if source in {"registry", "default+registry"}:
+            raise ValueError(
+                f"模型 {profile.get('id') or model_id or ''} 当前仅存在本地画像，未接入网关，不能设为默认聊天模型。"
+            )
+        return profile
 
-    def list_models_payload(self) -> dict[str, Any]:
-        if self._cached_payload is not None and (monotonic() - self._cached_at) < self.cache_ttl_seconds:
-            return deepcopy(self._cached_payload)
+    def list_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        return self.list_models_payload(force_refresh=force_refresh)["data"]
+
+    def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
+        cache_age_seconds = monotonic() - self._cached_at
+        if (
+            not force_refresh
+            and self._cached_payload is not None
+            and cache_age_seconds < self.cache_ttl_seconds
+        ):
+            payload = deepcopy(self._cached_payload)
+            meta = payload.setdefault("meta", {})
+            meta["cache_ttl_seconds"] = self.cache_ttl_seconds
+            meta["cache_age_seconds"] = round(cache_age_seconds, 2)
+            meta["cached"] = True
+            return payload
 
         raw_models = self._load_gateway_models()
         aggregated = self._merge_models(raw_models)
+        fetched_at = datetime.now(timezone.utc).isoformat()
         payload = {
             "data": aggregated,
             "meta": {
                 "default_model": self._effective_default_model(),
                 "capability_schema_version": _CAPABILITY_SCHEMA_VERSION,
+                "cache_ttl_seconds": self.cache_ttl_seconds,
+                "cache_age_seconds": 0.0,
+                "cached": False,
+                "fetched_at": fetched_at,
             },
         }
         self._cached_payload = deepcopy(payload)

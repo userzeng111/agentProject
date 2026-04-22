@@ -14,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import { getArchiveList } from "@/lib/api";
+import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref } from "@/lib/task-routes";
 import { ArchiveTaskSummary } from "@/lib/types";
 
@@ -107,7 +108,15 @@ export default function ArchiveListClient() {
                     <Typography variant="h6">{item.title}</Typography>
                     <Typography color="text.secondary">{item.summary}</Typography>
                     <Typography variant="body2" color="text.secondary">
-                      模式：{item.mode} · 模型：{item.model_id || "默认模型"} · 更新时间：
+                      类型：
+                      {formatTaskTypeLabel({
+                        creativeMode: item.creative_mode,
+                        novelSize: item.novel_size,
+                        mode: item.mode,
+                      })}
+                      {" · "}任务默认模型：{item.default_model_id || item.model_id || "默认模型"}
+                      {item.last_action_model_id ? ` · 最近一次动作模型：${item.last_action_model_id}` : ""}
+                      {" · "}更新时间：
                       {new Date(item.updated_at).toLocaleString()}
                     </Typography>
                     <Button

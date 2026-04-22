@@ -129,6 +129,31 @@ class TaskService:
         task = self.store.save(task)
         return self._sync_supervisor_plan(task.id)
 
+    def _resolve_task_model_id(self, task: TaskRecord) -> str:
+        candidate = (task.model_id or "").strip() or self.model_catalog._effective_default_model()
+        self.model_catalog.ensure_novel_generation_model_supported(candidate)
+        return candidate
+
+    def _resolve_action_model_id(self, task: TaskRecord, model_id: str | None) -> str:
+        requested_model = (model_id or "").strip()
+        if requested_model:
+            self.model_catalog.ensure_novel_generation_model_supported(requested_model)
+            return requested_model
+        return self._resolve_task_model_id(task)
+
+    def _with_model_id(self, payload: dict[str, Any], model_id: str) -> dict[str, Any]:
+        next_payload = dict(payload)
+        next_payload["model_id"] = model_id
+        return next_payload
+
+    def _record_last_action(self, task_id: str, *, model_id: str, kind: str) -> TaskRecord:
+        task = self.store.get(task_id)
+        if task.last_action_model_id == model_id and task.last_action_kind == kind:
+            return task
+        task.last_action_model_id = model_id
+        task.last_action_kind = kind
+        return self.store.save(task)
+
     def add_source(self, task_id: str, filename: str, media_type: str, content: str) -> TaskRecord:
         source = SourceAsset(filename=filename, media_type=media_type, content=content)
         return self.store.add_source(task_id, source)
@@ -136,14 +161,20 @@ class TaskService:
     def get_task(self, task_id: str) -> TaskRecord:
         return self.recover_task(task_id)
 
-    def recover_task(self, task_id: str, force: bool = False) -> TaskRecord:
+    def recover_task(self, task_id: str, force: bool = False, model_id: str | None = None) -> TaskRecord:
         task = self.store.get(task_id)
+        action_model_id = self._resolve_action_model_id(task, model_id)
         if not self._should_attempt_recovery(task, force=force):
             return task
 
         recovered = self._recover_task_from_stable_state(task, force=force)
         if recovered is not None:
-            return self._sync_supervisor_plan(task_id)
+            return self._safe_sync_supervisor_plan(task_id, fallback=recovered)
+
+        if force:
+            retried = self._retry_task_from_original_input(task, action_model_id)
+            if retried is not None:
+                return self._safe_sync_supervisor_plan(task_id, fallback=retried)
 
         if task.status is not TaskStatus.WAITING_MANUAL_ACTION or force:
             return self.store.set_waiting_manual_action(
@@ -176,12 +207,13 @@ class TaskService:
                 raise ValueError("任务正在运行中，请先取消后再删除。")
         return self.store.delete_task(task_id)
 
-    def run_task(self, task_id: str) -> TaskRecord:
+    def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
         task = self.store.get(task_id)
         if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
             raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
         if self.rag_service is not None and not self.rag_service.is_ready():
             raise ValueError(self.rag_service.readiness_error())
+        action_model_id = self._resolve_action_model_id(task, model_id)
         snapshot = self.store.mark_stage(
             task_id,
             status=TaskStatus.PLANNING,
@@ -190,21 +222,25 @@ class TaskService:
             message="任务已进入后台执行，正在整理创作要求。",
             event_type="task.queued",
         )
+        snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="run")
         snapshot = self._sync_supervisor_plan(task_id)
-        self._start_background(task_id, self._run_task_sync, task_id)
+        self._start_background(task_id, self._run_task_sync, task_id, action_model_id)
         return snapshot
 
-    def resume_task(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
+    def resume_task(self, task_id: str, approved: bool, comment: str, model_id: str | None = None) -> TaskRecord:
         valid_statuses = {
             TaskStatus.WAITING_OUTLINE_REVIEW,
             TaskStatus.WAITING_CHAPTER_REVIEW,
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }
         task = self.store.get(task_id)
+        task = self._reconcile_pending_review_with_novel_project(task)
         if task.status not in valid_statuses or task.pending_review is None:
-            task = self.recover_task(task_id)
+            task = self.recover_task(task_id, model_id=model_id)
+            task = self._reconcile_pending_review_with_novel_project(task)
         if task.status not in valid_statuses or task.pending_review is None:
             raise ValueError("当前任务没有待恢复的审核节点。")
+        action_model_id = self._resolve_action_model_id(task, model_id)
         review_type = task.pending_review.type
 
         if review_type == "outline_review" and approved:
@@ -338,13 +374,15 @@ class TaskService:
                 event_type="review.submitted",
                 unit_id="outline",
             )
+        snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
         snapshot = self._sync_supervisor_plan(task_id)
-        self._start_background(task_id, self._resume_task_sync, task_id, approved, comment)
+        self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
         return snapshot
 
     def continue_task(self, task_id: str, payload: ContinueDraftRequest | dict[str, Any]) -> TaskRecord:
         request = payload if isinstance(payload, ContinueDraftRequest) else ContinueDraftRequest.model_validate(payload)
         task = self.store.get(task_id)
+        action_model_id = self._resolve_action_model_id(task, request.model_id)
         self._ensure_novel_project_seeded(task)
 
         from app.storage.db_repository import (
@@ -352,6 +390,7 @@ class TaskService:
             get_active_batch,
             get_batch_by_request,
             get_novel_project,
+            mark_batch_failed,
             upsert_outline_chapter_draft,
             update_project_status,
         )
@@ -404,66 +443,92 @@ class TaskService:
             event_type="draft.generating",
             unit_id=f"chapter-pair-{batch.batch_no}",
         )
+        task = self._record_last_action(task_id, model_id=action_model_id, kind="continue")
 
         completed_chapters = self.get_current_chapters(task_id)[:completed_count]
-        chapter_pair = self.engine.generate_chapter_pair(
-            spec=task.normalized_spec or self._initial_state(task)["input_payload"],
-            story_plan=task.story_plan.model_dump(mode="json"),
-            batch_index=completed_count,
-            completed_chapters=completed_chapters,
-            reference_text="\n\n".join(source.content for source in task.sources),
-            model=task.model_id,
-            requested_batch_size=effective_count,
-        )
-        chapter_drafts = [ChapterDraft.model_validate(item) for item in chapter_pair]
-        for chapter in chapter_drafts:
-            self._write_chapter_file(
-                task_id,
-                chapter_number=chapter.number,
-                title=chapter.title,
-                summary=chapter.summary,
-                content=chapter.content,
+        try:
+            chapter_pair = self.engine.generate_chapter_pair(
+                spec=self._with_model_id(
+                    task.normalized_spec or self._initial_state(task)["input_payload"],
+                    action_model_id,
+                ),
+                story_plan=task.story_plan.model_dump(mode="json"),
+                batch_index=completed_count,
+                completed_chapters=completed_chapters,
+                reference_text="\n\n".join(source.content for source in task.sources),
+                model=action_model_id,
+                requested_batch_size=effective_count,
             )
-            upsert_outline_chapter_draft(
+            chapter_drafts = [ChapterDraft.model_validate(item) for item in chapter_pair]
+            for chapter in chapter_drafts:
+                self._write_chapter_file(
+                    task_id,
+                    chapter_number=chapter.number,
+                    title=chapter.title,
+                    summary=chapter.summary,
+                    content=chapter.content,
+                )
+                upsert_outline_chapter_draft(
+                    task_id,
+                    chapter_number=chapter.number,
+                    title=chapter.title,
+                    summary=chapter.summary,
+                    batch_no=batch.batch_no,
+                    md_ref=f"tasklog/runs/{task_id}/chapters/{chapter.number:02d}.md",
+                    json_ref=f"tasklog/runs/{task_id}/chapters/{chapter.number:02d}.json",
+                    content=chapter.content,
+                )
+
+            from app.storage.db_repository import mark_batch_waiting_review
+
+            mark_batch_waiting_review(task_id, batch.batch_no, persisted_count=len(chapter_drafts))
+            update_project_status(
                 task_id,
-                chapter_number=chapter.number,
-                title=chapter.title,
-                summary=chapter.summary,
-                batch_no=batch.batch_no,
-                md_ref=f"tasklog/runs/{task_id}/chapters/{chapter.number:02d}.md",
-                json_ref=f"tasklog/runs/{task_id}/chapters/{chapter.number:02d}.json",
-                content=chapter.content,
+                status=TaskStatus.WAITING_CHAPTER_REVIEW.value,
+                completed_chapter_count=completed_count,
+                next_chapter_number=completed_count + 1,
             )
-
-        from app.storage.db_repository import mark_batch_waiting_review
-
-        mark_batch_waiting_review(task_id, batch.batch_no, persisted_count=len(chapter_drafts))
-        update_project_status(
-            task_id,
-            status=TaskStatus.WAITING_CHAPTER_REVIEW.value,
-            completed_chapter_count=completed_count,
-            next_chapter_number=completed_count + 1,
-        )
-        review = ReviewPayload(
-            type="chapter_pair_review",
-            version="v1",
-            summary="请审核当前章节批次。",
-            chapter_pair=chapter_drafts,
-            batch_index=completed_count,
-            completed_count=completed_count,
-            total_chapters=int(project.planned_chapter_count or len(task.story_plan.chapter_plan)),
-        )
-        snapshot = self.store.set_waiting_chapter_review(task_id, review)
-        return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
+            review = ReviewPayload(
+                type="chapter_pair_review",
+                version="v1",
+                summary="请审核当前章节批次。",
+                chapter_pair=chapter_drafts,
+                batch_index=completed_count,
+                completed_count=completed_count,
+                total_chapters=int(project.planned_chapter_count or len(task.story_plan.chapter_plan)),
+            )
+            snapshot = self.store.set_waiting_chapter_review(task_id, review)
+            return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
+        except Exception as exc:
+            mark_batch_failed(task_id, batch.batch_no)
+            update_project_status(
+                task_id,
+                status=TaskStatus.WAITING_MANUAL_ACTION.value,
+                completed_chapter_count=completed_count,
+                next_chapter_number=completed_count + 1,
+                active_batch_no=None,
+                active_continue_request_id="",
+                blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+            )
+            snapshot = self.store.set_waiting_manual_action(
+                task_id,
+                f"继续创作失败：{exc}",
+                payload={
+                    "summary": "继续创作失败，但当前任务仍可恢复后重试。",
+                    "display_level": "public",
+                    "reason": "draft_batch_generation_failed",
+                },
+            )
+            return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
 
     def list_artifacts(self, task_id: str) -> list[ArtifactItem]:
         return self.store.get(task_id).artifacts
 
-    def list_models(self) -> list[dict[str, Any]]:
-        return self.model_catalog.list_models()
+    def list_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        return self.model_catalog.list_models(force_refresh=force_refresh)
 
-    def list_models_payload(self) -> dict[str, Any]:
-        return self.model_catalog.list_models_payload()
+    def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
+        return self.model_catalog.list_models_payload(force_refresh=force_refresh)
 
     def update_default_model(self, model_id: str) -> dict[str, Any]:
         """更新默认模型，同时持久化到配置文件并更新运行时状态。"""
@@ -594,6 +659,7 @@ class TaskService:
 
     def get_review(self, task_id: str) -> ReviewResponse:
         task = self.recover_task(task_id)
+        task = self._reconcile_pending_review_with_novel_project(task)
         review = task.pending_review
         auto_review_trace = task.auto_review_trace or []
         if review is None:
@@ -719,9 +785,10 @@ class TaskService:
             "latest_event": latest_event,
         }
 
-    def _initial_state(self, task: TaskRecord) -> dict[str, Any]:
+    def _initial_state(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, Any]:
         reference_text = "\n\n".join(source.content for source in task.sources)
         resolved_auto_review = self._resolve_task_auto_review(task)
+        resolved_model_id = self._resolve_action_model_id(task, action_model_id)
         return {
             "task_id": task.id,
             "input_payload": {
@@ -729,7 +796,7 @@ class TaskService:
                 "creative_mode": task.creative_mode.value if task.creative_mode else "",
                 "novel_size": task.novel_size.value if task.novel_size else "",
                 "chapter_word_min": task.chapter_word_min or task.input.target_words,
-                "model_id": task.model_id,
+                "model_id": resolved_model_id,
                 "prompt": task.input.prompt,
                 "genre": task.input.genre,
                 "style": task.input.style,
@@ -769,6 +836,64 @@ class TaskService:
         ):
             return True
         return False
+
+    def _reconcile_pending_review_with_novel_project(self, task: TaskRecord) -> TaskRecord:
+        if task.pending_review is None or task.pending_review.type != "chapter_pair_review":
+            return task
+        if task.status is not TaskStatus.WAITING_CHAPTER_REVIEW:
+            return task
+        if not self._has_novel_project(task.id):
+            return task
+
+        from app.storage.db_repository import get_active_batch, get_novel_project, update_project_status
+
+        project = get_novel_project(task.id)
+        if project is None:
+            return task
+        active_batch = get_active_batch(task.id)
+        if active_batch is not None:
+            return task
+
+        planned = int(project.planned_chapter_count or 0)
+        completed = int(project.completed_chapter_count or 0)
+        should_move_to_verification = (
+            project.status == TaskStatus.WAITING_VERIFICATION_REVIEW.value
+            or (planned > 0 and completed >= planned)
+        )
+        if not should_move_to_verification:
+            return task
+
+        verification_review = ReviewPayload(
+            type="verification_review",
+            version="v1",
+            summary="请审核全文一致性验证报告。",
+            verification_report={"overall_score": 100, "issues": []},
+        )
+        record = self.store.set_waiting_verification_review(
+            task.id,
+            verification_review,
+            task.auto_review_trace or None,
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
+            completed_chapter_count=completed,
+            next_chapter_number=int(project.next_chapter_number or (completed + 1)),
+            active_batch_no=None,
+            active_continue_request_id="",
+        )
+        self.store.append_event(
+            task.id,
+            stage="waiting_verification_review",
+            message="检测到章节审核状态已过期，已自动校正到全文验证审核。",
+            event_type="task.recovered",
+            payload={
+                "summary": "任务已自动校正到全文验证审核。",
+                "display_level": "public",
+                "source": "novel_project_state",
+            },
+        )
+        return self.store.get(record.id)
 
     def _recover_task_from_stable_state(self, task: TaskRecord, *, force: bool = False) -> TaskRecord | None:
         novel_recovered = self._recover_novel_project_state(task)
@@ -878,11 +1003,40 @@ class TaskService:
                 update_project_status(
                     task.id,
                     status=TaskStatus.READY_FOR_BATCH.value,
+                    active_batch_no=None,
+                    active_continue_request_id="",
                     blocked_from_status="",
                 )
                 return snapshot
 
-        return self.store.get(task.id)
+        return None
+
+    def _retry_task_from_original_input(self, task: TaskRecord, action_model_id: str | None = None) -> TaskRecord | None:
+        if task.status not in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED}:
+            return None
+        if task.story_plan is not None or task.pending_review is not None:
+            return None
+        if not str(task.input.prompt or "").strip():
+            return None
+
+        snapshot = self.store.mark_stage(
+            task.id,
+            status=TaskStatus.PLANNING,
+            stage="planning",
+            progress=max(task.progress, 5),
+            message="正在根据原始输入重新尝试生成大纲。",
+            event_type="task.recovered",
+            payload={
+                "summary": "任务已重新进入大纲生成阶段。",
+                "display_level": "public",
+                "source": "raw_input_retry",
+            },
+        )
+        snapshot.error_message = None
+        snapshot = self.store.save(snapshot)
+        snapshot = self._record_last_action(task.id, model_id=action_model_id or self._resolve_task_model_id(task), kind="recover")
+        self._start_background(task.id, self._run_task_sync, task.id, action_model_id)
+        return snapshot
 
     def _can_recover_outline_review(self, task: TaskRecord) -> bool:
         if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
@@ -1138,12 +1292,13 @@ class TaskService:
             items.append(payload.model_dump(mode="json"))
         return items
 
-    def _resume_seed_state(self, task: TaskRecord) -> tuple[dict[str, Any], str] | None:
+    def _resume_seed_state(self, task: TaskRecord, action_model_id: str | None = None) -> tuple[dict[str, Any], str] | None:
         if task.pending_review is None:
             return None
-        seed = self._initial_state(task)
+        seed = self._initial_state(task, action_model_id)
+        resolved_model_id = str((seed.get("input_payload") or {}).get("model_id") or self._resolve_task_model_id(task))
         if task.normalized_spec:
-            seed["normalized_spec"] = dict(task.normalized_spec)
+            seed["normalized_spec"] = self._with_model_id(task.normalized_spec, resolved_model_id)
         if task.story_plan is not None:
             seed["story_plan"] = task.story_plan.model_dump(mode="json")
 
@@ -1172,7 +1327,7 @@ class TaskService:
                     task_id=task.id,
                     stage="planning",
                     instruction=_outline_instruction(seed.get("normalized_spec") or {}),
-                    model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
+                    model_profile=_resolve_model_profile(self.model_catalog, resolved_model_id),
                     references=references,
                     memory_items=[],
                 )
@@ -1217,7 +1372,7 @@ class TaskService:
                 task_id=task.id,
                 stage="drafting",
                 instruction=_chapter_pair_instruction(seed.get("normalized_spec") or {}, seed.get("story_plan")),
-                model_profile=_resolve_model_profile(self.model_catalog, task.model_id),
+                model_profile=_resolve_model_profile(self.model_catalog, resolved_model_id),
                 references=references,
                 memory_items=[
                     *(f"世界观：{note}" for note in ((seed.get("story_plan") or {}).get("world_notes") or [])),
@@ -1269,17 +1424,30 @@ class TaskService:
 
         return None
 
-    def _rehydrate_resume_state_if_needed(self, task: TaskRecord) -> None:
+    def _rehydrate_resume_state_if_needed(self, task: TaskRecord, action_model_id: str | None = None) -> None:
         values = self._graph_state_values(task.id)
-        if values.get("input_payload"):
-            return
         if not hasattr(self.graph, "update_state"):
             return
-        seeded = self._resume_seed_state(task)
+        resolved_model_id = self._resolve_action_model_id(task, action_model_id)
+        patch: dict[str, Any] = {}
+        input_payload = values.get("input_payload")
+        if isinstance(input_payload, dict) and str(input_payload.get("model_id") or "").strip() != resolved_model_id:
+            patch["input_payload"] = self._with_model_id(input_payload, resolved_model_id)
+        normalized_spec = values.get("normalized_spec")
+        if isinstance(normalized_spec, dict) and str(normalized_spec.get("model_id") or "").strip() != resolved_model_id:
+            patch["normalized_spec"] = self._with_model_id(normalized_spec, resolved_model_id)
+        if patch:
+            self.graph.update_state(self._config(task.id), patch)
+        if values.get("input_payload"):
+            return
+        seeded = self._resume_seed_state(task, action_model_id)
         if seeded is None:
             return
         seed_values, as_node = seeded
         self.graph.update_state(self._config(task.id), seed_values, as_node=as_node)
+
+    def _persistable_normalized_spec(self, task: TaskRecord, normalized_spec: dict[str, Any]) -> dict[str, Any]:
+        return self._with_model_id(normalized_spec, self._resolve_task_model_id(task))
 
     def _sync_result(
         self,
@@ -1292,8 +1460,9 @@ class TaskService:
         normalized_spec = values.get("normalized_spec")
         if normalized_spec:
             current_task = self.store.get(task_id)
-            if current_task.normalized_spec != normalized_spec:
-                self.store.update_normalized_spec(task_id, normalized_spec)
+            persisted_spec = self._persistable_normalized_spec(current_task, normalized_spec)
+            if current_task.normalized_spec != persisted_spec:
+                self.store.update_normalized_spec(task_id, persisted_spec)
                 self._emit_trace_summary(
                     task_id,
                     kind="spec",
@@ -1408,7 +1577,7 @@ class TaskService:
         )
         return record
 
-    def _run_task_sync(self, task_id: str) -> TaskRecord:
+    def _run_task_sync(self, task_id: str, action_model_id: str | None = None) -> TaskRecord:
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         task = self.store.get(task_id)
@@ -1429,13 +1598,14 @@ class TaskService:
                 title="开始生成大纲",
                 detail="正在结合提示词、风格和参考文本收敛故事骨架。",
             )
-            initial_payload = self._initial_state(task)["input_payload"]
+            initial_state = self._initial_state(task, action_model_id)
+            initial_payload = initial_state["input_payload"]
             normalized_spec = build_normalized_spec(
                 initial_payload,
                 novel_skill_service=self.novel_skill_service,
                 style_profile_service=self.style_profile_service,
             )
-            self.store.update_normalized_spec(task_id, normalized_spec)
+            self.store.update_normalized_spec(task_id, self._persistable_normalized_spec(task, normalized_spec))
             self._emit_trace_summary(
                 task_id,
                 kind="spec",
@@ -1445,7 +1615,7 @@ class TaskService:
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
-                result = self.graph.invoke(self._initial_state(task), config=self._config(task_id))
+                result = self.graph.invoke(initial_state, config=self._config(task_id))
             finally:
                 reset_progress_callback(progress_token)
                 reset_exchange_callback(exchange_token)
@@ -1456,7 +1626,7 @@ class TaskService:
         finally:
             self._leave_active_run(task_id)
 
-    def _resume_task_sync(self, task_id: str, approved: bool, comment: str) -> TaskRecord:
+    def _resume_task_sync(self, task_id: str, approved: bool, comment: str, action_model_id: str | None = None) -> TaskRecord:
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         task = self.store.get(task_id)
@@ -1491,7 +1661,7 @@ class TaskService:
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
-                self._rehydrate_resume_state_if_needed(task)
+                self._rehydrate_resume_state_if_needed(task, action_model_id)
                 result = self.graph.invoke(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),
@@ -1532,6 +1702,9 @@ class TaskService:
             novel_size=task.novel_size,
             chapter_word_min=task.chapter_word_min,
             model_id=model_id,
+            default_model_id=model_id,
+            last_action_model_id=task.last_action_model_id,
+            last_action_kind=task.last_action_kind,
             model_capabilities=self._model_capabilities(model_id),
             status=task.status,
             current_stage=task.current_stage,
@@ -2061,6 +2234,9 @@ class TaskService:
         return {
             "prompt": task.input.prompt,
             "model_id": model_id,
+            "default_model_id": model_id,
+            "last_action_model_id": task.last_action_model_id,
+            "last_action_kind": task.last_action_kind,
             "creative_mode": task.creative_mode.value if task.creative_mode else "",
             "novel_size": task.novel_size.value if task.novel_size else "",
             "target_chapter_count": task.target_chapter_count or task.input.target_chapter_count,
@@ -2124,6 +2300,23 @@ class TaskService:
                 message,
             )
             return current
+        if (
+            current.story_plan is not None
+            or current.pending_review is not None
+            or current.normalized_spec
+            or self._has_novel_project(task_id)
+            or bool(str(current.input.prompt or "").strip())
+        ):
+            record = self.store.set_waiting_manual_action(
+                task_id,
+                message,
+                payload={
+                    "summary": "任务执行异常，但存在可恢复上下文，已转入待人工处理。",
+                    "display_level": "public",
+                    "reason": "recoverable_runtime_error",
+                },
+            )
+            return self._safe_sync_supervisor_plan(task_id, fallback=record)
         record = self.store.set_failed(task_id, message)
         return self._safe_sync_supervisor_plan(task_id, fallback=record)
 

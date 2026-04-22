@@ -12,11 +12,15 @@ from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskM
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
+from app.storage.db_repository import update_project_status
 
 
 class FakeGatewayClient:
     def list_models(self):
-        return [{"id": "gpt-5.4", "object": "model", "owned_by": "openai"}]
+        return [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+        ]
 
 
 class FakeEngine:
@@ -212,6 +216,79 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertIsNotNone(recovered.pending_review)
         assert recovered.pending_review is not None
         self.assertEqual(recovered.pending_review.type, "outline_review")
+
+    def test_recover_task_requeues_planning_with_model_override_when_no_stable_state(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇港口悬疑小说",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.WAITING_MANUAL_ACTION
+        broken.current_stage = "waiting_manual_action"
+        broken.current_unit = None
+        broken.story_plan = None
+        broken.pending_review = None
+        broken.error_message = "运行失败：模型网关暂时不可用。"
+        broken.normalized_spec = {
+            "mode": "short_story",
+            "creative_mode": "original",
+            "novel_size": "short",
+            "prompt": "写一篇港口悬疑小说",
+            "model_id": "gpt-5.4",
+        }
+        store.save(broken)
+
+        background_calls: list[tuple[str, str, tuple[object, ...]]] = []
+
+        def fake_start_background(task_id: str, target, *args: object) -> None:
+            background_calls.append((task_id, target.__name__, args))
+
+        service._start_background = fake_start_background
+
+        recovered = service.recover_task(task.id, force=True, model_id="glm-5.1")
+
+        self.assertEqual(recovered.status, TaskStatus.PLANNING)
+        self.assertEqual(recovered.current_stage, "planning")
+        self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
+        self.assertEqual(background_calls, [(task.id, "_run_task_sync", (task.id, "glm-5.1"))])
+
+    def test_resume_task_action_model_override_does_not_persist_task_default_model(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        review = ReviewPayload(
+            type="verification_review",
+            version="v1",
+            summary="请审核全文一致性验证报告。",
+            verification_report={"overall_score": 20, "issues": [{"severity": "critical"}]},
+        )
+        store.set_waiting_verification_review(task.id, review)
+
+        background_calls: list[tuple[str, str, tuple[object, ...]]] = []
+
+        def fake_start_background(task_id: str, target, *args: object) -> None:
+            background_calls.append((task_id, target.__name__, args))
+
+        service._start_background = fake_start_background
+
+        snapshot = service.resume_task(task.id, approved=False, comment="继续修", model_id="glm-5.1")
+
+        self.assertEqual(snapshot.status.value, "drafting")
+        self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
+        self.assertEqual(background_calls, [(task.id, "_resume_task_sync", (task.id, False, "继续修", "glm-5.1"))])
 
     def test_get_review_auto_recovers_outline_review_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()
@@ -658,6 +735,151 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertIn("input_payload", fake_graph.updated["values"])
         self.assertEqual(len(fake_graph.updated["values"]["completed_chapters"]), 2)
         self.assertEqual(len(fake_graph.updated["values"]["current_chapter_pair"]), 2)
+
+    def test_get_review_syncs_stale_chapter_review_to_verification_review_when_project_already_advanced(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+                {"number": 3, "title": "第三章", "goal": "发现线索"},
+                {"number": 4, "title": "第四章", "goal": "逼近真相"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=2,
+            chapter_pair=[
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "章节摘要",
+                    "content": "第三章正文",
+                },
+                {
+                    "number": 4,
+                    "title": "第四章",
+                    "summary": "章节摘要",
+                    "content": "第四章正文",
+                },
+            ],
+            completed_count=2,
+            total_chapters=4,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-2"
+        store.save(task)
+
+        service._ensure_novel_project_seeded(task)
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
+            completed_chapter_count=4,
+            next_chapter_number=5,
+            active_batch_no=None,
+            active_continue_request_id="",
+        )
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.review_type, "verification_review")
+        repaired = store.get(task.id)
+        self.assertEqual(repaired.status, TaskStatus.WAITING_VERIFICATION_REVIEW)
+        self.assertIsNotNone(repaired.pending_review)
+        assert repaired.pending_review is not None
+        self.assertEqual(repaired.pending_review.type, "verification_review")
+
+    def test_resume_task_syncs_stale_chapter_review_before_submitting(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+                {"number": 3, "title": "第三章", "goal": "发现线索"},
+                {"number": 4, "title": "第四章", "goal": "逼近真相"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=2,
+            chapter_pair=[
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "章节摘要",
+                    "content": "第三章正文",
+                },
+                {
+                    "number": 4,
+                    "title": "第四章",
+                    "summary": "章节摘要",
+                    "content": "第四章正文",
+                },
+            ],
+            completed_count=2,
+            total_chapters=4,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-2"
+        store.save(task)
+
+        service._ensure_novel_project_seeded(task)
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
+            completed_chapter_count=4,
+            next_chapter_number=5,
+            active_batch_no=None,
+            active_continue_request_id="",
+        )
+
+        background_calls: list[tuple] = []
+        service._start_background = lambda *args, **kwargs: background_calls.append((args, kwargs))
+
+        snapshot = service.resume_task(task.id, approved=True, comment="通过")
+
+        self.assertEqual(snapshot.status, TaskStatus.DRAFTING)
+        self.assertEqual(snapshot.current_stage, "verification")
+        self.assertEqual(snapshot.current_unit, "verification")
+        self.assertEqual(len(background_calls), 1)
 
 
 if __name__ == "__main__":

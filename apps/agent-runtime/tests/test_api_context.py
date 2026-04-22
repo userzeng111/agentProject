@@ -110,6 +110,32 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
 
+    def test_workspace_endpoint_returns_default_and_last_action_model_fields(self) -> None:
+        self.task_service.model_catalog.ensure_novel_generation_model_supported = lambda _model_id: None
+        self.task_service._start_background = lambda *args, **kwargs: None
+
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        self.task_service.run_task(task.id, model_id="glm-5.1")
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["meta"]["model_id"], "gpt-5.4")
+        self.assertEqual(payload["meta"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["meta"]["last_action_model_id"], "glm-5.1")
+        self.assertEqual(payload["meta"]["last_action_kind"], "run")
+        self.assertEqual(payload["request_preview"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["request_preview"]["last_action_model_id"], "glm-5.1")
+
     def test_workspace_endpoint_returns_novel_progress_for_ready_batch_task(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
@@ -374,6 +400,43 @@ class ApiContextIntegrationTests(unittest.TestCase):
         payload = response.json()
         self.assertEqual(payload["status"], "waiting_outline_review")
         self.assertEqual(payload["current_stage"], "waiting_outline_review")
+
+    def test_recover_endpoint_forwards_action_model_override(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇港口悬疑小说",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = self.store.get(task.id)
+        broken.status = broken.status.WAITING_MANUAL_ACTION
+        broken.current_stage = "waiting_manual_action"
+        broken.normalized_spec = {
+            "mode": "short_story",
+            "creative_mode": "original",
+            "novel_size": "short",
+            "prompt": "写一篇港口悬疑小说",
+            "model_id": "gpt-5.4",
+        }
+        self.store.save(broken)
+
+        captured: dict[str, object] = {}
+
+        def fake_recover(task_id: str, force: bool = False, model_id: str | None = None):
+            captured["task_id"] = task_id
+            captured["force"] = force
+            captured["model_id"] = model_id
+            return self.store.get(task_id)
+
+        self.task_service.recover_task = fake_recover  # type: ignore[assignment]
+
+        response = self.client.post(f"/api/tasks/{task.id}/recover", json={"model_id": "gpt-5.4"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured["task_id"], task.id)
+        self.assertEqual(captured["force"], True)
+        self.assertEqual(captured["model_id"], "gpt-5.4")
 
     def test_result_and_archive_endpoints_expose_json_refs_and_sources(self) -> None:
         task = self.task_service.create_task(

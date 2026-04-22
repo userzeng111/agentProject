@@ -22,6 +22,7 @@ import {
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { createTask, getModels, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { isNovelTaskModelSupported, selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
 import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
 import { CreativeMode, ModelOption, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
@@ -89,10 +90,6 @@ function formatCompressionLabel(model?: ModelOption) {
   return "压缩：未启用";
 }
 
-function isNovelTaskModelSupported(model?: ModelOption) {
-  return model?.metadata?.compatibility === "verified";
-}
-
 function formatStyleProfileSummary(profile: StyleProfile) {
   const parts = [
     profile.source_novel ? `《${profile.source_novel}》` : "",
@@ -133,11 +130,12 @@ export default function CreateTaskClient() {
     async function loadModels() {
       try {
         setModelsLoading(true);
-        const nextModels = normalizeModelOptions(await getModels());
+        const nextModels = normalizeModelOptions(await getModels({ refresh: true }));
+        const selectableModelOptions = selectNovelTaskModels(nextModels);
         setModels(nextModels);
         setPayload((current) => ({
           ...current,
-          model_id: current.model_id || nextModels[0]?.id || "",
+          model_id: current.model_id || selectableModelOptions[0]?.id || nextModels[0]?.id || "",
         }));
       } catch (loadError) {
         setError(loadError instanceof Error ? loadError.message : "读取模型列表失败");
@@ -210,7 +208,7 @@ export default function CreateTaskClient() {
           audience: input.audience ?? current.audience,
           banned: input.banned ?? current.banned,
           title_hint: input.title_hint ?? current.title_hint,
-          model_id: input.model_id ?? current.model_id,
+          model_id: task.default_model_id ?? input.model_id ?? current.model_id,
           style_profile_id: input.style_profile_id ?? current.style_profile_id,
         }));
       } catch (loadError) {

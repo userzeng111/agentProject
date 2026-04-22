@@ -23,6 +23,8 @@ import {
   ListItem,
   ListItemButton,
   ListItemText,
+  MenuItem,
+  Select,
   Stack,
   Tab,
   Tabs,
@@ -41,12 +43,14 @@ import {
   ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
 import { Collapse, CircularProgress, Tooltip } from "@mui/material";
-import { continueTask, getApiBase, getCurrentChapters, getWorkspace, recoverTask, runTask } from "@/lib/api";
+import { continueTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
+import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
 import {
   ContextStatus,
   ModelCapabilities,
+  ModelOption,
   ResponseCacheStatus,
   SupervisorSubtaskItem,
   SupervisorSubtaskStatus,
@@ -121,6 +125,16 @@ function formatEventTime(value: string) {
   return new Date(value).toLocaleString();
 }
 
+function formatActionKindLabel(kind?: string) {
+  const labels: Record<string, string> = {
+    run: "启动执行",
+    resume: "审核继续",
+    continue: "继续创作",
+    recover: "恢复重试",
+  };
+  return labels[kind || ""] || kind || "";
+}
+
 function formatTokenCount(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return "未上报";
@@ -164,6 +178,7 @@ function formatRecoveryReason(reason: string) {
   }
   const labels: Record<string, string> = {
     missing_stable_state: "缺少可恢复的稳定产物",
+    draft_batch_generation_failed: "章节生成失败，可恢复后切换模型重试",
   };
   return labels[reason] || reason;
 }
@@ -361,6 +376,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [selectedChapter, setSelectedChapter] = useState<{ number: number; title: string; summary: string; content: string } | null>(null);
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [requestedChapterCount, setRequestedChapterCount] = useState(3);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [actionModelId, setActionModelId] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
   const continueRequestIdRef = useRef<string | null>(null);
 
@@ -393,6 +410,46 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       setRequestedChapterCount(nextDefault);
     }
   }, [workspace?.novel_progress?.default_batch_size]);
+
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        const catalog = await getModelCatalog({ refresh: true });
+        setModels(normalizeModelOptions(catalog.data ?? []));
+      } catch {
+        setModels([]);
+      }
+    }
+    void loadModels();
+  }, []);
+
+  useEffect(() => {
+    setActionModelId("");
+  }, [resolvedTaskId]);
+
+  const selectableModels: ModelOption[] = selectNovelTaskModels(models);
+  const resolvedActionModelId = selectableModels.some((item) => item.id === actionModelId)
+    ? actionModelId
+    : selectableModels[0]?.id || "";
+
+  useEffect(() => {
+    const currentTaskModel =
+      workspace?.request_preview?.default_model_id ||
+      workspace?.meta.default_model_id ||
+      workspace?.request_preview?.model_id ||
+      workspace?.meta.model_id ||
+      "";
+    if (actionModelId && selectableModels.some((item) => item.id === actionModelId)) {
+      return;
+    }
+    if (currentTaskModel && selectableModels.some((item) => item.id === currentTaskModel)) {
+      setActionModelId(currentTaskModel);
+      return;
+    }
+    if (selectableModels[0]?.id) {
+      setActionModelId(selectableModels[0].id);
+    }
+  }, [actionModelId, selectableModels, workspace]);
 
   useEffect(() => {
     if (!resolvedTaskId) {
@@ -456,7 +513,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   async function handleRun() {
     try {
       setRunning(true);
-      await runTask(resolvedTaskId);
+      await runTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
       await refreshWorkspace();
       setError("");
     } catch (runError) {
@@ -469,7 +526,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   async function handleRecover() {
     try {
       setRunning(true);
-      await recoverTask(resolvedTaskId);
+      await recoverTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
       await refreshWorkspace();
       setError("");
     } catch (recoverError) {
@@ -487,6 +544,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       await continueTask(resolvedTaskId, {
         requested_chapter_count: requestedChapterCount,
         continue_request_id: requestId,
+        model_id: resolvedActionModelId || undefined,
       });
       await refreshWorkspace();
       setError("");
@@ -713,6 +771,42 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Stack>
             </Stack>
             <Typography>{workspace.request_preview?.prompt || workspace.meta.summary || "暂无请求摘要"}</Typography>
+            {selectableModels.length > 0 && (
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 2,
+                  border: "1px solid",
+                  borderColor: "divider",
+                  backgroundColor: "rgba(39, 100, 81, 0.03)",
+                }}
+              >
+                <Stack spacing={1.5}>
+                  <Typography variant="subtitle1">本次动作模型</Typography>
+                  <Select
+                    size="small"
+                    value={resolvedActionModelId}
+                    onChange={(event) => setActionModelId(event.target.value)}
+                    sx={{ maxWidth: 360 }}
+                  >
+                    {selectableModels.map((model) => (
+                      <MenuItem key={model.id} value={model.id}>
+                        {(model.display_name || model.id) + (model.provider ? ` · ${model.provider}` : "")}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                  <Typography variant="caption" color="text.secondary">
+                    默认沿用当前任务模型；开始执行、恢复重试和继续创作时都可临时切换。
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    任务默认模型：{workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
+                    {workspace.meta.last_action_model_id
+                      ? ` · 最近一次动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
+                      : ""}
+                  </Typography>
+                </Stack>
+              </Box>
+            )}
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Chip
                 label={`类型: ${formatTaskTypeLabel({
@@ -1123,7 +1217,15 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   Task ID：{workspace.meta.task_id}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  模型：{workspace.request_preview?.model_id || workspace.meta.model_id || "默认模型"}
+                  任务默认模型：
+                  {workspace.request_preview?.default_model_id ||
+                    workspace.meta.default_model_id ||
+                    workspace.request_preview?.model_id ||
+                    workspace.meta.model_id ||
+                    "默认模型"}
+                  {workspace.request_preview?.last_action_model_id
+                    ? ` · 最近一次动作模型：${workspace.request_preview.last_action_model_id}${formatActionKindLabel(workspace.request_preview.last_action_kind) ? `（${formatActionKindLabel(workspace.request_preview.last_action_kind)}）` : ""}`
+                    : ""}
                 </Typography>
               </Stack>
               <Typography variant="body2" color="text.secondary">

@@ -19,6 +19,8 @@ import {
   ListItem,
   ListItemText,
   LinearProgress,
+  MenuItem,
+  Select,
   Stack,
   TextField,
   Tooltip,
@@ -38,10 +40,12 @@ import {
   Error as ErrorIcon,
   Check as CheckIcon,
 } from "@mui/icons-material";
-import { fetchTextRef, getReview, resumeTask } from "@/lib/api";
+import { fetchTextRef, getModelCatalog, getReview, normalizeModelOptions, resumeTask } from "@/lib/api";
+import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { resultHref, workspaceHref } from "@/lib/task-routes";
-import { AgentTraceItem, ReviewResponse } from "@/lib/types";
+import { AgentTraceItem, ModelOption, ReviewResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
+import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -131,6 +135,16 @@ function StepIndicator({ steps, activeStep }: { steps: typeof OUTLINE_STEPS; act
   );
 }
 
+function formatActionKindLabel(kind?: string) {
+  const labels: Record<string, string> = {
+    run: "启动执行",
+    resume: "审核继续",
+    continue: "继续创作",
+    recover: "恢复重试",
+  };
+  return labels[kind || ""] || kind || "";
+}
+
 function ReviewHistory({ history }: { history: ReviewResponse["review_history"] }) {
   if (!history?.length) return null;
   return (
@@ -161,26 +175,41 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
 
   if (!trace || trace.length === 0) return null;
 
-  // 提取 summary 条目（后端在 trace 头部插入的 __summary__ 对象）
-  const summaryEntry = trace.find((a: any) => a && a.__summary__);
-  // 过滤出真正的 Agent 条目（排除 __summary__ 伪条目）
-  const agentItems = trace.filter((a: any) => a && !a.__summary__);
+  const traceRounds = splitTraceRounds(trace);
+  const currentTraceRound = getCurrentTraceRound(trace);
+  const historyRoundCount = Math.max(traceRounds.length - 1, 0);
+  const {
+    summaryEntry,
+    agentItems,
+    hasStructuredExecution,
+    mainAgents,
+    subAgents,
+    synthesisAgents,
+    trackedAgents,
+    completedCount,
+    failedCount,
+    displayScore,
+  } = summarizeTraceRound(currentTraceRound);
   const visibleAgents = showAll ? agentItems : agentItems.slice(0, 3);
   const hasMore = agentItems.length > 3;
 
-  // 统计汇总：优先使用 summary 中的 overall_score
-  let displayScore: number;
-  const completedAgents = agentItems.filter((a) => a.status === "completed");
-  if (summaryEntry && typeof (summaryEntry as any).overall_score === "number") {
-    // 后端已提供 overall_score，直接使用
-    displayScore = Math.round((summaryEntry as any).overall_score);
-  } else {
-    // 回退：仅计算 completed 状态的 Agent 平均分（排除失败的）
-    const total = completedAgents.reduce((sum, a) => sum + (a.score ?? 0), 0);
-    displayScore = completedAgents.length > 0 ? Math.round(total / completedAgents.length) : 0;
+  function getExecutionKindLabel(kind: "main_agent" | "subagent" | "synthesis") {
+    if (kind === "main_agent") return "主 Agent";
+    if (kind === "synthesis") return "综合裁决";
+    return "子 Agent";
   }
-  const completedCount = agentItems.filter((a) => a.status === "completed").length;
-  const failedCount = agentItems.filter((a) => a.status === "failed").length;
+
+  function getExecutionKindColor(kind: "main_agent" | "subagent" | "synthesis"): "primary" | "info" | "secondary" {
+    if (kind === "main_agent") return "primary";
+    if (kind === "synthesis") return "secondary";
+    return "info";
+  }
+
+  function getInvocationLabel(invocationKind: string) {
+    if (invocationKind === "function_call") return "函数调用";
+    if (invocationKind === "orchestrate") return "编排调度";
+    return invocationKind;
+  }
 
   function getScoreColor(score: number | undefined) {
     if (score === undefined) return "default";
@@ -206,14 +235,53 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
             <Typography variant="subtitle1" fontWeight={600}>
               Agent 审核追踪
             </Typography>
-            <Chip
-              label={`${agentItems.length} 个 Agent`}
-              size="small"
-              color="primary"
-              variant="outlined"
-            />
+            {summaryEntry?.trace_round ? (
+              <Chip
+                label={`当前第 ${summaryEntry.trace_round} 轮`}
+                size="small"
+                variant="outlined"
+              />
+            ) : null}
+            {hasStructuredExecution ? (
+              <>
+                <Chip
+                  label={`${mainAgents.length} 个主 Agent`}
+                  size="small"
+                  color="primary"
+                  variant="outlined"
+                />
+                <Chip
+                  label={`${subAgents.length} 个子 Agent`}
+                  size="small"
+                  color="info"
+                  variant="outlined"
+                />
+                {synthesisAgents.length > 0 && (
+                  <Chip
+                    label={`${synthesisAgents.length} 个综合裁决`}
+                    size="small"
+                    color="secondary"
+                    variant="outlined"
+                  />
+                )}
+              </>
+            ) : (
+              <Chip
+                label={`${agentItems.length} 个 Agent`}
+                size="small"
+                color="primary"
+                variant="outlined"
+              />
+            )}
             {failedCount > 0 && (
               <Chip label={`${failedCount} 个失败`} size="small" color="error" variant="outlined" />
+            )}
+            {historyRoundCount > 0 && (
+              <Chip
+                label={`历史 ${historyRoundCount} 轮`}
+                size="small"
+                variant="outlined"
+              />
             )}
           </Stack>
           <Stack direction="row" spacing={1} alignItems="center">
@@ -224,7 +292,7 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
               variant="filled"
             />
             <Chip
-              label={`${completedCount}/${agentItems.length} 完成`}
+              label={hasStructuredExecution ? `子执行 ${completedCount}/${trackedAgents.length} 完成` : `${completedCount}/${agentItems.length} 完成`}
               size="small"
               variant="outlined"
             />
@@ -244,15 +312,22 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
           </Stack>
         </Stack>
 
+        {historyRoundCount > 0 && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+            当前仅统计最后一轮审核记录；历史轮次已保留但不再混入当前轮次计数。
+          </Typography>
+        )}
+
         {/* Agent 列表 */}
-        {visibleAgents.map((agent, index) => {
+        {visibleAgents.map((agent: AgentTraceItem, index: number) => {
           const isExpanded = expanded === `agent-${index}`;
           const issues = agent.issues ?? [];
           const criticalIssues = issues.filter((i: any) => i.severity === "critical");
           const warnings = issues.filter((i: any) => i.severity === "warning");
+          const executionKind = inferExecutionKind(agent);
 
           return (
-            <Box key={agent.agent_id || index} sx={{ mb: 1 }}>
+            <Box key={agent.agent_id || `${agent.role || "agent"}-${index}`} sx={{ mb: 1 }}>
               {/* Agent 行 */}
               <Box
                 sx={{
@@ -268,10 +343,18 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                 }}
                 onClick={() => setExpanded(isExpanded ? null : `agent-${index}`)}
               >
-                {getStatusIcon(agent.status)}
+                {getStatusIcon(agent.status || "pending")}
                 <Typography variant="body2" fontWeight={500} sx={{ flex: 1 }}>
-                  {agent.agent_name}
+                  {agent.agent_name || agent.role || "未命名执行节点"}
                 </Typography>
+                {hasStructuredExecution && (
+                  <Chip
+                    label={getExecutionKindLabel(executionKind)}
+                    size="small"
+                    color={getExecutionKindColor(executionKind)}
+                    variant="outlined"
+                  />
+                )}
                 {agent.score !== undefined && agent.score !== null && (
                   <Chip
                     label={`${agent.score} 分`}
@@ -312,8 +395,14 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                 <Box sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
                   {/* 维度标签 */}
                   <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
-                    <Chip label={agent.role} size="small" variant="outlined" />
-                    <Chip label={agent.status} size="small" variant="outlined" />
+                    {hasStructuredExecution && (
+                      <Chip label={getExecutionKindLabel(executionKind)} size="small" variant="outlined" />
+                    )}
+                    {agent.role && <Chip label={agent.role} size="small" variant="outlined" />}
+                    {agent.status && <Chip label={agent.status} size="small" variant="outlined" />}
+                    {agent.invocation_kind && (
+                      <Chip label={getInvocationLabel(agent.invocation_kind)} size="small" variant="outlined" />
+                    )}
                     {agent.duration_ms && (
                       <Chip label={`${Math.round(agent.duration_ms / 1000)}s`} size="small" variant="outlined" />
                     )}
@@ -422,11 +511,72 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
             onClick={() => setShowAll(true)}
             sx={{ ml: 2, mt: 0.5 }}
           >
-            查看全部 {trace.length} 个 Agent
+            查看全部 {agentItems.length} 个{hasStructuredExecution ? "执行节点" : "Agent"}
           </Button>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function ReviewActionModelSelector({
+  models,
+  actionModelId,
+  setActionModelId,
+  defaultModelId,
+  lastActionModelId,
+  lastActionKind,
+}: {
+  models: ModelOption[];
+  actionModelId: string;
+  setActionModelId: (value: string) => void;
+  defaultModelId?: string;
+  lastActionModelId?: string;
+  lastActionKind?: string;
+}) {
+  if (!models.length) {
+    return null;
+  }
+  const resolvedModelId = models.some((item) => item.id === actionModelId) ? actionModelId : models[0]?.id || "";
+  if (!resolvedModelId) {
+    return null;
+  }
+
+  return (
+    <Box
+      sx={{
+        p: 2,
+        borderRadius: 2,
+        border: "1px solid",
+        borderColor: "divider",
+        backgroundColor: "rgba(39, 100, 81, 0.03)",
+      }}
+    >
+      <Stack spacing={1.5}>
+        <Typography variant="subtitle2">本次继续执行模型</Typography>
+        <Select
+          size="small"
+          value={resolvedModelId}
+          onChange={(event) => setActionModelId(event.target.value)}
+          sx={{ maxWidth: 360 }}
+        >
+          {models.map((model) => (
+            <MenuItem key={model.id} value={model.id}>
+              {(model.display_name || model.id) + (model.provider ? ` · ${model.provider}` : "")}
+            </MenuItem>
+          ))}
+        </Select>
+        <Typography variant="caption" color="text.secondary">
+          默认沿用当前任务模型；点击通过或驳回后继续生成时可临时切换。
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          任务默认模型：{defaultModelId || "未设置"}
+          {lastActionModelId
+            ? ` · 最近一次动作模型：${lastActionModelId}${formatActionKindLabel(lastActionKind) ? `（${formatActionKindLabel(lastActionKind)}）` : ""}`
+            : ""}
+        </Typography>
+      </Stack>
+    </Box>
   );
 }
 
@@ -438,6 +588,9 @@ function OutlineReview({
   submitting,
   onDecision,
   error,
+  models,
+  actionModelId,
+  setActionModelId,
 }: {
   review: ReviewResponse;
   outlineMarkdown: string;
@@ -446,6 +599,9 @@ function OutlineReview({
   submitting: boolean;
   onDecision: (approved: boolean) => void;
   error: string;
+  models: ModelOption[];
+  actionModelId: string;
+  setActionModelId: (v: string) => void;
 }) {
   const revisionCount = review.revision_count ?? 0;
   return (
@@ -515,6 +671,14 @@ function OutlineReview({
           <Stack spacing={2}>
             <Typography variant="h5">审核操作</Typography>
             <ReviewHistory history={review.review_history} />
+            <ReviewActionModelSelector
+              models={models}
+              actionModelId={actionModelId}
+              setActionModelId={setActionModelId}
+              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              lastActionModelId={review.meta.last_action_model_id}
+              lastActionKind={review.meta.last_action_kind}
+            />
             <TextField
               label="审核意见"
               multiline
@@ -545,6 +709,9 @@ function ChapterPairReview({
   submitting,
   onDecision,
   error,
+  models,
+  actionModelId,
+  setActionModelId,
 }: {
   review: ReviewResponse;
   comment: string;
@@ -552,6 +719,9 @@ function ChapterPairReview({
   submitting: boolean;
   onDecision: (approved: boolean) => void;
   error: string;
+  models: ModelOption[];
+  actionModelId: string;
+  setActionModelId: (v: string) => void;
 }) {
   const chapters = review.chapter_pair || [];
   const batchIndex = review.batch_index ?? 0;
@@ -633,6 +803,14 @@ function ChapterPairReview({
           <Stack spacing={2}>
             <Typography variant="h5">审核操作</Typography>
             <ReviewHistory history={review.review_history} />
+            <ReviewActionModelSelector
+              models={models}
+              actionModelId={actionModelId}
+              setActionModelId={setActionModelId}
+              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              lastActionModelId={review.meta.last_action_model_id}
+              lastActionKind={review.meta.last_action_kind}
+            />
             <TextField
               label="审核意见"
               multiline
@@ -663,6 +841,9 @@ function VerificationReview({
   submitting,
   onDecision,
   error,
+  models,
+  actionModelId,
+  setActionModelId,
 }: {
   review: ReviewResponse;
   comment: string;
@@ -670,6 +851,9 @@ function VerificationReview({
   submitting: boolean;
   onDecision: (approved: boolean) => void;
   error: string;
+  models: ModelOption[];
+  actionModelId: string;
+  setActionModelId: (v: string) => void;
 }) {
   const report = review.verification_report || {};
   const issues = report.issues || [];
@@ -762,6 +946,14 @@ function VerificationReview({
           <Stack spacing={2}>
             <Typography variant="h5">审核操作</Typography>
             <ReviewHistory history={review.review_history} />
+            <ReviewActionModelSelector
+              models={models}
+              actionModelId={actionModelId}
+              setActionModelId={setActionModelId}
+              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              lastActionModelId={review.meta.last_action_model_id}
+              lastActionKind={review.meta.last_action_kind}
+            />
             <TextField
               label="审核意见"
               multiline
@@ -795,6 +987,8 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [actionModelId, setActionModelId] = useState("");
 
   const loadReview = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -825,10 +1019,42 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     void loadReview();
   }, [loadReview]);
 
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        const catalog = await getModelCatalog({ refresh: true });
+        setModels(selectNovelTaskModels(normalizeModelOptions(catalog.data ?? [])));
+      } catch {
+        setModels([]);
+      }
+    }
+    void loadModels();
+  }, []);
+
+  useEffect(() => {
+    setActionModelId("");
+  }, [resolvedTaskId]);
+
+  const resolvedActionModelId = models.some((item) => item.id === actionModelId) ? actionModelId : models[0]?.id || "";
+
+  useEffect(() => {
+    const currentTaskModel = review?.meta.default_model_id || review?.meta.model_id || "";
+    if (actionModelId && models.some((item) => item.id === actionModelId)) {
+      return;
+    }
+    if (currentTaskModel && models.some((item) => item.id === currentTaskModel)) {
+      setActionModelId(currentTaskModel);
+      return;
+    }
+    if (models[0]?.id) {
+      setActionModelId(models[0].id);
+    }
+  }, [actionModelId, models, review]);
+
   async function handleDecision(approved: boolean) {
     try {
       setSubmitting(true);
-      const nextTask = await resumeTask(resolvedTaskId, approved, comment);
+      const nextTask = await resumeTask(resolvedTaskId, approved, comment, resolvedActionModelId || undefined);
       setError("");
       if (nextTask.status === "completed") {
         router.push(resultHref(resolvedTaskId));
@@ -932,6 +1158,9 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             submitting={submitting}
             onDecision={handleDecision}
             error={error}
+            models={models}
+            actionModelId={actionModelId}
+            setActionModelId={setActionModelId}
           />
         )}
 
@@ -943,6 +1172,9 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             submitting={submitting}
             onDecision={handleDecision}
             error={error}
+            models={models}
+            actionModelId={actionModelId}
+            setActionModelId={setActionModelId}
           />
         )}
 
@@ -954,6 +1186,9 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             submitting={submitting}
             onDecision={handleDecision}
             error={error}
+            models={models}
+            actionModelId={actionModelId}
+            setActionModelId={setActionModelId}
           />
         )}
       </Stack>

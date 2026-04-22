@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from app.domain.models import ChatRequest, ContinueDraftRequest, ResumeRequest, TaskCreateRequest
+from app.domain.models import ChatRequest, ContinueDraftRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
 from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
@@ -67,9 +67,9 @@ def build_router(
         return {"status": "ok"}
 
     @router.get("/models")
-    def list_models():
+    def list_models(refresh: bool = Query(False, description="是否强制绕过服务端缓存刷新模型目录")):
         try:
-            return task_service.list_models_payload()
+            return task_service.list_models_payload(force_refresh=refresh)
         except Exception as exc:  # pragma: no cover
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
 
@@ -201,9 +201,9 @@ def build_router(
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/run")
-    def run_task(task_id: str):
+    def run_task(task_id: str, payload: TaskActionRequest | None = None):
         try:
-            return task_service.run_task(task_id)
+            return task_service.run_task(task_id, model_id=(payload.model_id if payload else ""))
         except Exception as exc:
             raise _handle_error(exc) from exc
 
@@ -214,6 +214,7 @@ def build_router(
                 task_id,
                 approved=payload.approved,
                 comment=payload.comment,
+                model_id=payload.model_id,
             )
         except Exception as exc:
             raise _handle_error(exc) from exc
@@ -226,9 +227,9 @@ def build_router(
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/recover")
-    def recover_task(task_id: str):
+    def recover_task(task_id: str, payload: TaskActionRequest | None = None):
         try:
-            return task_service.recover_task(task_id, force=True)
+            return task_service.recover_task(task_id, force=True, model_id=(payload.model_id if payload else ""))
         except Exception as exc:
             raise _handle_error(exc) from exc
 

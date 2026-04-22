@@ -311,6 +311,19 @@ def mark_batch_rejected(task_id: str, batch_no: int) -> None:
         session.commit()
 
 
+def mark_batch_failed(task_id: str, batch_no: int) -> None:
+    now = utc_now()
+    with get_session() as session:
+        row = session.query(NovelGenerationBatchModel).filter_by(task_id=task_id, batch_no=batch_no).first()
+        if row is None:
+            return
+        row.status = "failed"
+        row.updated_at = now
+        row.finished_at = now
+        row.claim_token = ""
+        session.commit()
+
+
 def update_project_status(
     task_id: str,
     *,

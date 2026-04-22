@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { fetchTextRef, getApiBase, getArchiveDetail } from "@/lib/api";
+import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
@@ -156,7 +157,14 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
             归档详情
           </Typography>
           <Typography color="text.secondary">
-            {detail.meta.title} · 模式：{detail.meta.mode} · 模型：{detail.meta.model_id || "默认模型"}
+            {detail.meta.title} · 类型：
+            {formatTaskTypeLabel({
+              creativeMode: detail.meta.creative_mode,
+              novelSize: detail.meta.novel_size,
+              mode: detail.meta.mode,
+            })}
+            {" · "}任务默认模型：{detail.meta.default_model_id || detail.meta.model_id || "默认模型"}
+            {detail.meta.last_action_model_id ? ` · 最近一次动作模型：${detail.meta.last_action_model_id}` : ""}
           </Typography>
         </Stack>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
@@ -178,7 +186,8 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
             <Typography variant="h5">请求摘要</Typography>
             <Typography>{detail.request_preview?.prompt || "暂无请求摘要"}</Typography>
             <Typography color="text.secondary">
-              题材：{detail.request_preview?.genre || "未指定"} · 风格：{detail.request_preview?.style || "未指定"}
+              题材：{detail.request_preview?.genre || "未指定"} · 风格：{detail.request_preview?.style || "未指定"} · 单章字数下限：
+              {detail.request_preview?.chapter_word_min ?? detail.meta.chapter_word_min ?? "未指定"}
             </Typography>
           </Stack>
         </CardContent>

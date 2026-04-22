@@ -36,6 +36,10 @@ export interface TaskCreatePayload extends TaskInput {
   auto_review?: boolean;
 }
 
+export interface TaskActionPayload {
+  model_id?: string;
+}
+
 export interface ModelContextWindowCapability {
   max_input_tokens?: number;
   max_output_tokens?: number;
@@ -100,6 +104,10 @@ export interface ModelListResponse {
   meta?: {
     default_model?: string;
     capability_schema_version?: string;
+    cache_ttl_seconds?: number;
+    cache_age_seconds?: number;
+    cached?: boolean;
+    fetched_at?: string;
   };
 }
 
@@ -151,6 +159,10 @@ export interface TaskRecord {
   progress: number;
   input: TaskInput;
   error_message: string | null;
+  model_id?: string;
+  default_model_id?: string;
+  last_action_model_id?: string;
+  last_action_kind?: string;
   created_at: string;
   updated_at: string;
 }
@@ -163,6 +175,9 @@ export interface TaskCardSummary {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
+  default_model_id?: string;
+  last_action_model_id?: string;
+  last_action_kind?: string;
   status: TaskStatus;
   current_stage: string;
   current_unit?: string | null;
@@ -200,6 +215,9 @@ export interface WorkspaceMeta {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
+  default_model_id?: string;
+  last_action_model_id?: string;
+  last_action_kind?: string;
   model_capabilities?: ModelCapabilities;
   status: TaskStatus;
   current_stage: string;
@@ -256,6 +274,9 @@ export interface WorkspaceResponse {
     novel_size?: NovelSize;
     target_chapter_count?: number;
     model_id?: string;
+    default_model_id?: string;
+    last_action_model_id?: string;
+    last_action_kind?: string;
     model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
@@ -291,6 +312,7 @@ export interface WorkspaceResponse {
 export interface ContinueDraftPayload {
   requested_chapter_count: number;
   continue_request_id: string;
+  model_id?: string;
 }
 
 export type SupervisorSubtaskStatus =
@@ -356,10 +378,15 @@ export interface VerificationIssue {
 
 /** 自动审核 Agent 执行追踪项 [NEW] */
 export interface AgentTraceItem {
-  agent_id: string;
-  agent_name: string;  // 显示名称，如 "结构分析师"
-  role: string;  // internal role
-  status: "pending" | "running" | "completed" | "failed";
+  __summary__?: boolean;
+  agent_id?: string;
+  agent_name?: string;  // 显示名称，如 "结构分析师"
+  role?: string;  // internal role
+  execution_kind?: "main_agent" | "subagent" | "synthesis";
+  parent_agent_id?: string | null;
+  created_by?: string | null;
+  invocation_kind?: string | null;
+  status?: "pending" | "running" | "completed" | "failed";
   score?: number;  // 评分 0-100
   issues?: VerificationIssue[];
   highlights?: string[];
@@ -368,6 +395,16 @@ export interface AgentTraceItem {
   started_at?: string;
   completed_at?: string;
   duration_ms?: number;
+  overall_score?: number;
+  approved?: boolean;
+  auto_escalated?: boolean;
+  comment?: string;
+  warnings?: VerificationIssue[];
+  trace_round?: number;
+  review_type?: string;
+  revision_count?: number;
+  batch_index?: number | null;
+  created_at?: string;
 }
 
 export interface ReviewResponse {
@@ -453,6 +490,9 @@ export interface ArchiveMeta {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
+  default_model_id?: string;
+  last_action_model_id?: string;
+  last_action_kind?: string;
   status: TaskStatus;
   current_stage: string;
   current_unit?: string | null;
@@ -486,6 +526,9 @@ export interface ArchiveDetailResponse {
     creative_mode?: CreativeMode;
     novel_size?: NovelSize;
     model_id?: string;
+    default_model_id?: string;
+    last_action_model_id?: string;
+    last_action_kind?: string;
     model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;
