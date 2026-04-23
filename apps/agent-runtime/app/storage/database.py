@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -40,9 +40,27 @@ def init_db(db_path: str | Path) -> sessionmaker[Session]:
 
     import app.storage.db_models  # noqa: F401
     Base.metadata.create_all(_engine)
+    _ensure_tasks_index_columns(_engine)
 
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _session_factory
+
+
+def _ensure_tasks_index_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "tasks_index" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("tasks_index")}
+    required_columns = {
+        "creative_mode": "ALTER TABLE tasks_index ADD COLUMN creative_mode VARCHAR(32) DEFAULT ''",
+        "novel_size": "ALTER TABLE tasks_index ADD COLUMN novel_size VARCHAR(16) DEFAULT ''",
+        "chapter_word_min": "ALTER TABLE tasks_index ADD COLUMN chapter_word_min INTEGER DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(text(ddl))
 
 
 def get_session() -> Session:

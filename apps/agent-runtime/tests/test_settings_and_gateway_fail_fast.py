@@ -12,8 +12,10 @@ from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.settings import config as settings_config
 from app.settings.config import Settings
+from app.storage.database import get_session
+from app.storage.db_models import TaskIndexModel
 from app.storage.task_store import TaskLogStore
-from app.domain.models import TaskCreateRequest, TaskMode
+from app.domain.models import CreativeMode, NovelSize, TaskCreateRequest, TaskMode
 
 
 class FailingGatewayClient:
@@ -91,7 +93,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                     model="glm-5.1",
                 )
 
-    def test_task_service_marks_task_failed_when_gateway_request_fails(self) -> None:
+    def test_task_service_marks_task_waiting_manual_action_when_gateway_request_fails_but_input_is_recoverable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
@@ -106,8 +108,10 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
 
             task = service.create_task(
                 TaskCreateRequest(
-                    mode=TaskMode.SHORT_STORY,
                     prompt="写一篇恐怖短篇",
+                    creative_mode=CreativeMode.ORIGINAL,
+                    novel_size=NovelSize.SHORT,
+                    chapter_word_min=1800,
                     model_id="glm-5.1",
                 )
             )
@@ -116,8 +120,50 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                 service._run_task_sync(task.id)
 
             failed = store.get(task.id)
-            self.assertEqual(failed.status.value, "failed")
+            self.assertEqual(failed.status.value, "waiting_manual_action")
+            self.assertEqual(failed.current_stage, "waiting_manual_action")
             self.assertIn("模拟网关请求失败", failed.error_message or "")
+            self.assertEqual(failed.creative_mode.value, "original")
+            self.assertEqual(failed.novel_size.value, "short")
+            self.assertEqual(failed.chapter_word_min, 1800)
+            self.assertEqual(failed.mode.value, "short_story")
+            persisted = store.read_json(task.id, "task.json")
+            self.assertEqual(persisted["creative_mode"], "original")
+            self.assertEqual(persisted["novel_size"], "short")
+            self.assertEqual(persisted["chapter_word_min"], 1800)
+
+    def test_task_index_persists_new_input_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="glm-5.1",
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = FailingGatewayClient()
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    prompt="写一篇短篇悬疑小说",
+                    creative_mode=CreativeMode.ORIGINAL,
+                    novel_size=NovelSize.SHORT,
+                    chapter_word_min=1800,
+                    model_id="glm-5.1",
+                )
+            )
+
+            with get_session() as session:
+                row = session.query(TaskIndexModel).filter_by(id=task.id).first()
+
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row.mode, "short_story")
+            self.assertEqual(row.creative_mode, "original")
+            self.assertEqual(row.novel_size, "short")
+            self.assertEqual(row.chapter_word_min, 1800)
 
     def test_create_task_rejects_unverified_gateway_only_model_for_novel_workflow(self) -> None:
         class GatewayWithUnknownModel:
@@ -139,8 +185,10 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "未完成兼容性验证"):
                 service.create_task(
                     TaskCreateRequest(
-                        mode=TaskMode.STYLE_REMIX,
                         prompt="写一个修罗场都市医生故事",
+                        creative_mode=CreativeMode.STYLE_REMIX,
+                        novel_size=NovelSize.LONG,
+                        chapter_word_min=2200,
                         model_id="K2.6",
                         style_profile_id="wozhenmeixiangchongshengya",
                     )

@@ -103,7 +103,7 @@ export function deleteConversation(id: string): void {
 }
 
 /** 创建新会话，返回完整数据（同时设为活跃会话） */
-export function createConversation(): StoredConversation {
+export function createConversation(model?: string): StoredConversation {
   const id = generateId();
   const now = Date.now();
   const conv: StoredConversation = {
@@ -112,6 +112,7 @@ export function createConversation(): StoredConversation {
     messages: [],
     createdAt: now,
     updatedAt: now,
+    model,
   };
   saveConversation(conv);
   setActiveConversationId(id);

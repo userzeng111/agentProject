@@ -68,12 +68,15 @@ class StyleProfileService:
         if profile is None:
             return None
         rule_sections = self._load_rule_sections(profile_id)
-        compiled_summary = self._compile_summary(profile, rule_sections, custom_style)
+        canon_summary = self._compile_canon_summary(profile, custom_style)
+        style_summary = self._compile_style_summary(profile, rule_sections, custom_style)
         return {
             **profile,
             "custom_style": custom_style.strip(),
             "rule_sections": rule_sections,
-            "compiled_summary": compiled_summary,
+            "canon_summary": canon_summary,
+            "style_summary": style_summary,
+            "compiled_summary": style_summary,
         }
 
     def _load_registry(self) -> list[dict[str, Any]]:
@@ -125,7 +128,21 @@ class StyleProfileService:
                 break
         return "；".join(lines)
 
-    def _compile_summary(
+    def _compile_canon_summary(
+        self,
+        profile: dict[str, Any],
+        custom_style: str,
+    ) -> str:
+        blocks = [
+            f"原作信息：参考《{profile['source_novel']}》的世界观、角色关系与核心设定，作者 {profile['source_author']}。",
+            f"题材定位：{profile['genre'] or profile['description'] or '未注明'}。",
+            "创作要求：保持原作世界观与人物行为逻辑连续，不要把同人写成单纯文风模仿。",
+        ]
+        if custom_style.strip():
+            blocks.append(f"补充约束：{custom_style.strip()}")
+        return "\n".join(blocks)
+
+    def _compile_style_summary(
         self,
         profile: dict[str, Any],
         rule_sections: dict[str, str],

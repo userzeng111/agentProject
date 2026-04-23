@@ -48,6 +48,11 @@ class FakeModelCatalog:
 
 class FakeNovelSkillService:
     def build_runtime_context(self, *, mode: str, style_profile_id: str = "", custom_style: str = ""):
+        canon_guidance = ""
+        style_guidance = f"实例：唐家三少风格实例\n补充要求：{custom_style}"
+        if mode == "fanfic":
+            canon_guidance = f"原作《斗罗大陆》世界观约束\n补充要求：{custom_style}"
+            style_guidance = custom_style
         return {
             "workflow_guidance": "workflow:/constitution -> /specify -> /write",
             "style_profile_id": style_profile_id,
@@ -56,7 +61,8 @@ class FakeNovelSkillService:
                 "id": style_profile_id,
                 "name": "唐家三少风格实例",
             },
-            "style_guidance": f"实例：唐家三少风格实例\n补充要求：{custom_style}",
+            "canon_guidance": canon_guidance,
+            "style_guidance": style_guidance,
             "active_package_ids": ["novel-writer-workflow-guide", "bisheng-style"],
             "active_instance_id": style_profile_id,
             "custom_style": custom_style,
@@ -96,3 +102,37 @@ class GraphStyleProfileTests(unittest.TestCase):
         self.assertEqual(snapshot["normalized_spec"]["style_profile_name"], "唐家三少风格实例")
         self.assertIn("/constitution", snapshot["normalized_spec"]["workflow_guidance"])
         self.assertIn("补充要求：保留热血成长感", snapshot["normalized_spec"]["style_guidance"])
+
+    def test_fanfic_request_compiles_profile_into_canon_guidance(self) -> None:
+        graph = build_graph(
+            FakeEngine(),
+            context_manager=ContextManager(),
+            model_catalog=FakeModelCatalog(),
+            novel_skill_service=FakeNovelSkillService(),
+        )
+        config = {"configurable": {"thread_id": "task-fanfic-style-graph"}}
+        initial_state = {
+            "task_id": "task-fanfic-style-graph",
+            "input_payload": {
+                "mode": "fanfic",
+                "creative_mode": "fanfic",
+                "novel_size": "long",
+                "prompt": "写一篇斗罗大陆同人故事",
+                "genre": "玄幻",
+                "style": "保留学院冲突",
+                "style_profile_id": "douluo",
+                "chapter_word_min": 2600,
+                "audience": "",
+                "banned": "",
+                "title_hint": "史莱克新生",
+                "model_id": "gpt-5.4",
+            },
+            "reference_text": "",
+        }
+
+        graph.invoke(initial_state, config=config)
+        snapshot = graph.get_state(config).values
+
+        self.assertEqual(snapshot["normalized_spec"]["creative_mode"], "fanfic")
+        self.assertIn("世界观约束", snapshot["normalized_spec"]["canon_guidance"])
+        self.assertEqual(snapshot["normalized_spec"]["style_guidance"], "保留学院冲突")

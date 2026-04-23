@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypedDict
@@ -88,13 +89,20 @@ def build_normalized_spec(
     novel_skill_service: Any | None = None,
     style_profile_service: Any | None = None,
 ) -> dict[str, Any]:
-    requested_target_words = int(payload.get("target_words", 1800) or 1800)
+    requested_target_words = int(
+        payload.get("chapter_word_min", payload.get("target_words", 1800)) or 1800
+    )
     style = str(payload.get("style", "")).strip()
     style_profile_id = str(payload.get("style_profile_id", "")).strip()
+    creative_mode = _resolve_creative_mode(payload)
+    novel_size = _resolve_novel_size(payload)
+    chapter_count_range = _chapter_count_range(payload, novel_size)
+    chapter_word_min = max(requested_target_words, 600)
+    chapter_word_max = max(int(chapter_word_min * 1.3), chapter_word_min)
     runtime_context: dict[str, Any] = {}
     if novel_skill_service is not None and hasattr(novel_skill_service, "build_runtime_context"):
         runtime_context = novel_skill_service.build_runtime_context(
-            mode=payload["mode"],
+            mode=creative_mode,
             style_profile_id=style_profile_id,
             custom_style=style,
         )
@@ -102,7 +110,7 @@ def build_normalized_spec(
         runtime_profile = None
         if (
             style_profile_service is not None
-            and payload.get("mode") == "style_remix"
+            and creative_mode in {"fanfic", "style_remix"}
             and style_profile_id
         ):
             runtime_profile = style_profile_service.build_runtime_profile(style_profile_id, style)
@@ -111,11 +119,18 @@ def build_normalized_spec(
             "style_profile_id": style_profile_id,
             "style_profile_name": str((runtime_profile or {}).get("name") or ""),
             "style_profile": runtime_profile or {},
-            "style_guidance": str((runtime_profile or {}).get("compiled_summary") or style),
+            "canon_guidance": str((runtime_profile or {}).get("canon_summary") or ""),
+            "style_guidance": (
+                str((runtime_profile or {}).get("style_summary") or style)
+                if creative_mode == "style_remix"
+                else style
+            ),
             "active_package_ids": [],
         }
     return {
         "mode": payload["mode"],
+        "creative_mode": creative_mode,
+        "novel_size": novel_size,
         "prompt": str(payload.get("prompt", "")).strip(),
         "genre": str(payload.get("genre", "")).strip(),
         "style": style,
@@ -123,10 +138,22 @@ def build_normalized_spec(
         "style_profile_id": str(runtime_context.get("style_profile_id") or style_profile_id),
         "style_profile_name": str(runtime_context.get("style_profile_name") or ""),
         "style_profile": runtime_context.get("style_profile") or {},
+        "canon_guidance": str(runtime_context.get("canon_guidance") or ""),
         "style_guidance": str(runtime_context.get("style_guidance") or style),
         "novel_skill_packages": list(runtime_context.get("active_package_ids") or []),
         "requested_target_words": requested_target_words,
-        "target_words": _normalize_target_words(payload["mode"], requested_target_words),
+        "target_words": chapter_word_min,
+        "chapter_word_min": chapter_word_min,
+        "chapter_word_max": chapter_word_max,
+        "chapter_word_range_text": f"{chapter_word_min} 到 {chapter_word_max}",
+        "target_chapter_count": chapter_count_range["target"],
+        "chapter_count_min": chapter_count_range["min"],
+        "chapter_count_max": chapter_count_range["max"],
+        "chapter_count_range": {
+            "min": chapter_count_range["min"],
+            "max": chapter_count_range["max"],
+        },
+        "chapter_count_range_text": _chapter_count_range_text(chapter_count_range),
         "audience": str(payload.get("audience", "")).strip(),
         "banned": str(payload.get("banned", "")).strip(),
         "title_hint": str(payload.get("title_hint", "")).strip(),
@@ -139,9 +166,97 @@ def _chapter_batch_size(spec: dict[str, Any], *, completed_count: int, total_cha
     if remaining <= 0:
         return 0
     default_batch_size = 2
-    if spec.get("mode") == "style_remix" and total_chapters > 2:
+    if _is_style_remix(spec) and total_chapters > 2:
         default_batch_size = 2 if completed_count == 0 else 1
     return min(default_batch_size, remaining)
+
+
+def _resolve_creative_mode(payload: dict[str, Any]) -> str:
+    creative_mode = str(payload.get("creative_mode") or "").strip()
+    if creative_mode:
+        return creative_mode
+    mode = str(payload.get("mode") or "").strip()
+    if mode == "fanfic":
+        return "fanfic"
+    if mode == "style_remix":
+        return "style_remix"
+    return "original"
+
+
+def _resolve_novel_size(payload: dict[str, Any]) -> str:
+    novel_size = str(payload.get("novel_size") or "").strip()
+    if novel_size:
+        return novel_size
+    mode = str(payload.get("mode") or "").strip()
+    if mode == "short_story":
+        return "short"
+    if mode == "fanfic":
+        return "medium"
+    return "long"
+
+
+def _default_target_chapter_count(novel_size: str) -> int:
+    if novel_size == "short":
+        return 8
+    if novel_size == "medium":
+        return 80
+    return 400
+
+
+def _positive_int(value: Any) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def _chapter_count_range(payload: dict[str, Any], novel_size: str) -> dict[str, int]:
+    target = _positive_int(payload.get("target_chapter_count")) or _default_target_chapter_count(novel_size)
+    lower = _positive_int(payload.get("chapter_count_min")) or max(1, int(target * 0.9))
+    upper = _positive_int(payload.get("chapter_count_max")) or max(lower, int(-(-target * 11 // 10)))
+    return {"target": target, "min": lower, "max": upper}
+
+
+def _chapter_count_range_text(chapter_count_range: dict[str, int | None]) -> str:
+    lower = int(chapter_count_range.get("min") or 1)
+    upper = chapter_count_range.get("max")
+    if upper is None:
+        return f"{lower} 章及以上"
+    return f"{lower} 到 {int(upper)} 章"
+
+
+def _is_style_remix(spec: dict[str, Any]) -> bool:
+    return str(spec.get("creative_mode") or spec.get("mode") or "").strip() == "style_remix"
+
+
+def _trace_round_count(trace: list[dict[str, Any]] | None) -> int:
+    return sum(1 for item in (trace or []) if isinstance(item, dict) and item.get("__summary__"))
+
+
+def _build_auto_review_summary(
+    *,
+    prev_trace: list[dict[str, Any]],
+    decision: ReviewDecision,
+    review_type: str,
+    revision_count: int,
+    batch_index: int | None = None,
+) -> dict[str, Any]:
+    return {
+        "__summary__": True,
+        "trace_round": _trace_round_count(prev_trace) + 1,
+        "review_type": review_type,
+        "revision_count": revision_count,
+        "batch_index": batch_index,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "overall_score": decision.overall_score,
+        "approved": decision.approved,
+        "auto_escalated": decision.auto_escalated,
+        "comment": decision.comment,
+        "reasoning": decision.reasoning,
+        "critical_issues": decision.critical_issues,
+        "warnings": decision.warnings,
+    }
 
 
 def build_graph(
@@ -303,7 +418,7 @@ def build_graph(
             model=state["normalized_spec"].get("model_id"),
         )
         return {
-            "story_plan": story_plan.model_dump(),
+            "story_plan": _normalize_story_plan(story_plan.model_dump()),
             "outline_revision_count": 0,
         }
 
@@ -336,23 +451,16 @@ def build_graph(
 
                 decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
-                # 将 overall_score / approved 等综合信息写入 trace 头部，供前端直接使用
-                # 累积历史 trace：review_outline 轮次
+                prev_trace = list(state.get("auto_review_trace") or [])
                 new_entry = [
-                    {
-                        "__summary__": True,
-                        "overall_score": decision.overall_score,
-                        "approved": decision.approved,
-                        "auto_escalated": decision.auto_escalated,
-                        "comment": decision.comment,
-                        "reasoning": decision.reasoning,
-                        "critical_issues": decision.critical_issues,
-                        "warnings": decision.warnings,
-                    },
+                    _build_auto_review_summary(
+                        prev_trace=prev_trace,
+                        decision=decision,
+                        review_type="outline_review",
+                        revision_count=state.get("outline_revision_count", 0),
+                    ),
                     *agent_items,
                 ]
-                # 累积历史 trace（重写循环不覆盖之前的记录）
-                prev_trace = list(state.get("auto_review_trace") or [])
                 trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
@@ -404,15 +512,14 @@ def build_graph(
             original_plan=state.get("story_plan"),
         )
         return {
-            "story_plan": story_plan.model_dump(),
+            "story_plan": _normalize_story_plan(story_plan.model_dump()),
             "outline_revision_count": revision_count,
         }
 
     def prepare_chapter_pair_context(state: WorkflowState) -> WorkflowState:
         batch_index = state.get("batch_index", 0)
-        story_plan = state.get("story_plan") or {}
-        chapter_plan = story_plan.get("chapter_plan") or []
-        total_chapters = len(chapter_plan)
+        story_plan = _normalize_story_plan(state.get("story_plan") or {})
+        total_chapters = _planned_chapter_count(story_plan)
         completed = state.get("completed_chapters") or []
         completed_count = len(completed)
         batch_size = _chapter_batch_size(
@@ -456,6 +563,7 @@ def build_graph(
             memory_items=_chapter_pair_memory_items(state),
         )
         return {
+            "story_plan": story_plan,
             "chapter_pair_context_packet": snapshot.packet.model_dump(mode="json"),
             "total_chapters": total_chapters,
             "completed_count": completed_count,
@@ -510,22 +618,17 @@ def build_graph(
                 ]
                 decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
-                # 将 overall_score / approved 等综合信息写入 trace 头部
+                prev_trace = list(state.get("auto_review_trace") or [])
                 new_entry = [
-                    {
-                        "__summary__": True,
-                        "overall_score": decision.overall_score,
-                        "approved": decision.approved,
-                        "auto_escalated": decision.auto_escalated,
-                        "comment": decision.comment,
-                        "reasoning": decision.reasoning,
-                        "critical_issues": decision.critical_issues,
-                        "warnings": decision.warnings,
-                    },
+                    _build_auto_review_summary(
+                        prev_trace=prev_trace,
+                        decision=decision,
+                        review_type="chapter_pair_review",
+                        revision_count=state.get("chapter_pair_revision_count", 0),
+                        batch_index=state.get("batch_index", 0),
+                    ),
                     *agent_items,
                 ]
-                # 累积历史 trace（重写循环不覆盖之前的记录）
-                prev_trace = list(state.get("auto_review_trace") or [])
                 trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
@@ -586,7 +689,7 @@ def build_graph(
         current_pair = state.get("current_chapter_pair") or []
         completed_chapters = list(state.get("completed_chapters") or [])
         completed_chapters.extend(current_pair)
-        total_chapters = len((state.get("story_plan") or {}).get("chapter_plan") or [])
+        total_chapters = _planned_chapter_count(state.get("story_plan") or {})
         batch_index = state.get("batch_index", 0) + len(current_pair)
         # 安全推进：如果 current_pair 为空则 batch_index 不增加，避免无限循环
         if batch_index >= total_chapters:
@@ -627,22 +730,16 @@ def build_graph(
                 )
                 decision = _execute_auto_review(payload, policy)
                 agent_items = [a.model_dump() for a in decision.agent_trace]
-                # 将 overall_score / approved 等综合信息写入 trace 头部
+                prev_trace = list(state.get("auto_review_trace") or [])
                 new_entry = [
-                    {
-                        "__summary__": True,
-                        "overall_score": decision.overall_score,
-                        "approved": decision.approved,
-                        "auto_escalated": decision.auto_escalated,
-                        "comment": decision.comment,
-                        "reasoning": decision.reasoning,
-                        "critical_issues": decision.critical_issues,
-                        "warnings": decision.warnings,
-                    },
+                    _build_auto_review_summary(
+                        prev_trace=prev_trace,
+                        decision=decision,
+                        review_type="verification_review",
+                        revision_count=state.get("verification_revision_count", 0),
+                    ),
                     *agent_items,
                 ]
-                # 累积历史 trace（重写循环不覆盖之前的记录）
-                prev_trace = list(state.get("auto_review_trace") or [])
                 trace = prev_trace + new_entry
             except Exception as e:
                 decision = ReviewDecision(
@@ -927,12 +1024,15 @@ def _build_references(state: WorkflowState) -> list[ReferenceMaterial]:
 def _outline_instruction(spec: dict[str, Any]) -> str:
     return (
         f"模式：{spec.get('mode', '')}\n"
+        f"创作类型：{spec.get('creative_mode', '')}\n"
+        f"篇幅规模：{spec.get('novel_size', '')}\n"
         f"题材：{spec.get('genre', '')}\n"
         f"风格：{spec.get('style', '')}\n"
         f"风格实例：{spec.get('style_profile_name', '')}\n"
         f"风格约束：{spec.get('style_guidance', '')}\n"
-        f"用户目标字数：{spec.get('requested_target_words', spec.get('target_words', ''))}\n"
-        f"目标字数：{spec.get('target_words', '')}\n"
+        f"单章字数下限：{spec.get('chapter_word_min', spec.get('target_words', ''))}\n"
+        f"单章字数浮动上限：{spec.get('chapter_word_max', spec.get('target_words', ''))}\n"
+        f"章节范围：{spec.get('chapter_count_range_text', '')}\n"
         f"受众：{spec.get('audience', '')}\n"
         f"禁忌：{spec.get('banned', '')}\n"
         f"标题倾向：{spec.get('title_hint', '')}\n"
@@ -948,9 +1048,12 @@ def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] |
         logline = str(story_plan.get("logline") or "")
     return (
         f"模式：{spec.get('mode', '')}\n"
+        f"创作类型：{spec.get('creative_mode', '')}\n"
+        f"篇幅规模：{spec.get('novel_size', '')}\n"
         f"作品标题：{title}\n"
         f"一句话梗概：{logline}\n"
-        f"目标字数：{spec.get('target_words', '')}\n"
+        f"单章字数下限：{spec.get('chapter_word_min', spec.get('target_words', ''))}\n"
+        f"章节范围：{spec.get('chapter_count_range_text', '')}\n"
         f"风格要求：{spec.get('style', '')}\n"
         f"风格实例：{spec.get('style_profile_name', '')}\n"
         f"风格约束：{spec.get('style_guidance', '')}\n"
@@ -958,11 +1061,28 @@ def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] |
         f"正文任务：基于既定大纲连续起草小说正文，首批可生成两章，后续批次按单章续写。"
     ).strip()
 
+def _planned_chapter_count(story_plan: dict[str, Any] | None) -> int:
+    if not isinstance(story_plan, dict):
+        return 0
+    chapter_plan = story_plan.get("chapter_plan")
+    if isinstance(chapter_plan, list):
+        return len(chapter_plan)
+    planned = int(story_plan.get("planned_chapter_count") or 0)
+    if planned > 0:
+        return planned
+    return 0
 
-def _normalize_target_words(mode: str, requested_target_words: int) -> int:
-    if mode == "short_story":
-        return max(requested_target_words + 100, 600)
-    return requested_target_words
+
+def _normalize_story_plan(story_plan: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(story_plan, dict):
+        return {}
+    normalized = dict(story_plan)
+    chapter_plan = normalized.get("chapter_plan")
+    if isinstance(chapter_plan, list):
+        normalized["planned_chapter_count"] = len(chapter_plan)
+    else:
+        normalized["planned_chapter_count"] = _positive_int(normalized.get("planned_chapter_count"))
+    return normalized
 
 
 def _chapter_pair_memory_items(state: WorkflowState) -> list[str]:

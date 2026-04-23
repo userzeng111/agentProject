@@ -47,19 +47,28 @@ class NovelSkillService:
     ) -> dict[str, Any]:
         workflow_package = self.get_workflow_package()
         style_profile = None
-        if mode == "style_remix" and style_profile_id.strip():
+        if mode in {"fanfic", "style_remix"} and style_profile_id.strip():
             style_profile = self.style_profile_service.build_runtime_profile(style_profile_id.strip(), custom_style)
         active_package_ids: list[str] = []
         if workflow_package is not None:
             active_package_ids.append(str(workflow_package["id"]))
         if style_profile is not None:
             active_package_ids.append("bisheng-style")
+        canon_guidance = ""
+        style_guidance = custom_style.strip()
+        if style_profile is not None:
+            if mode == "fanfic":
+                canon_guidance = str(style_profile.get("canon_summary") or "")
+                style_guidance = custom_style.strip()
+            if mode == "style_remix":
+                style_guidance = str(style_profile.get("style_summary") or custom_style.strip())
         return {
             "workflow_guidance": str((workflow_package or {}).get("compiled_guidance") or ""),
             "style_profile_id": str((style_profile or {}).get("id") or style_profile_id),
             "style_profile_name": str((style_profile or {}).get("name") or ""),
             "style_profile": style_profile or {},
-            "style_guidance": str((style_profile or {}).get("compiled_summary") or custom_style.strip()),
+            "canon_guidance": canon_guidance,
+            "style_guidance": style_guidance,
             "active_package_ids": active_package_ids,
             "active_instance_id": str((style_profile or {}).get("id") or ""),
             "custom_style": custom_style.strip(),

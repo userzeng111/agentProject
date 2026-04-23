@@ -12,6 +12,7 @@ import {
   CircularProgress,
   Chip,
   Tooltip,
+  MenuItem,
   List,
   ListItemButton,
   ListItemText,
@@ -36,9 +37,13 @@ import {
   ChatBubbleOutline as ChatIcon,
   Menu as MenuIcon,
 } from "@mui/icons-material";
-import { streamChat } from "@/lib/api";
-import { getRagSettings } from "@/lib/api";
-import type { ChatStreamChunk, ChatMessage } from "@/lib/types";
+import { getModelCatalog, getRagSettings, streamChat } from "@/lib/api";
+import type { ChatStreamChunk, ChatMessage, ModelOption } from "@/lib/types";
+import {
+  isGatewayBackedModel,
+  resolveConversationModel,
+  resolveDefaultChatModelId,
+} from "./model-selection.mjs";
 import {
   type StoredConversation,
   type StoredMessage,
@@ -115,6 +120,9 @@ export function ChatClient() {
   const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [ragAvailable, setRagAvailable] = useState<boolean | null>(null);
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [defaultModelId, setDefaultModelId] = useState("");
+  const [currentModel, setCurrentModel] = useState("");
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" | "info" }>({
     open: false,
     message: "",
@@ -148,6 +156,7 @@ export function ChatClient() {
       if (conv) {
         setCurrentConvId(activeId);
         setMessages(restoreMessages(conv.messages));
+        setCurrentModel(conv.model ?? "");
         return;
       }
     }
@@ -155,9 +164,39 @@ export function ChatClient() {
     const newConv = createConversation();
     setCurrentConvId(newConv.id);
     setMessages([]);
+    setCurrentModel(newConv.model ?? "");
     refreshList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    async function loadModelCatalog() {
+      try {
+        const catalog = await getModelCatalog();
+        const nextModels = catalog.data ?? [];
+        setModels(nextModels);
+        const requestedDefault = catalog.meta?.default_model ?? "";
+        const nextDefault = resolveDefaultChatModelId(nextModels, requestedDefault);
+        setDefaultModelId(nextDefault);
+      } catch {
+        setModels([]);
+        setDefaultModelId("");
+      }
+    }
+    void loadModelCatalog();
+  }, []);
+
+  useEffect(() => {
+    if (!currentConvId) {
+      return;
+    }
+    const conv = getConversation(currentConvId);
+    const savedModel = conv?.model || "";
+    const nextModel = resolveConversationModel(savedModel, models, defaultModelId);
+    if (nextModel && currentModel !== nextModel) {
+      setCurrentModel(nextModel);
+    }
+  }, [currentConvId, currentModel, defaultModelId, models]);
 
   useEffect(() => {
     async function loadRagStatus() {
@@ -178,7 +217,7 @@ export function ChatClient() {
       // 空消息也要保存（更新时间戳）
       const conv = getConversation(currentConvId);
       if (conv) {
-        saveConversation({ ...conv, updatedAt: Date.now() });
+        saveConversation({ ...conv, model: currentModel || conv.model, updatedAt: Date.now() });
       }
       return;
     }
@@ -190,10 +229,11 @@ export function ChatClient() {
       ...conv,
       title,
       messages: serialized,
+      model: currentModel || conv.model,
       updatedAt: Date.now(),
     });
     setConversationList(listConversations());
-  }, [messages, currentConvId]);
+  }, [messages, currentConvId, currentModel]);
 
   // ── 显示提示 ──
   const showSnackbar = useCallback((message: string, severity: "success" | "error" | "info" = "info") => {
@@ -212,21 +252,23 @@ export function ChatClient() {
       setActiveConversationId(id);
       setCurrentConvId(id);
       setMessages(restoreMessages(conv.messages));
+      setCurrentModel(conv.model || defaultModelId);
       setExpandedThinking({});
       setMobileDrawerOpen(false);
     },
-    [currentConvId],
+    [currentConvId, defaultModelId],
   );
 
   // ── 新建会话 ──
   const handleNewConversation = useCallback(() => {
-    const newConv = createConversation();
+    const newConv = createConversation(defaultModelId);
     setCurrentConvId(newConv.id);
     setMessages([]);
+    setCurrentModel(newConv.model ?? defaultModelId);
     setExpandedThinking({});
     setConversationList(listConversations());
     setMobileDrawerOpen(false);
-  }, []);
+  }, [defaultModelId]);
 
   // ── 删除会话 ──
   const handleDeleteConversation = useCallback(
@@ -244,17 +286,19 @@ export function ChatClient() {
             setActiveConversationId(nextConv.id);
             setCurrentConvId(nextConv.id);
             setMessages(restoreMessages(nextConv.messages));
+            setCurrentModel(nextConv.model || defaultModelId);
           }
         } else {
-          const newConv = createConversation();
+          const newConv = createConversation(defaultModelId);
           setCurrentConvId(newConv.id);
           setMessages([]);
+          setCurrentModel(newConv.model ?? defaultModelId);
           setConversationList(listConversations());
         }
       }
       showSnackbar("会话已删除", "success");
     },
-    [currentConvId, showSnackbar],
+    [currentConvId, defaultModelId, showSnackbar],
   );
 
   // ── 发送消息 ──
@@ -288,7 +332,7 @@ export function ChatClient() {
 
     await streamChat(
       apiMessages,
-      undefined,
+      currentModel || undefined,
       Boolean(ragAvailable),
       (chunk: ChatStreamChunk) => {
         if (chunk.reasoning_content) {
@@ -352,7 +396,7 @@ export function ChatClient() {
         streamingRef.current = false;
       },
     );
-  }, [input, loading, messages, ragAvailable, scrollToBottom]);
+  }, [currentModel, input, loading, messages, ragAvailable, scrollToBottom]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -367,6 +411,24 @@ export function ChatClient() {
   const toggleThinking = useCallback((idx: number) => {
     setExpandedThinking((prev) => ({ ...prev, [idx]: !prev[idx] }));
   }, []);
+
+  const selectableModels = models.filter((item) => isGatewayBackedModel(item));
+
+  const handleModelChange = useCallback(
+    (modelId: string) => {
+      setCurrentModel(modelId);
+      if (!currentConvId) {
+        return;
+      }
+      const conv = getConversation(currentConvId);
+      if (!conv) {
+        return;
+      }
+      saveConversation({ ...conv, model: modelId, updatedAt: Date.now() });
+      setConversationList(listConversations());
+    },
+    [currentConvId],
+  );
 
   // ── 侧边栏会话列表渲染 ──
   const renderSidebarContent = () => (
@@ -520,6 +582,27 @@ export function ChatClient() {
               AI 对话
             </Typography>
           </Box>
+          <TextField
+            select
+            size="small"
+            label="聊天模型"
+            value={currentModel || defaultModelId}
+            onChange={(event) => handleModelChange(event.target.value)}
+            sx={{ minWidth: { xs: 160, sm: 220 } }}
+            helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
+          >
+            {selectableModels.length ? (
+              selectableModels.map((item) => (
+                <MenuItem key={item.id} value={item.id}>
+                  {item.display_name || item.id}
+                </MenuItem>
+              ))
+            ) : (
+              <MenuItem value="" disabled>
+                暂无可用模型
+              </MenuItem>
+            )}
+          </TextField>
         </Box>
 
         {ragAvailable === false ? (
