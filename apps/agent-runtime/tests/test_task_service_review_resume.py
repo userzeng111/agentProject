@@ -1,12 +1,14 @@
-import datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc
+
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-
-if not hasattr(datetime, "UTC"):
-    datetime.UTC = datetime.timezone.utc
 
 from app.application.task_service import TaskService
 from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
@@ -17,12 +19,7 @@ from app.storage.task_store import TaskLogStore
 from app.storage.db_repository import create_batch, update_project_status
 
 
-class FakeGatewayClient:
-    def list_models(self):
-        return [
-            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
-            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
-        ]
+from tests.fakes import FakeGatewayClient
 
 
 class FakeEngine:

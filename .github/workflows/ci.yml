@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [master, develop]
+  pull_request:
+    branches: [master, develop]
+
+jobs:
+  test-agent-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          cd apps/agent-runtime
+          uv pip install -e ".[dev]" --system
+      - name: Run pytest
+        run: pytest apps/agent-runtime/tests/ -v
+
+  test-embedding:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        run: |
+          cd embeddingProject
+          uv pip install -e ".[dev]" --system
+      - name: Run pytest
+        run: pytest embeddingProject/tests/ -v
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install ruff
+        run: uv pip install ruff --system
+      - name: Run ruff check
+        run: ruff check embeddingProject/ apps/agent-runtime/

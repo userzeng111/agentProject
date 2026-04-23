@@ -1,10 +1,12 @@
-import datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc
+
 import tempfile
 import unittest
 from pathlib import Path
-
-if not hasattr(datetime, "UTC"):
-    datetime.UTC = datetime.timezone.utc
 
 from app.application.task_service import TaskService
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient

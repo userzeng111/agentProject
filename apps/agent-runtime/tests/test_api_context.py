@@ -14,6 +14,7 @@ from app.llm.story_engine import StoryEngine
 from app.rag.service import RagHit, RagSearchResult
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
+from tests.fakes import FakeRagService
 
 
 class ApiContextIntegrationTests(unittest.TestCase):
@@ -514,31 +515,21 @@ class ApiContextIntegrationTests(unittest.TestCase):
             def resolve_model(self, model):
                 return model or "gpt-5.4"
 
-        class FakeRagService:
-            def augment_chat_messages(self, messages, top_k=None):
-                return (
-                    [
-                        {"role": "system", "content": "参考资料：港口档案记载夜航记录曾被改写。"},
-                        *messages,
-                    ],
-                    RagSearchResult(
-                        query="夜航记录怎么回事",
-                        hits=[
-                            RagHit(
-                                doc_id="rag-chat-1",
-                                content="港口档案记载夜航记录曾被改写。",
-                                score=0.95,
-                                metadata={},
-                            )
-                        ],
-                        selected_contexts=["港口档案记载夜航记录曾被改写。"],
-                        error=None,
-                    ),
+        fake_rag = FakeRagService(
+            hits=[
+                RagHit(
+                    doc_id="rag-chat-1",
+                    content="港口档案记载夜航记录曾被改写。",
+                    score=0.95,
+                    metadata={},
                 )
+            ],
+            selected_contexts=["港口档案记载夜航记录曾被改写。"],
+        )
 
         app = FastAPI()
         fake_engine = FakeEngine()
-        app.include_router(build_router(self.task_service, engine=fake_engine, rag_service=FakeRagService()), prefix="/api")
+        app.include_router(build_router(self.task_service, engine=fake_engine, rag_service=fake_rag), prefix="/api")
         client = TestClient(app)
 
         response = client.post(

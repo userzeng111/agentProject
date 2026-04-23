@@ -1,31 +1,18 @@
-import datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc
+
 import tempfile
 import unittest
 from pathlib import Path
-
-if not hasattr(datetime, "UTC"):
-    datetime.UTC = datetime.timezone.utc
 
 from app.llm.story_engine import StoryEngine
 from app.settings.config import Settings
 
 
-class FakeGatewayClient:
-    def __init__(self, responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def complete_json(self, messages, model=None):
-        self.calls.append(
-            {
-                "messages": [dict(item) for item in messages],
-                "model": model,
-            }
-        )
-        return self.responses[len(self.calls) - 1]
-
-    def list_models(self):
-        return []
+from tests.fakes import FakeGatewayClient
 
 
 class StoryEngineContextTests(unittest.TestCase):

@@ -1,130 +1,19 @@
-import datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc
+
 import unittest
 
 from langgraph.types import Command
 
-if not hasattr(datetime, "UTC"):
-    datetime.UTC = datetime.timezone.utc
-
-from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
+from app.domain.models import StoryPlan
 from app.graph.main_graph import build_graph, build_normalized_spec
+from tests.fakes import FakeContextManager, FakeStoryEngine
 
 
-class FakePacket:
-    def __init__(self, stage: str) -> None:
-        self.stage = stage
-
-    def model_dump(self, mode: str = "json") -> dict:
-        return {"stage": self.stage, "mode": mode}
-
-
-class FakeSnapshot:
-    def __init__(self, stage: str) -> None:
-        self.packet = FakePacket(stage)
-        self.stage = stage
-
-    def model_dump(self, mode: str = "json") -> dict:
-        return {
-            "stage": self.stage,
-            "mode": mode,
-            "packet": self.packet.model_dump(mode=mode),
-        }
-
-
-class FakeContextManager:
-    def build_snapshot(self, task_id, stage, instruction, model_profile, references, memory_items):
-        return FakeSnapshot(stage)
-
-
-class FakeEngine:
-    def __init__(self) -> None:
-        self.generated_batch_indexes: list[int] = []
-        self.generated_batch_sizes: list[int] = []
-
-    def build_story_plan(self, spec, reference_text, context_packet=None, model=None, revision_comment="", original_plan=None):
-        return StoryPlan(
-            working_title="夜半回廊",
-            logline="测试梗概",
-            world_notes=["世界观"],
-            character_notes=["人物"],
-            chapter_plan=[
-                ChapterPlan(number=1, title="第1章", goal="目标1"),
-                ChapterPlan(number=2, title="第2章", goal="目标2"),
-                ChapterPlan(number=3, title="第3章", goal="目标3"),
-                ChapterPlan(number=4, title="第4章", goal="目标4"),
-                ChapterPlan(number=5, title="第5章", goal="目标5"),
-            ],
-        )
-
-    def generate_chapter_pair(
-        self,
-        spec,
-        story_plan,
-        batch_index,
-        completed_chapters,
-        reference_text,
-        context_packet=None,
-        model=None,
-        progress_callback=None,
-    ):
-        self.generated_batch_indexes.append(batch_index)
-        chapter_plan = story_plan.get("chapter_plan") or []
-        if spec.get("mode") == "style_remix":
-            batch_size = 2 if len(completed_chapters) == 0 else 1
-        else:
-            batch_size = 2
-        self.generated_batch_sizes.append(batch_size)
-        pair = []
-        for chapter in chapter_plan[batch_index : batch_index + batch_size]:
-            pair.append(
-                ChapterDraft(
-                    number=chapter["number"],
-                    title=chapter["title"],
-                    summary=f"{chapter['title']} 摘要",
-                    content=f"{chapter['title']} 正文",
-                )
-            )
-        return pair
-
-    def revise_chapter_pair(
-        self,
-        current_pair,
-        revision_comment,
-        spec,
-        story_plan,
-        completed_chapters,
-        reference_text,
-        context_packet=None,
-        model=None,
-    ):
-        return [ChapterDraft.model_validate(item) for item in current_pair]
-
-    def verify_full_story(
-        self,
-        completed_chapters,
-        story_plan,
-        spec,
-        reference_text,
-        context_packet=None,
-        model=None,
-    ):
-        return {"overall_score": 100, "issues": []}
-
-    def fix_verified_issues(
-        self,
-        completed_chapters,
-        verification_report,
-        review_comment,
-        story_plan,
-        spec,
-        reference_text,
-        context_packet=None,
-        model=None,
-    ):
-        return completed_chapters
-
-
-class FakeMismatchedPlanEngine(FakeEngine):
+class FakeMismatchedPlanEngine(FakeStoryEngine):
     def build_story_plan(self, spec, reference_text, context_packet=None, model=None, revision_comment="", original_plan=None):
         return StoryPlan(
             working_title="计划错位",
@@ -183,7 +72,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         self.assertEqual(spec["chapter_count_range_text"], "90 到 110 章")
 
     def test_five_chapters_must_finish_all_pairs_before_verification(self) -> None:
-        engine = FakeEngine()
+        engine = FakeStoryEngine()
         graph = build_graph(
             engine,
             context_manager=FakeContextManager(),
@@ -231,7 +120,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         self.assertEqual(len(final_result["draft_result"]["chapters"]), 5)
 
     def test_style_remix_long_story_can_switch_to_single_chapter_batches_after_first_pair(self) -> None:
-        engine = FakeEngine()
+        engine = FakeStoryEngine()
         graph = build_graph(
             engine,
             context_manager=FakeContextManager(),
