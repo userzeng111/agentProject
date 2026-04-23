@@ -5,12 +5,16 @@ import json
 from typing import Any
 from uuid import uuid4
 
+import logging
+
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
 from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 def build_router(
@@ -41,8 +45,12 @@ def build_router(
     def _apply_chat_rag(messages: list[dict[str, str]], payload: ChatRequest) -> list[dict[str, str]]:
         if rag_service is None or not payload.rag_enabled:
             return messages
-        augmented_messages, _ = rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
-        return augmented_messages
+        try:
+            augmented_messages, _ = rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
+            return augmented_messages
+        except Exception:
+            logger.exception("RAG 增强失败，回退到原始消息")
+            return messages
 
     def _resolve_chat_model(requested_model: str | None) -> str:
         candidate = (requested_model or "").strip()
@@ -71,6 +79,7 @@ def build_router(
         try:
             return task_service.list_models_payload(force_refresh=refresh)
         except Exception as exc:  # pragma: no cover
+            logger.exception("读取模型列表失败")
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
 
     @router.patch("/settings/default-model")
@@ -83,6 +92,7 @@ def build_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            logger.exception("更新默认模型失败")
             raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
 
     @router.get("/settings/rag")
@@ -99,6 +109,7 @@ def build_router(
         try:
             return rag_rebuild_service.get_status()
         except Exception as exc:
+            logger.exception("读取 RAG 设置失败")
             raise HTTPException(status_code=500, detail=f"读取 RAG 设置失败：{exc}") from exc
 
     @router.post("/settings/rag/rebuild")
@@ -135,6 +146,7 @@ def build_router(
         try:
             return task_service.create_task(payload)
         except Exception as exc:
+            logger.exception("创建任务失败")
             raise _handle_error(exc) from exc
 
     @router.get("/dashboard")
@@ -142,6 +154,7 @@ def build_router(
         try:
             return task_service.get_dashboard()
         except Exception as exc:
+            logger.exception("获取仪表盘失败")
             raise _handle_error(exc) from exc
 
     @router.get("/archive")
@@ -152,6 +165,7 @@ def build_router(
         try:
             return task_service.get_archive_list(page=page, page_size=page_size)
         except Exception as exc:
+            logger.exception("获取归档列表失败")
             raise _handle_error(exc) from exc
 
     @router.get("/archive/{task_id}")
@@ -159,6 +173,7 @@ def build_router(
         try:
             return task_service.get_archive_detail(task_id)
         except Exception as exc:
+            logger.exception("获取归档详情失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}")
@@ -166,6 +181,7 @@ def build_router(
         try:
             return task_service.get_task(task_id)
         except Exception as exc:
+            logger.exception("获取任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/cancel")
@@ -175,6 +191,7 @@ def build_router(
         try:
             return task_service.cancel_task(task_id, comment=comment)
         except Exception as exc:
+            logger.exception("取消任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.delete("/tasks/{task_id}")
@@ -183,6 +200,7 @@ def build_router(
         try:
             return task_service.delete_task(task_id)
         except Exception as exc:
+            logger.exception("删除任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/assets")
@@ -198,6 +216,7 @@ def build_router(
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="当前 demo 仅支持 UTF-8 文本文件。") from exc
         except Exception as exc:
+            logger.exception("上传资源失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/run")
@@ -205,6 +224,7 @@ def build_router(
         try:
             return task_service.run_task(task_id, model_id=(payload.model_id if payload else ""))
         except Exception as exc:
+            logger.exception("运行任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/resume")
@@ -217,6 +237,7 @@ def build_router(
                 model_id=payload.model_id,
             )
         except Exception as exc:
+            logger.exception("恢复任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/continue")
@@ -224,6 +245,7 @@ def build_router(
         try:
             return task_service.continue_task(task_id, payload)
         except Exception as exc:
+            logger.exception("继续任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/recover")
@@ -236,6 +258,7 @@ def build_router(
                 recovery_mode=(payload.recovery_mode.value if payload else "recover_to_stable"),
             )
         except Exception as exc:
+            logger.exception("恢复任务失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/workspace")
@@ -243,6 +266,7 @@ def build_router(
         try:
             return task_service.get_workspace(task_id)
         except Exception as exc:
+            logger.exception("获取工作区失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/supervisor")
@@ -250,6 +274,7 @@ def build_router(
         try:
             return task_service.get_supervisor_plan(task_id)
         except Exception as exc:
+            logger.exception("获取 Supervisor 计划失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/review")
@@ -257,6 +282,7 @@ def build_router(
         try:
             return task_service.get_review(task_id)
         except Exception as exc:
+            logger.exception("获取审核结果失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/result")
@@ -264,6 +290,7 @@ def build_router(
         try:
             return task_service.get_result(task_id)
         except Exception as exc:
+            logger.exception("获取结果失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/chapters")
@@ -271,6 +298,7 @@ def build_router(
         try:
             return {"task_id": task_id, "chapters": task_service.get_current_chapters(task_id)}
         except Exception as exc:
+            logger.exception("获取章节失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/file-text")
@@ -280,6 +308,7 @@ def build_router(
             content = task_service.read_file_text(task_id, relative_path)
             return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
         except Exception as exc:
+            logger.exception("读取文件失败 ref=%s", ref)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/files/{path:path}")
@@ -288,6 +317,7 @@ def build_router(
             content = task_service.read_file_text(task_id, path)
             return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
         except Exception as exc:
+            logger.exception("读取任务文件失败 task_id=%s path=%s", task_id, path)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/workspace/stream")
@@ -335,6 +365,7 @@ def build_router(
         try:
             return task_service.list_artifacts(task_id)
         except Exception as exc:
+            logger.exception("列出产物失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     # ── 流式聊天端点 ──
@@ -370,6 +401,7 @@ def build_router(
                     yield _sse_payload("chat.chunk", data)
                 yield _sse_payload("chat.done", {"model": resolved_model})
             except GatewayClientError as exc:
+                logger.exception("流式聊天网关错误")
                 yield _sse_payload("chat.error", {"message": str(exc)})
 
         return StreamingResponse(
@@ -418,6 +450,7 @@ def build_router(
 
                     yield "data: [DONE]\n\n"
                 except GatewayClientError as exc:
+                    logger.exception("OpenAI 流式聊天网关错误")
                     error_chunk = {"error": {"message": str(exc), "type": "gateway_error"}}
                     yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
 
@@ -461,6 +494,7 @@ def build_router(
                     "usage": usage_data,
                 }
             except GatewayClientError as exc:
+                logger.exception("OpenAI 非流式聊天网关错误")
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return router

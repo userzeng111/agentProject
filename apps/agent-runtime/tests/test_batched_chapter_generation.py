@@ -40,6 +40,7 @@ class FakeBatchEngine:
         model=None,
         progress_callback=None,
         requested_batch_size=None,
+        **_kwargs,
     ):
         remaining = len(story_plan["chapter_plan"]) - batch_index
         batch_size = min(int(requested_batch_size or 1), remaining)

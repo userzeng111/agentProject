@@ -17,217 +17,58 @@ from app.llm.auto_reviewer import AutoReviewManager
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 
+from app.graph.checkpointer import _create_checkpointer
+from app.graph.utils.spec import build_normalized_spec
+from app.graph.utils.helpers import (
+    _resolve_model_profile,
+    _build_references,
+    _outline_instruction,
+    _chapter_pair_instruction,
+    _planned_chapter_count,
+    _normalize_story_plan,
+    _chapter_pair_memory_items,
+)
+from app.graph.nodes.outline import (
+    normalize_request as _normalize_request_node,
+    prepare_outline_context as _prepare_outline_context_node,
+    plan_story as _plan_story_node,
+    review_outline as _review_outline_node,
+    revise_outline as _revise_outline_node,
+    interrupt_outline_review,
+)
+from app.graph.nodes.chapter import (
+    prepare_chapter_pair_context as _prepare_chapter_pair_context_node,
+    draft_chapter_pair as _draft_chapter_pair_node,
+    review_chapter_pair as _review_chapter_pair_node,
+    revise_chapter_pair as _revise_chapter_pair_node,
+    accumulate_chapters as _accumulate_chapters_node,
+    interrupt_chapter_pair_review,
+)
+from app.graph.nodes.verification import (
+    verify_full_story as _verify_full_story_node,
+    review_verification as _review_verification_node,
+    fix_verified_issues as _fix_verified_issues_node,
+    interrupt_verification_review,
+)
+from app.graph.nodes.final import (
+    assemble_result as _assemble_result_node,
+    cancel_task as _cancel_task_node,
+)
+from app.graph.routers.review import (
+    route_after_outline_review,
+    route_after_revise_outline,
+    route_after_chapter_pair_review,
+)
+from app.graph.routers.flow import (
+    route_after_accumulate,
+    route_after_verification_review,
+    route_after_fix_issues,
+)
+
 logger = logging.getLogger(__name__)
 
-try:
-    from langgraph.checkpoint.sqlite import SqliteSaver
-    _HAS_SQLITE = True
-except ImportError:
-    _HAS_SQLITE = False
 
-try:
-    from langgraph.checkpoint.memory import MemorySaver
-except ImportError:  # pragma: no cover
-    from langgraph.checkpoint.memory import InMemorySaver as MemorySaver
-
-
-def _create_checkpointer(db_path: str | Path | None = None):
-    """创建 checkpointer：优先 SQLite 持久化，回退到内存。"""
-    if _HAS_SQLITE and db_path:
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False)
-        return SqliteSaver(conn)
-    if db_path and not _HAS_SQLITE:
-        logger.warning(
-            "未检测到 langgraph-checkpoint-sqlite，当前退回内存 checkpoint，服务重启后将无法恢复待审核状态。"
-        )
-    return MemorySaver()
-
-
-class WorkflowState(TypedDict, total=False):
-    task_id: str
-    input_payload: dict[str, Any]
-    reference_text: str
-    source_assets: list[dict[str, Any]]
-    normalized_spec: dict[str, Any]
-    outline_context_packet: dict[str, Any]
-    outline_context_snapshot: dict[str, Any]
-    story_plan: dict[str, Any]
-    outline_revision_count: int
-    # 章节对
-    batch_index: int
-    total_chapters: int
-    completed_count: int
-    chapter_pair_context_packet: dict[str, Any]
-    current_chapter_pair: list[dict[str, Any]]
-    completed_chapters: list[dict[str, Any]]
-    chapter_pair_revision_count: int
-    # 验证
-    verification_report: dict[str, Any]
-    verification_revision_count: int
-    # 打断回复
-    review_type: str
-    review_comment: str
-    approved: bool
-    cancelled: bool
-    # 最终结果
-    draft_result: dict[str, Any]
-    # 自动审核 [NEW]
-    auto_review: bool
-    auto_review_policy: dict[str, Any]
-    auto_review_trace: list[dict[str, Any]]
-
-
-MAX_OUTLINE_REVISIONS = 5
-MAX_CHAPTER_PAIR_REVISIONS = 5
-MAX_VERIFICATION_REVISIONS = 3
-
-
-def build_normalized_spec(
-    payload: dict[str, Any],
-    *,
-    novel_skill_service: Any | None = None,
-    style_profile_service: Any | None = None,
-) -> dict[str, Any]:
-    requested_target_words = int(
-        payload.get("chapter_word_min", payload.get("target_words", 1800)) or 1800
-    )
-    style = str(payload.get("style", "")).strip()
-    style_profile_id = str(payload.get("style_profile_id", "")).strip()
-    creative_mode = _resolve_creative_mode(payload)
-    novel_size = _resolve_novel_size(payload)
-    chapter_count_range = _chapter_count_range(payload, novel_size)
-    chapter_word_min = max(requested_target_words, 600)
-    chapter_word_max = max(int(chapter_word_min * 1.3), chapter_word_min)
-    runtime_context: dict[str, Any] = {}
-    if novel_skill_service is not None and hasattr(novel_skill_service, "build_runtime_context"):
-        runtime_context = novel_skill_service.build_runtime_context(
-            mode=creative_mode,
-            style_profile_id=style_profile_id,
-            custom_style=style,
-        )
-    else:
-        runtime_profile = None
-        if (
-            style_profile_service is not None
-            and creative_mode in {"fanfic", "style_remix"}
-            and style_profile_id
-        ):
-            runtime_profile = style_profile_service.build_runtime_profile(style_profile_id, style)
-        runtime_context = {
-            "workflow_guidance": "",
-            "style_profile_id": style_profile_id,
-            "style_profile_name": str((runtime_profile or {}).get("name") or ""),
-            "style_profile": runtime_profile or {},
-            "canon_guidance": str((runtime_profile or {}).get("canon_summary") or ""),
-            "style_guidance": (
-                str((runtime_profile or {}).get("style_summary") or style)
-                if creative_mode == "style_remix"
-                else style
-            ),
-            "active_package_ids": [],
-        }
-    return {
-        "mode": payload["mode"],
-        "creative_mode": creative_mode,
-        "novel_size": novel_size,
-        "prompt": str(payload.get("prompt", "")).strip(),
-        "genre": str(payload.get("genre", "")).strip(),
-        "style": style,
-        "workflow_guidance": str(runtime_context.get("workflow_guidance") or ""),
-        "style_profile_id": str(runtime_context.get("style_profile_id") or style_profile_id),
-        "style_profile_name": str(runtime_context.get("style_profile_name") or ""),
-        "style_profile": runtime_context.get("style_profile") or {},
-        "canon_guidance": str(runtime_context.get("canon_guidance") or ""),
-        "style_guidance": str(runtime_context.get("style_guidance") or style),
-        "novel_skill_packages": list(runtime_context.get("active_package_ids") or []),
-        "requested_target_words": requested_target_words,
-        "target_words": chapter_word_min,
-        "chapter_word_min": chapter_word_min,
-        "chapter_word_max": chapter_word_max,
-        "chapter_word_range_text": f"{chapter_word_min} 到 {chapter_word_max}",
-        "target_chapter_count": chapter_count_range["target"],
-        "chapter_count_min": chapter_count_range["min"],
-        "chapter_count_max": chapter_count_range["max"],
-        "chapter_count_range": {
-            "min": chapter_count_range["min"],
-            "max": chapter_count_range["max"],
-        },
-        "chapter_count_range_text": _chapter_count_range_text(chapter_count_range),
-        "audience": str(payload.get("audience", "")).strip(),
-        "banned": str(payload.get("banned", "")).strip(),
-        "title_hint": str(payload.get("title_hint", "")).strip(),
-        "model_id": str(payload.get("model_id", payload.get("model", ""))).strip(),
-    }
-
-
-def _chapter_batch_size(spec: dict[str, Any], *, completed_count: int, total_chapters: int) -> int:
-    remaining = max(total_chapters - completed_count, 0)
-    if remaining <= 0:
-        return 0
-    default_batch_size = 2
-    if _is_style_remix(spec) and total_chapters > 2:
-        default_batch_size = 2 if completed_count == 0 else 1
-    return min(default_batch_size, remaining)
-
-
-def _resolve_creative_mode(payload: dict[str, Any]) -> str:
-    creative_mode = str(payload.get("creative_mode") or "").strip()
-    if creative_mode:
-        return creative_mode
-    mode = str(payload.get("mode") or "").strip()
-    if mode == "fanfic":
-        return "fanfic"
-    if mode == "style_remix":
-        return "style_remix"
-    return "original"
-
-
-def _resolve_novel_size(payload: dict[str, Any]) -> str:
-    novel_size = str(payload.get("novel_size") or "").strip()
-    if novel_size:
-        return novel_size
-    mode = str(payload.get("mode") or "").strip()
-    if mode == "short_story":
-        return "short"
-    if mode == "fanfic":
-        return "medium"
-    return "long"
-
-
-def _default_target_chapter_count(novel_size: str) -> int:
-    if novel_size == "short":
-        return 8
-    if novel_size == "medium":
-        return 80
-    return 400
-
-
-def _positive_int(value: Any) -> int:
-    try:
-        parsed = int(value or 0)
-    except (TypeError, ValueError):
-        return 0
-    return parsed if parsed > 0 else 0
-
-
-def _chapter_count_range(payload: dict[str, Any], novel_size: str) -> dict[str, int]:
-    target = _positive_int(payload.get("target_chapter_count")) or _default_target_chapter_count(novel_size)
-    lower = _positive_int(payload.get("chapter_count_min")) or max(1, int(target * 0.9))
-    upper = _positive_int(payload.get("chapter_count_max")) or max(lower, int(-(-target * 11 // 10)))
-    return {"target": target, "min": lower, "max": upper}
-
-
-def _chapter_count_range_text(chapter_count_range: dict[str, int | None]) -> str:
-    lower = int(chapter_count_range.get("min") or 1)
-    upper = chapter_count_range.get("max")
-    if upper is None:
-        return f"{lower} 章及以上"
-    return f"{lower} 到 {int(upper)} 章"
-
-
-def _is_style_remix(spec: dict[str, Any]) -> bool:
-    return str(spec.get("creative_mode") or spec.get("mode") or "").strip() == "style_remix"
+from app.graph.state import WorkflowState
 
 
 def _trace_round_count(trace: list[dict[str, Any]] | None) -> int:
@@ -322,554 +163,99 @@ def build_graph(
         return revision_count >= max(policy.get_max_auto_revisions(review_type), 0)
 
     def _interrupt_outline_review(state: WorkflowState):
-        return interrupt(
-            {
-                "type": "outline_review",
-                "version": "v1",
-                "summary": "请确认大纲是否可以进入正文起草。",
-                "story_plan": state["story_plan"],
-                "risk_flags": [
-                    "demo 版本，大纲以稳定展示工作流为优先。",
-                    "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
-                ],
-                "revision_count": state.get("outline_revision_count", 0),
-            }
-        )
+        return interrupt_outline_review(state)
 
     def _interrupt_chapter_pair_review(state: WorkflowState):
-        return interrupt(
-            {
-                "type": "chapter_pair_review",
-                "version": "v1",
-                "summary": "请审核本批章节是否符合大纲要求。",
-                "story_plan": state.get("story_plan"),
-                "batch_index": state.get("batch_index", 0),
-                "chapter_pair": state.get("current_chapter_pair", []),
-                "completed_count": state.get("completed_count", 0),
-                "total_chapters": state.get("total_chapters", 0),
-                "chapter_pair_revision_count": state.get("chapter_pair_revision_count", 0),
-            }
-        )
+        return interrupt_chapter_pair_review(state)
 
     def _interrupt_verification_review(state: WorkflowState):
-        return interrupt(
-            {
-                "type": "verification_review",
-                "version": "v1",
-                "summary": "请审核全文一致性验证报告。",
-                "story_plan": state.get("story_plan"),
-                "verification_report": state.get("verification_report", {}),
-                "verification_revision_count": state.get("verification_revision_count", 0),
-            }
-        )
+        return interrupt_verification_review(state)
 
     # ─────────────────────────────────────────────
-    # 节点定义
+    # 节点定义（闭包包装，注入依赖）
     # ─────────────────────────────────────────────
 
     def normalize_request(state: WorkflowState) -> WorkflowState:
-        payload = state["input_payload"]
-        task_auto_review = bool(state.get("auto_review", auto_review))
-        policy = state.get("auto_review_policy") or auto_review_policy or {}
-        return {
-            "normalized_spec": build_normalized_spec(
-                payload,
-                novel_skill_service=novel_skill_service,
-                style_profile_service=style_profile_service,
-            ),
-            "batch_index": 0,
-            "chapter_pair_revision_count": 0,
-            "verification_revision_count": 0,
-            "auto_review": task_auto_review,
-            "auto_review_policy": policy,
-            "auto_review_trace": [],
-        }
+        return _normalize_request_node(
+            state,
+            auto_review=auto_review,
+            auto_review_policy=auto_review_policy,
+            novel_skill_service=novel_skill_service,
+            style_profile_service=style_profile_service,
+        )
 
     def prepare_outline_context(state: WorkflowState) -> WorkflowState:
-        references = _build_references(state)
-        if rag_service is not None:
-            references.extend(
-                rag_service.build_reference_materials(
-                    rag_service.search_for_story_outline(spec=state["normalized_spec"]),
-                    prefix="大纲RAG",
-                )
-            )
-        snapshot = active_context_manager.build_snapshot(
-            task_id=state["task_id"],
-            stage="planning",
-            instruction=_outline_instruction(state["normalized_spec"]),
-            model_profile=_resolve_model_profile(
-                active_model_catalog,
-                state["normalized_spec"].get("model_id"),
-            ),
-            references=references,
-            memory_items=[],
+        return _prepare_outline_context_node(
+            state,
+            context_manager=active_context_manager,
+            model_catalog=active_model_catalog,
+            rag_service=rag_service,
         )
-        return {
-            "outline_context_packet": snapshot.packet.model_dump(mode="json"),
-            "outline_context_snapshot": snapshot.model_dump(mode="json"),
-        }
 
     def plan_story(state: WorkflowState) -> WorkflowState:
-        story_plan = engine.build_story_plan(
-            state["normalized_spec"],
-            state.get("reference_text", ""),
-            context_packet=state.get("outline_context_packet"),
-            model=state["normalized_spec"].get("model_id"),
-        )
-        return {
-            "story_plan": _normalize_story_plan(story_plan.model_dump()),
-            "outline_revision_count": 0,
-        }
+        return _plan_story_node(state, engine=engine)
 
     def review_outline(state: WorkflowState) -> WorkflowState:
-        # 自动审核模式
-        if state.get("auto_review") and auto_review_executor_available:
-            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
-            force_manual = False
-            try:
-                story_plan_dict = state.get("story_plan") or {}
-                from app.domain.models import StoryPlan as SP
-                sp = SP.model_validate(story_plan_dict)
-                payload = ReviewPayload(
-                    type="outline_review",
-                    summary="请确认大纲是否可以进入正文起草。",
-                    story_plan=sp,
-                    risk_flags=[
-                        "demo 版本，大纲以稳定展示工作流为优先。",
-                        "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
-                    ],
-                    revision_count=state.get("outline_revision_count", 0),
-                )
-                # 注入额外上下文
-                payload._mode = state.get("normalized_spec", {}).get("mode", "")
-                payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
-                payload._genre = state.get("normalized_spec", {}).get("genre", "")
-                payload._style = state.get("normalized_spec", {}).get("style", "")
-                payload._requested_target_words = state.get("normalized_spec", {}).get("requested_target_words", "")
-                payload._target_words = state.get("normalized_spec", {}).get("target_words", "")
-
-                decision = _execute_auto_review(payload, policy)
-                agent_items = [a.model_dump() for a in decision.agent_trace]
-                prev_trace = list(state.get("auto_review_trace") or [])
-                new_entry = [
-                    _build_auto_review_summary(
-                        prev_trace=prev_trace,
-                        decision=decision,
-                        review_type="outline_review",
-                        revision_count=state.get("outline_revision_count", 0),
-                    ),
-                    *agent_items,
-                ]
-                trace = prev_trace + new_entry
-            except Exception as e:
-                decision = ReviewDecision(
-                    approved=False,
-                    comment=f"自动审核异常: {e}，请人工介入。",
-                    reasoning=str(e),
-                    auto_escalated=True,
-                    overall_score=0.0,
-                )
-                trace = list(state.get("auto_review_trace") or [])
-                force_manual = True
-            if force_manual or _should_interrupt_manual_review(
-                approved=decision.approved,
-                policy=policy,
-                revision_count=state.get("outline_revision_count", 0),
-                review_type="outline_review",
-            ):
-                review = _interrupt_outline_review(state)
-                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-                comment = review.get("comment", "") if isinstance(review, dict) else ""
-                return {
-                    "approved": approved,
-                    "review_comment": comment,
-                    "auto_review_trace": trace,
-                }
-            return {
-                "approved": decision.approved,
-                "review_comment": decision.comment,
-                "auto_review_trace": trace,
-            }
-        # 人工审核模式（保持现有逻辑）
-        review = _interrupt_outline_review(state)
-        approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-        comment = review.get("comment", "") if isinstance(review, dict) else ""
-        return {"approved": approved, "review_comment": comment}
+        return _review_outline_node(
+            state,
+            auto_review_executor_available=auto_review_executor_available,
+            execute_auto_review=_execute_auto_review,
+            should_interrupt_manual_review=_should_interrupt_manual_review,
+            interrupt_outline_review=_interrupt_outline_review,
+            build_auto_review_summary=_build_auto_review_summary,
+        )
 
     def revise_outline(state: WorkflowState) -> WorkflowState:
-        revision_count = state.get("outline_revision_count", 0) + 1
-        if revision_count >= MAX_OUTLINE_REVISIONS:
-            # 超过上限，自动放行
-            return {"approved": True, "review_comment": state.get("review_comment", "")}
-
-        story_plan = engine.build_story_plan(
-            state["normalized_spec"],
-            state.get("reference_text", ""),
-            context_packet=state.get("outline_context_packet"),
-            model=state["normalized_spec"].get("model_id"),
-            revision_comment=state.get("review_comment", ""),
-            original_plan=state.get("story_plan"),
-        )
-        return {
-            "story_plan": _normalize_story_plan(story_plan.model_dump()),
-            "outline_revision_count": revision_count,
-        }
+        return _revise_outline_node(state, engine=engine)
 
     def prepare_chapter_pair_context(state: WorkflowState) -> WorkflowState:
-        batch_index = state.get("batch_index", 0)
-        story_plan = _normalize_story_plan(state.get("story_plan") or {})
-        total_chapters = _planned_chapter_count(story_plan)
-        completed = state.get("completed_chapters") or []
-        completed_count = len(completed)
-        batch_size = _chapter_batch_size(
-            state["normalized_spec"],
-            completed_count=completed_count,
-            total_chapters=total_chapters,
+        return _prepare_chapter_pair_context_node(
+            state,
+            context_manager=active_context_manager,
+            model_catalog=active_model_catalog,
+            rag_service=rag_service,
         )
-        references = _build_references(state)
-        if rag_service is not None:
-            try:
-                chapter_result = rag_service.search_for_story_chapter(
-                    spec=state["normalized_spec"],
-                    story_plan=state.get("story_plan"),
-                    batch_index=batch_index,
-                    batch_size=batch_size,
-                    completed_chapters=completed,
-                )
-            except TypeError:
-                chapter_result = rag_service.search_for_story_chapter(
-                    spec=state["normalized_spec"],
-                    story_plan=state.get("story_plan"),
-                    batch_index=batch_index,
-                    completed_chapters=completed,
-                )
-            references.extend(
-                rag_service.build_reference_materials(
-                    chapter_result,
-                    prefix="章节RAG",
-                )
-            )
-
-        snapshot = active_context_manager.build_snapshot(
-            task_id=state["task_id"],
-            stage="drafting",
-            instruction=_chapter_pair_instruction(state["normalized_spec"], state.get("story_plan")),
-            model_profile=_resolve_model_profile(
-                active_model_catalog,
-                state["normalized_spec"].get("model_id"),
-            ),
-            references=references,
-            memory_items=_chapter_pair_memory_items(state),
-        )
-        return {
-            "story_plan": story_plan,
-            "chapter_pair_context_packet": snapshot.packet.model_dump(mode="json"),
-            "total_chapters": total_chapters,
-            "completed_count": completed_count,
-            "batch_index": batch_index,
-            "current_batch_size": batch_size,
-        }
 
     def draft_chapter_pair(state: WorkflowState) -> WorkflowState:
-        batch_index = state.get("batch_index", 0)
-        completed_chapters = state.get("completed_chapters") or []
-        chapter_pair = engine.generate_chapter_pair(
-            state["normalized_spec"],
-            state.get("story_plan") or {},
-            batch_index,
-            completed_chapters,
-            state.get("reference_text", ""),
-            context_packet=state.get("chapter_pair_context_packet"),
-            model=state["normalized_spec"].get("model_id"),
-            progress_callback=getattr(engine, "progress_callback", None),
-        )
-        return {
-            "current_chapter_pair": [ch.model_dump() for ch in chapter_pair],
-            "chapter_pair_revision_count": 0,
-        }
+        return _draft_chapter_pair_node(state, engine=engine)
 
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
-        # 自动审核模式
-        if state.get("auto_review") and auto_review_executor_available:
-            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
-            force_manual = False
-            try:
-                story_plan_dict = state.get("story_plan")
-                sp = None
-                if story_plan_dict:
-                    from app.domain.models import StoryPlan as SP
-                    sp = SP.model_validate(story_plan_dict)
-                chapters = state.get("current_chapter_pair") or []
-                payload = ReviewPayload(
-                    type="chapter_pair_review",
-                    summary="请审核本批章节是否符合大纲要求。",
-                    story_plan=sp,
-                    batch_index=state.get("batch_index", 0),
-                    chapter_pair=chapters,
-                    completed_count=state.get("completed_count", 0),
-                    total_chapters=state.get("total_chapters", 0),
-                    chapter_pair_revision_count=state.get("chapter_pair_revision_count", 0),
-                )
-                payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
-                payload._completed_summaries = [
-                    f"{ch.get('title', '')}:{ch.get('summary', '')}"
-                    for ch in (state.get("completed_chapters") or [])
-                ]
-                decision = _execute_auto_review(payload, policy)
-                agent_items = [a.model_dump() for a in decision.agent_trace]
-                prev_trace = list(state.get("auto_review_trace") or [])
-                new_entry = [
-                    _build_auto_review_summary(
-                        prev_trace=prev_trace,
-                        decision=decision,
-                        review_type="chapter_pair_review",
-                        revision_count=state.get("chapter_pair_revision_count", 0),
-                        batch_index=state.get("batch_index", 0),
-                    ),
-                    *agent_items,
-                ]
-                trace = prev_trace + new_entry
-            except Exception as e:
-                decision = ReviewDecision(
-                    approved=False,
-                    comment=f"自动审核异常: {e}，请人工介入。",
-                    reasoning=str(e),
-                    auto_escalated=True,
-                    overall_score=0.0,
-                )
-                trace = list(state.get("auto_review_trace") or [])
-                force_manual = True
-            if force_manual or _should_interrupt_manual_review(
-                approved=decision.approved,
-                policy=policy,
-                revision_count=state.get("chapter_pair_revision_count", 0),
-                review_type="chapter_pair_review",
-            ):
-                review = _interrupt_chapter_pair_review(state)
-                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-                comment = review.get("comment", "") if isinstance(review, dict) else ""
-                return {
-                    "approved": approved,
-                    "review_comment": comment,
-                    "auto_review_trace": trace,
-                }
-            return {
-                "approved": decision.approved,
-                "review_comment": decision.comment,
-                "auto_review_trace": trace,
-            }
-        # 人工审核模式
-        review = _interrupt_chapter_pair_review(state)
-        approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-        comment = review.get("comment", "") if isinstance(review, dict) else ""
-        return {"approved": approved, "review_comment": comment}
+        return _review_chapter_pair_node(
+            state,
+            auto_review_executor_available=auto_review_executor_available,
+            execute_auto_review=_execute_auto_review,
+            should_interrupt_manual_review=_should_interrupt_manual_review,
+            interrupt_chapter_pair_review=_interrupt_chapter_pair_review,
+            build_auto_review_summary=_build_auto_review_summary,
+        )
 
     def revise_chapter_pair(state: WorkflowState) -> WorkflowState:
-        revision_count = state.get("chapter_pair_revision_count", 0) + 1
-        if revision_count >= MAX_CHAPTER_PAIR_REVISIONS:
-            return {"approved": True, "review_comment": state.get("review_comment", "")}
-
-        revised_pair = engine.revise_chapter_pair(
-            current_pair=state.get("current_chapter_pair") or [],
-            revision_comment=state.get("review_comment", ""),
-            spec=state["normalized_spec"],
-            story_plan=state.get("story_plan") or {},
-            completed_chapters=state.get("completed_chapters") or [],
-            reference_text=state.get("reference_text", ""),
-            context_packet=state.get("chapter_pair_context_packet"),
-            model=state["normalized_spec"].get("model_id"),
-        )
-        return {
-            "current_chapter_pair": [ch.model_dump() for ch in revised_pair],
-            "chapter_pair_revision_count": revision_count,
-        }
+        return _revise_chapter_pair_node(state, engine=engine)
 
     def accumulate_chapters(state: WorkflowState) -> WorkflowState:
-        current_pair = state.get("current_chapter_pair") or []
-        completed_chapters = list(state.get("completed_chapters") or [])
-        completed_chapters.extend(current_pair)
-        total_chapters = _planned_chapter_count(state.get("story_plan") or {})
-        batch_index = state.get("batch_index", 0) + len(current_pair)
-        # 安全推进：如果 current_pair 为空则 batch_index 不增加，避免无限循环
-        if batch_index >= total_chapters:
-            batch_index = total_chapters
-        return {
-            "completed_chapters": completed_chapters,
-            "batch_index": batch_index,
-        }
+        return _accumulate_chapters_node(state)
 
     def verify_full_story(state: WorkflowState) -> WorkflowState:
-        report = engine.verify_full_story(
-            completed_chapters=state.get("completed_chapters") or [],
-            story_plan=state.get("story_plan") or {},
-            spec=state["normalized_spec"],
-            reference_text=state.get("reference_text", ""),
-            context_packet=None,
-            model=state["normalized_spec"].get("model_id"),
-        )
-        return {"verification_report": report}
+        return _verify_full_story_node(state, engine=engine)
 
     def review_verification(state: WorkflowState) -> WorkflowState:
-        # 自动审核模式
-        if state.get("auto_review") and auto_review_executor_available:
-            policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
-            force_manual = False
-            try:
-                story_plan_dict = state.get("story_plan")
-                sp = None
-                if story_plan_dict:
-                    from app.domain.models import StoryPlan as SP
-                    sp = SP.model_validate(story_plan_dict)
-                payload = ReviewPayload(
-                    type="verification_review",
-                    summary="请审核全文一致性验证报告。",
-                    story_plan=sp,
-                    verification_report=state.get("verification_report", {}),
-                    verification_revision_count=state.get("verification_revision_count", 0),
-                )
-                decision = _execute_auto_review(payload, policy)
-                agent_items = [a.model_dump() for a in decision.agent_trace]
-                prev_trace = list(state.get("auto_review_trace") or [])
-                new_entry = [
-                    _build_auto_review_summary(
-                        prev_trace=prev_trace,
-                        decision=decision,
-                        review_type="verification_review",
-                        revision_count=state.get("verification_revision_count", 0),
-                    ),
-                    *agent_items,
-                ]
-                trace = prev_trace + new_entry
-            except Exception as e:
-                decision = ReviewDecision(
-                    approved=False,
-                    comment=f"自动审核异常: {e}，请人工介入。",
-                    reasoning=str(e),
-                    auto_escalated=True,
-                    overall_score=0.0,
-                )
-                trace = list(state.get("auto_review_trace") or [])
-                force_manual = True
-            if force_manual or _should_interrupt_manual_review(
-                approved=decision.approved,
-                policy=policy,
-                revision_count=state.get("verification_revision_count", 0),
-                review_type="verification_review",
-            ):
-                review = _interrupt_verification_review(state)
-                approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-                comment = review.get("comment", "") if isinstance(review, dict) else ""
-                return {
-                    "approved": approved,
-                    "review_comment": comment,
-                    "auto_review_trace": trace,
-                }
-            return {
-                "approved": decision.approved,
-                "review_comment": decision.comment,
-                "auto_review_trace": trace,
-            }
-        # 人工审核模式
-        review = _interrupt_verification_review(state)
-        approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
-        comment = review.get("comment", "") if isinstance(review, dict) else ""
-        return {"approved": approved, "review_comment": comment}
+        return _review_verification_node(
+            state,
+            auto_review_executor_available=auto_review_executor_available,
+            execute_auto_review=_execute_auto_review,
+            should_interrupt_manual_review=_should_interrupt_manual_review,
+            interrupt_verification_review=_interrupt_verification_review,
+            build_auto_review_summary=_build_auto_review_summary,
+        )
 
     def fix_verified_issues(state: WorkflowState) -> WorkflowState:
-        revision_count = state.get("verification_revision_count", 0) + 1
-        if revision_count >= MAX_VERIFICATION_REVISIONS:
-            return {"approved": True, "review_comment": state.get("review_comment", "")}
-
-        fixed = engine.fix_verified_issues(
-            completed_chapters=state.get("completed_chapters") or [],
-            verification_report=state.get("verification_report") or {},
-            review_comment=state.get("review_comment", ""),
-            story_plan=state.get("story_plan") or {},
-            spec=state["normalized_spec"],
-            reference_text=state.get("reference_text", ""),
-            context_packet=None,
-            model=state["normalized_spec"].get("model_id"),
-        )
-        return {
-            "completed_chapters": fixed,
-            "verification_revision_count": revision_count,
-        }
+        return _fix_verified_issues_node(state, engine=engine)
 
     def assemble_result(state: WorkflowState) -> WorkflowState:
-        completed_chapters = state.get("completed_chapters") or []
-        story_plan = state.get("story_plan") or {}
-        spec = state["normalized_spec"]
-
-        title = story_plan.get("working_title", "未命名")
-        logline = story_plan.get("logline", "")
-
-        if spec.get("mode") == "short_story" and len(completed_chapters) <= 3:
-            body = "\n\n".join(str(ch.get("content", "")) for ch in completed_chapters)
-        else:
-            body = "\n\n".join(
-                f"## {ch.get('title', '')}\n{ch.get('content', '')}" for ch in completed_chapters
-            )
-
-        draft_result = {
-            "title": title,
-            "summary": logline,
-            "body": body,
-            "chapters": [
-                {
-                    "number": ch.get("number", i + 1),
-                    "title": ch.get("title", f"第{i + 1}章"),
-                    "summary": ch.get("summary", ""),
-                    "content": ch.get("content", ""),
-                }
-                for i, ch in enumerate(completed_chapters)
-            ],
-        }
-        return {"draft_result": draft_result}
+        return _assemble_result_node(state)
 
     def cancel_task(state: WorkflowState) -> WorkflowState:
-        return {"cancelled": True}
-
-    # ─────────────────────────────────────────────
-    # 路由函数
-    # ─────────────────────────────────────────────
-
-    def route_after_outline_review(state: WorkflowState) -> str:
-        if state.get("approved"):
-            return "prepare_chapter_pair_context"
-        # 达到最大修订次数，强制通过，防止死循环
-        if state.get("outline_revision_count", 0) >= MAX_OUTLINE_REVISIONS:
-            return "prepare_chapter_pair_context"
-        return "revise_outline"
-
-    def route_after_revise_outline(state: WorkflowState) -> str:
-        return "review_outline"
-
-    def route_after_chapter_pair_review(state: WorkflowState) -> str:
-        if state.get("approved"):
-            return "accumulate_chapters"
-        # 达到最大修订次数，强制通过，防止死循环
-        if state.get("chapter_pair_revision_count", 0) >= MAX_CHAPTER_PAIR_REVISIONS:
-            return "accumulate_chapters"
-        return "revise_chapter_pair"
-
-    def route_after_accumulate(state: WorkflowState) -> WorkflowState:
-        batch_index = state.get("batch_index", 0)
-        total_chapters = state.get("total_chapters", 0)
-        if batch_index < total_chapters:
-            return "prepare_chapter_pair_context"
-        return "verify_full_story"
-
-    def route_after_verification_review(state: WorkflowState) -> str:
-        if state.get("approved"):
-            return "assemble_result"
-        # 达到最大修订次数，强制通过，防止死循环
-        if state.get("verification_revision_count", 0) >= MAX_VERIFICATION_REVISIONS:
-            return "assemble_result"
-        return "fix_verified_issues"
-
-    def route_after_fix_issues(state: WorkflowState) -> str:
-        return "review_verification"
+        return _cancel_task_node(state)
 
     # ─────────────────────────────────────────────
     # 构建图
@@ -945,159 +331,3 @@ def build_graph(
     graph.add_edge("cancel_task", END)
 
     return graph.compile(checkpointer=_create_checkpointer(checkpoint_db_path))
-
-
-# ─────────────────────────────────────────────
-# 辅助函数
-# ─────────────────────────────────────────────
-
-
-def _resolve_model_profile(
-    model_catalog: ModelCatalogService | None,
-    model_id: str | None,
-) -> ModelContextProfile:
-    fallback_model_id = (model_id or "").strip() or "gpt-5.4"
-    if model_catalog is None:
-        return ModelContextProfile(
-            model_id=fallback_model_id,
-            provider="openai_compatible",
-            max_input_tokens=128000,
-            max_output_tokens=8192,
-            reserved_output_tokens=2048,
-        )
-    profile = model_catalog.get_model_profile(fallback_model_id)
-    capabilities = profile.get("capabilities") if isinstance(profile.get("capabilities"), dict) else {}
-    context_window = capabilities.get("context_window") if isinstance(capabilities.get("context_window"), dict) else {}
-    return ModelContextProfile(
-        model_id=str(profile.get("id") or fallback_model_id),
-        provider=str(profile.get("provider") or "openai_compatible"),
-        max_input_tokens=int(context_window.get("max_input_tokens") or 128000),
-        max_output_tokens=int(context_window.get("max_output_tokens") or 8192),
-        reserved_output_tokens=min(
-            int(context_window.get("max_output_tokens") or 2048),
-            int(context_window.get("max_input_tokens") or 128000),
-        ),
-        supports_runtime_cache=bool(
-            (capabilities.get("cache") or {}).get("runtime_context_cache", True)
-            if isinstance(capabilities.get("cache"), dict)
-            else True
-        ),
-        profile_version=str((profile.get("metadata") or {}).get("profile_version") or "v1")
-        if isinstance(profile.get("metadata"), dict)
-        else "v1",
-    )
-
-
-def _build_references(state: WorkflowState) -> list[ReferenceMaterial]:
-    source_assets = state.get("source_assets") or []
-    references: list[ReferenceMaterial] = []
-    for index, asset in enumerate(source_assets):
-        if not isinstance(asset, dict):
-            continue
-        content = str(asset.get("content") or "").strip()
-        if not content:
-            continue
-        references.append(
-            ReferenceMaterial(
-                source_id=str(asset.get("id") or f"source-{index + 1}"),
-                title=str(asset.get("filename") or f"参考素材 {index + 1}"),
-                content=content,
-                priority=max(100 - index, 1),
-                metadata={"media_type": asset.get("media_type")},
-            )
-        )
-    if references:
-        return references
-    reference_text = str(state.get("reference_text") or "").strip()
-    if not reference_text:
-        return []
-    return [
-        ReferenceMaterial(
-            source_id="reference-text",
-            title="参考素材",
-            content=reference_text,
-            priority=50,
-        )
-    ]
-
-
-def _outline_instruction(spec: dict[str, Any]) -> str:
-    return (
-        f"模式：{spec.get('mode', '')}\n"
-        f"创作类型：{spec.get('creative_mode', '')}\n"
-        f"篇幅规模：{spec.get('novel_size', '')}\n"
-        f"题材：{spec.get('genre', '')}\n"
-        f"风格：{spec.get('style', '')}\n"
-        f"风格实例：{spec.get('style_profile_name', '')}\n"
-        f"风格约束：{spec.get('style_guidance', '')}\n"
-        f"单章字数下限：{spec.get('chapter_word_min', spec.get('target_words', ''))}\n"
-        f"单章字数浮动上限：{spec.get('chapter_word_max', spec.get('target_words', ''))}\n"
-        f"章节范围：{spec.get('chapter_count_range_text', '')}\n"
-        f"受众：{spec.get('audience', '')}\n"
-        f"禁忌：{spec.get('banned', '')}\n"
-        f"标题倾向：{spec.get('title_hint', '')}\n"
-        f"创作要求：{spec.get('prompt', '')}"
-    ).strip()
-
-
-def _chapter_pair_instruction(spec: dict[str, Any], story_plan: dict[str, Any] | None) -> str:
-    title = ""
-    logline = ""
-    if isinstance(story_plan, dict):
-        title = str(story_plan.get("working_title") or "")
-        logline = str(story_plan.get("logline") or "")
-    return (
-        f"模式：{spec.get('mode', '')}\n"
-        f"创作类型：{spec.get('creative_mode', '')}\n"
-        f"篇幅规模：{spec.get('novel_size', '')}\n"
-        f"作品标题：{title}\n"
-        f"一句话梗概：{logline}\n"
-        f"单章字数下限：{spec.get('chapter_word_min', spec.get('target_words', ''))}\n"
-        f"章节范围：{spec.get('chapter_count_range_text', '')}\n"
-        f"风格要求：{spec.get('style', '')}\n"
-        f"风格实例：{spec.get('style_profile_name', '')}\n"
-        f"风格约束：{spec.get('style_guidance', '')}\n"
-        f"禁忌要求：{spec.get('banned', '')}\n"
-        f"正文任务：基于既定大纲连续起草小说正文，首批可生成两章，后续批次按单章续写。"
-    ).strip()
-
-def _planned_chapter_count(story_plan: dict[str, Any] | None) -> int:
-    if not isinstance(story_plan, dict):
-        return 0
-    chapter_plan = story_plan.get("chapter_plan")
-    if isinstance(chapter_plan, list):
-        return len(chapter_plan)
-    planned = int(story_plan.get("planned_chapter_count") or 0)
-    if planned > 0:
-        return planned
-    return 0
-
-
-def _normalize_story_plan(story_plan: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(story_plan, dict):
-        return {}
-    normalized = dict(story_plan)
-    chapter_plan = normalized.get("chapter_plan")
-    if isinstance(chapter_plan, list):
-        normalized["planned_chapter_count"] = len(chapter_plan)
-    else:
-        normalized["planned_chapter_count"] = _positive_int(normalized.get("planned_chapter_count"))
-    return normalized
-
-
-def _chapter_pair_memory_items(state: WorkflowState) -> list[str]:
-    story_plan = state.get("story_plan")
-    if not isinstance(story_plan, dict):
-        return []
-    memory_items: list[str] = []
-    for note in story_plan.get("world_notes") or []:
-        memory_items.append(f"世界观：{note}")
-    for note in story_plan.get("character_notes") or []:
-        memory_items.append(f"人物：{note}")
-    for chapter in story_plan.get("chapter_plan") or []:
-        if not isinstance(chapter, dict):
-            continue
-        memory_items.append(
-            f"章节计划：第{chapter.get('number')}章 {chapter.get('title')} - {chapter.get('goal')}"
-        )
-    return memory_items

@@ -121,6 +121,40 @@ class BaseAgent:
                 full_content += chunk.content
         return full_content
 
+    async def _call_llm_stream_async(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        stage: str = "",
+        unit_id: str = "",
+    ) -> str:
+        """
+        异步流式调用 LLM，返回完整文本内容。
+
+        可选通过 progress_callback 透传思考链事件。
+        """
+        gc = self._require_gateway_client()
+        full_content = ""
+        full_reasoning = ""
+        async for chunk in gc.complete_stream(messages, model=model):
+            if chunk.reasoning_content and progress_callback:
+                full_reasoning += chunk.reasoning_content
+                progress_callback({
+                    "event_type": "model.thinking",
+                    "stage": stage,
+                    "unit_id": unit_id,
+                    "message": "模型思考中...",
+                    "payload": {
+                        "reasoning_chunk": chunk.reasoning_content,
+                        "accumulated_length": len(full_reasoning),
+                    },
+                })
+            if chunk.content:
+                full_content += chunk.content
+        return full_content
+
     # ── JSON 解析 ──────────────────────────────
 
     def _strip_and_parse_json(self, raw: str) -> dict[str, Any]:

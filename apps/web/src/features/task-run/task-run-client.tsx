@@ -42,7 +42,6 @@ import {
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
 } from "@mui/icons-material";
-import { Collapse, CircularProgress, Tooltip } from "@mui/material";
 import { continueTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
 import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import {
@@ -585,6 +584,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     let disposed = false;
     let source: EventSource | null = null;
     const candidatePaths = streamPathCandidates(resolvedTaskId);
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT = 3;
+    const RECONNECT_DELAY = 2000;
 
     const tryConnect = (index: number) => {
       if (disposed || index >= candidatePaths.length) {
@@ -603,6 +605,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
       source.onopen = () => {
         opened = true;
+        reconnectAttempts = 0;
         setStreamState("事件流已连接");
       };
 
@@ -620,6 +623,16 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         }
         if (!opened) {
           tryConnect(index + 1);
+          return;
+        }
+        if (reconnectAttempts < MAX_RECONNECT) {
+          reconnectAttempts += 1;
+          setStreamState(`事件流已断开，${RECONNECT_DELAY / 1000}秒后第${reconnectAttempts}次重连...`);
+          setTimeout(() => {
+            if (!disposed) {
+              tryConnect(0);
+            }
+          }, RECONNECT_DELAY);
           return;
         }
         setStreamState("事件流已断开，当前使用手动刷新");

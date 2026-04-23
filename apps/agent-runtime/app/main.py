@@ -13,6 +13,7 @@ from app.application.task_service import TaskService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.novel_skills import NovelSkillService
+from app.observability import TracingMiddleware
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
 from app.settings.config import get_settings
 from app.style_profiles import StyleProfileService
@@ -68,7 +69,10 @@ task_service = TaskService(
 
 app = FastAPI(title=settings.app_name)
 
-# 缓存控制中间件（必须在 CORS 之后）
+# 请求追踪中间件（放在最外层，确保捕获所有请求）
+app.add_middleware(TracingMiddleware)
+
+# 缓存控制中间件
 app.add_middleware(CacheControlMiddleware)
 
 app.add_middleware(

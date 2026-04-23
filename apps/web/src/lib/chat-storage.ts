@@ -57,14 +57,17 @@ function writeAllConversations(data: Record<string, StoredConversation>): void {
   if (json.length > STORAGE_WARNING_BYTES) {
     // 超过 4MB 时弹出提示
     // eslint-disable-next-line no-alert
-    window.alert("聊天历史数据已超过 4MB，建议删除部分旧会话以释放空间。");
+    console.warn("聊天历史数据已超过 4MB，建议删除部分旧会话以释放空间。");
   }
   localStorage.setItem(STORAGE_KEY, json);
 }
 
 /** 生成唯一会话 ID */
 function generateId(): string {
-  return `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const suffix = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID().replace(/-/g, "").slice(0, 8)
+    : Math.random().toString(36).slice(2, 8);
+  return `conv_${Date.now()}_${suffix}`;
 }
 
 // ── 对外接口 ──

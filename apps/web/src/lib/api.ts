@@ -20,18 +20,43 @@ import {
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...(init?.headers ?? {}),
-    },
-    cache: "no-store",
-  });
+  const url = `${API_BASE}${path}`;
+  const makeRequest = async (): Promise<Response> => {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        ...(init?.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+        ...(init?.headers ?? {}),
+      },
+      cache: "no-store",
+      signal: AbortSignal.timeout(30000),
+    });
+    return response;
+  };
+
+  let response: Response;
+  try {
+    response = await makeRequest();
+  } catch (err) {
+    console.warn(`请求失败，准备重试: ${url}`, err instanceof Error ? err.message : String(err));
+    try {
+      response = await makeRequest();
+    } catch (retryErr) {
+      console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
+      throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+    }
+  }
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || "请求失败");
+    let errorMessage = "请求失败";
+    try {
+      const data = await response.json();
+      errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+    } catch {
+      const text = await response.text();
+      errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
+    }
+    throw new Error(errorMessage);
   }
 
   return response.json() as Promise<T>;
@@ -279,8 +304,16 @@ export async function streamChat(
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    onError(text || "流式请求失败");
+    let errorMessage = "流式请求失败";
+    try {
+      const data = await response.json();
+      errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+    } catch {
+      const text = await response.text();
+      errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
+    }
+    console.error("streamChat 请求失败:", errorMessage);
+    onError(errorMessage);
     return;
   }
 
@@ -306,10 +339,10 @@ export async function streamChat(
         const trimmed = line.trim();
         if (!trimmed) continue;
         if (trimmed.startsWith("event:")) {
-          // 检查错误事件类型
           const eventType = trimmed.slice(6).trim();
           if (eventType === "chat.error") {
-            // 下一个 data: 行包含错误信息
+            // 下一个 data: 行包含错误信息，继续读取下一行
+            continue;
           }
           continue;
         }
@@ -318,7 +351,9 @@ export async function streamChat(
           try {
             const data = JSON.parse(jsonStr);
             if (data.error) {
-              onError(typeof data.error === "string" ? data.error : JSON.stringify(data.error));
+              const errorMsg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
+              console.error("streamChat 收到错误事件:", errorMsg);
+              onError(errorMsg);
               return;
             }
             if (data.content !== undefined || data.reasoning_content !== undefined) {
@@ -339,6 +374,8 @@ export async function streamChat(
 
     onDone({ model: model ?? "" });
   } catch (err) {
-    onError(err instanceof Error ? err.message : "流式读取中断");
+    const msg = err instanceof Error ? err.message : "流式读取中断";
+    console.error("streamChat 流式读取异常:", msg);
+    onError(msg);
   }
 }

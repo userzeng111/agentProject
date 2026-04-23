@@ -8,7 +8,7 @@ import unittest
 
 from langgraph.types import Command
 
-from app.domain.models import StoryPlan
+from app.domain.models import ChapterPlan, StoryPlan
 from app.graph.main_graph import build_graph, build_normalized_spec
 from tests.fakes import FakeContextManager, FakeStoryEngine
 

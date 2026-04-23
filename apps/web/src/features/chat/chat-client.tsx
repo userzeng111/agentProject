@@ -144,7 +144,11 @@ export function ChatClient() {
   }, [messages, scrollToBottom]);
 
   // ── 初始化：从 localStorage 恢复 ──
+  const hasInitializedRef = useRef(false);
   useEffect(() => {
+    if (hasInitializedRef.current) return;
+    hasInitializedRef.current = true;
+
     // 刷新会话列表
     const refreshList = () => setConversationList(listConversations());
     refreshList();
@@ -315,8 +319,7 @@ export function ChatClient() {
       isThinking: true,
     };
 
-    const newMessages = [...messages, userMsg, assistantMsg];
-    setMessages(newMessages);
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
     setLoading(true);
     streamingRef.current = true;
@@ -648,7 +651,7 @@ export function ChatClient() {
 
           {messages.map((msg, idx) => (
             <Box
-              key={idx}
+              key={`${msg.role}-${msg.content.slice(0, 20)}-${idx}`}
               sx={{
                 display: "flex",
                 justifyContent: msg.role === "user" ? "flex-end" : "flex-start",

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -59,7 +60,7 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
         return {"status": "ok", "module": "dynamic_agent_orchestration"}
 
     @router.post("/orchestrate", response_model=DynamicOrchestrationResponse)
-    def orchestrate(request: DynamicOrchestrationRequest) -> DynamicOrchestrationResponse:
+    async def orchestrate(request: DynamicOrchestrationRequest) -> DynamicOrchestrationResponse:
         """
         执行动态 Agent 编排。
 
@@ -83,7 +84,9 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
                 max_workers=request.max_workers,
             )
 
-            result: OrchestrationResult = orchestrator.execute(
+            # 使用 asyncio.to_thread 避免同步编排器阻塞事件循环
+            result: OrchestrationResult = await asyncio.to_thread(
+                orchestrator.execute,
                 task_type=request.task_type,
                 task_description=request.task_description,
                 task_context=request.task_context,
@@ -151,7 +154,7 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
             raise HTTPException(status_code=500, detail=f"编排执行异常: {exc}") from exc
 
     @router.post("/orchestrate/compare")
-    def orchestrate_compare(request: DynamicOrchestrationRequest) -> dict[str, Any]:
+    async def orchestrate_compare(request: DynamicOrchestrationRequest) -> dict[str, Any]:
         """
         对比模式：同时运行动态编排和现有硬编码审核，返回对比结果。
 
@@ -168,7 +171,8 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
                 max_workers=request.max_workers,
             )
 
-            dynamic_result = orchestrator.execute(
+            dynamic_result = await asyncio.to_thread(
+                orchestrator.execute,
                 task_type=request.task_type,
                 task_description=request.task_description,
                 task_context=request.task_context,
