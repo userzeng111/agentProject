@@ -1102,13 +1102,16 @@ class TaskService:
             return None
 
         target_stage_label = _STAGE_LABELS.get(target_stage, target_stage)
-        if target_stage == "waiting_chapter_generation" and target_chapter_numbers:
-            if len(target_chapter_numbers) == 1:
-                target_stage_label = f"恢复到第 {target_chapter_numbers[0]} 章待生成"
-            else:
-                target_stage_label = (
-                    f"恢复到第 {target_chapter_numbers[0]}-{target_chapter_numbers[-1]} 章批次待生成"
-                )
+        if target_stage == "waiting_chapter_generation":
+            if target_chapter_numbers:
+                if len(target_chapter_numbers) == 1:
+                    target_stage_label = f"恢复到第 {target_chapter_numbers[0]} 章待生成"
+                else:
+                    target_stage_label = (
+                        f"恢复到第 {target_chapter_numbers[0]}-{target_chapter_numbers[-1]} 章批次待生成"
+                    )
+            elif target_chapter_number is not None:
+                target_stage_label = f"恢复到第 {target_chapter_number} 章待生成"
         elif target_stage == TaskStatus.WAITING_CHAPTER_REVIEW.value and target_chapter_numbers:
             if len(target_chapter_numbers) == 1:
                 target_stage_label = f"恢复到第 {target_chapter_numbers[0]} 章待审核"
@@ -1641,7 +1644,11 @@ class TaskService:
         for event in reversed(task.events):
             payload = event.payload if isinstance(event.payload, dict) else {}
             chapter_number = payload.get("chapter_number")
-            if isinstance(chapter_number, int) and chapter_number > 0:
+            if (
+                isinstance(chapter_number, int)
+                and chapter_number > 0
+                and chapter_number >= int(default_value)
+            ):
                 return chapter_number
         return int(default_value)
 

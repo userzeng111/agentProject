@@ -41,6 +41,7 @@ def init_db(db_path: str | Path) -> sessionmaker[Session]:
     import app.storage.db_models  # noqa: F401
     Base.metadata.create_all(_engine)
     _ensure_tasks_index_columns(_engine)
+    _ensure_novel_project_columns(_engine)
 
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _session_factory
@@ -55,6 +56,23 @@ def _ensure_tasks_index_columns(engine) -> None:
         "creative_mode": "ALTER TABLE tasks_index ADD COLUMN creative_mode VARCHAR(32) DEFAULT ''",
         "novel_size": "ALTER TABLE tasks_index ADD COLUMN novel_size VARCHAR(16) DEFAULT ''",
         "chapter_word_min": "ALTER TABLE tasks_index ADD COLUMN chapter_word_min INTEGER DEFAULT 0",
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(text(ddl))
+
+
+def _ensure_novel_project_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "novel_project" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("novel_project")}
+    required_columns = {
+        "current_generating_chapter_number": (
+            "ALTER TABLE novel_project ADD COLUMN current_generating_chapter_number INTEGER"
+        ),
     }
     with engine.begin() as connection:
         for column_name, ddl in required_columns.items():

@@ -1,4 +1,5 @@
 import datetime
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,7 @@ from app.application.task_service import TaskService
 from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
+from app.storage.database import init_db
 from app.storage.task_store import TaskLogStore
 from app.storage.db_repository import create_batch, update_project_status
 
@@ -509,6 +511,151 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(stable_option.preview.target_chapter_number, 4)
         self.assertEqual(stable_option.preview.target_chapter_numbers, [4])
         self.assertFalse(stable_option.preview.reuse_existing_draft)
+
+    def test_workspace_recovery_preview_keeps_chapter_target_when_failed_batch_is_not_active(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇校园悬疑短篇",
+                model_id="gpt-5.4",
+                target_words=1600,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="旧校钟声",
+            logline="学生在深夜追查教学楼异响来源。",
+            world_notes=["旧教学楼夜间封闭。"],
+            character_notes=["主角是学生会干事。"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见钟声"},
+                {"number": 2, "title": "第二章", "goal": "排查旧楼"},
+                {"number": 3, "title": "第三章", "goal": "锁定线索"},
+                {"number": 4, "title": "第四章", "goal": "揭开真相"},
+            ],
+        )
+        task.status = TaskStatus.WAITING_MANUAL_ACTION
+        task.current_stage = "waiting_manual_action"
+        task.error_message = "继续创作失败：模型不可用。"
+        store.save(task)
+
+        service._ensure_novel_project_seeded(task)
+        batch = create_batch(
+            task.id,
+            continue_request_id="req-4",
+            requested_count=1,
+            effective_count=1,
+            actual_start_chapter=4,
+        )
+        from app.storage.db_repository import mark_batch_failed
+
+        mark_batch_failed(task.id, batch.batch_no)
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            completed_chapter_count=3,
+            next_chapter_number=4,
+            active_batch_no=None,
+            active_continue_request_id="",
+            blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+            current_generating_chapter_number=4,
+        )
+
+        workspace = service.get_workspace(task.id)
+
+        stable_option = next(item for item in (workspace.recovery_options or []) if item.action == "recover_to_stable")
+        assert stable_option.preview is not None
+        self.assertEqual(stable_option.preview.target_stage, "waiting_chapter_generation")
+        self.assertEqual(stable_option.preview.target_stage_label, "恢复到第 4 章待生成")
+        self.assertEqual(stable_option.preview.target_chapter_number, 4)
+
+    def test_current_generating_chapter_number_falls_back_to_requested_start_when_no_new_chapter_event(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇校园悬疑长篇",
+                model_id="gpt-5.4",
+                target_words=2000,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="旧校钟声",
+            logline="学生在深夜追查教学楼异响来源。",
+            world_notes=["旧教学楼夜间封闭。"],
+            character_notes=["主角是学生会干事。"],
+            planned_chapter_count=6,
+            chapter_plan=[
+                {"number": i, "title": f"第{i}章", "goal": f"推进{i}"} for i in range(1, 7)
+            ],
+        )
+        store.save(task)
+        service._ensure_novel_project_seeded(task)
+        store.append_event(
+            task.id,
+            stage="drafting",
+            message="上一批次开始生成第 3 章",
+            event_type="chapter.started",
+            payload={"chapter_number": 3},
+        )
+
+        self.assertEqual(service._current_generating_chapter_number_from_error(task.id, 4), 4)
+
+    def test_init_db_migrates_missing_current_generating_chapter_number_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "legacy.sqlite3"
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE novel_project (
+                        task_id VARCHAR(64) PRIMARY KEY,
+                        novel_title VARCHAR(512) DEFAULT '',
+                        creative_mode VARCHAR(32) DEFAULT '',
+                        novel_size VARCHAR(16) DEFAULT '',
+                        target_chapter_count INTEGER DEFAULT 0,
+                        chapter_count_min INTEGER DEFAULT 0,
+                        chapter_count_max INTEGER DEFAULT 0,
+                        planned_chapter_count INTEGER DEFAULT 0,
+                        chapter_word_min INTEGER DEFAULT 1800,
+                        chapter_word_max INTEGER DEFAULT 1800,
+                        default_batch_size INTEGER DEFAULT 3,
+                        completed_chapter_count INTEGER DEFAULT 0,
+                        next_chapter_number INTEGER DEFAULT 1,
+                        status VARCHAR(64) DEFAULT 'created',
+                        active_batch_no INTEGER,
+                        active_continue_request_id VARCHAR(128) DEFAULT '',
+                        blocked_from_status VARCHAR(64) DEFAULT '',
+                        last_checkpoint_stage VARCHAR(64) DEFAULT '',
+                        last_consistency_state VARCHAR(64) DEFAULT '',
+                        created_at DATETIME NOT NULL,
+                        updated_at DATETIME NOT NULL
+                    )
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            init_db(db_path)
+
+            verify_connection = sqlite3.connect(db_path)
+            try:
+                columns = {
+                    row[1]
+                    for row in verify_connection.execute("PRAGMA table_info('novel_project')")
+                }
+            finally:
+                verify_connection.close()
+
+            self.assertIn("current_generating_chapter_number", columns)
 
     def test_recover_task_rebuilds_corrupted_chapter_pair_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()
