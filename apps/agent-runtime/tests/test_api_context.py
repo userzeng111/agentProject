@@ -135,6 +135,15 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["last_action_kind"], "run")
         self.assertEqual(payload["request_preview"]["default_model_id"], "gpt-5.4")
         self.assertEqual(payload["request_preview"]["last_action_model_id"], "glm-5.1")
+        self.assertEqual(payload["allowed_actions"], [])
+        self.assertEqual(payload["recommended_action"], "")
+        self.assertEqual(payload["blocked_reason"], "")
+        self.assertFalse(payload["state_reconciled"])
+        self.assertEqual(payload["reconciliation_kind"], "")
+        self.assertEqual(payload["reconciliation_summary"], "")
+        self.assertEqual(len(payload["recovery_options"]), 2)
+        self.assertFalse(payload["recovery_options"][0]["available"])
+        self.assertFalse(payload["recovery_options"][1]["available"])
 
     def test_workspace_endpoint_returns_novel_progress_for_ready_batch_task(self) -> None:
         task = self.task_service.create_task(
@@ -423,20 +432,30 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         captured: dict[str, object] = {}
 
-        def fake_recover(task_id: str, force: bool = False, model_id: str | None = None):
+        def fake_recover(
+            task_id: str,
+            force: bool = False,
+            model_id: str | None = None,
+            recovery_mode: str = "recover_to_stable",
+        ):
             captured["task_id"] = task_id
             captured["force"] = force
             captured["model_id"] = model_id
+            captured["recovery_mode"] = recovery_mode
             return self.store.get(task_id)
 
         self.task_service.recover_task = fake_recover  # type: ignore[assignment]
 
-        response = self.client.post(f"/api/tasks/{task.id}/recover", json={"model_id": "gpt-5.4"})
+        response = self.client.post(
+            f"/api/tasks/{task.id}/recover",
+            json={"model_id": "gpt-5.4", "recovery_mode": "restart_from_input"},
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured["task_id"], task.id)
         self.assertEqual(captured["force"], True)
         self.assertEqual(captured["model_id"], "gpt-5.4")
+        self.assertEqual(captured["recovery_mode"], "restart_from_input")
 
     def test_result_and_archive_endpoints_expose_json_refs_and_sources(self) -> None:
         task = self.task_service.create_task(

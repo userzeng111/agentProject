@@ -173,6 +173,35 @@ class TaskActionRequest(BaseModel):
     model_id: str = ""
 
 
+class RecoveryMode(str, Enum):
+    RECOVER_TO_STABLE = "recover_to_stable"
+    RESTART_FROM_INPUT = "restart_from_input"
+
+
+class RecoveryPreview(BaseModel):
+    target_stage: str = ""
+    target_stage_label: str = ""
+    will_resume_generation: bool = False
+    default_model_id: str = ""
+    last_action_model_id: str = ""
+    allowed_model_ids: list[str] = Field(default_factory=list)
+    fallback_actions: list[str] = Field(default_factory=list)
+
+
+class RecoveryOption(BaseModel):
+    action: str = ""
+    label: str = ""
+    kind: str = ""
+    available: bool = False
+    reason_unavailable: str = ""
+    preview: RecoveryPreview | None = None
+
+
+class RecoveryRequest(BaseModel):
+    recovery_mode: RecoveryMode = RecoveryMode.RECOVER_TO_STABLE
+    model_id: str = ""
+
+
 class SourceAsset(BaseModel):
     id: str = Field(default_factory=lambda: new_id("asset"))
     filename: str
@@ -439,6 +468,13 @@ class WorkspaceResponse(BaseModel):
     recent_events: list[TaskEvent]
     active_trace_summary: str | None = None
     available_tabs: list[str] = Field(default_factory=list)
+    allowed_actions: list[str] = Field(default_factory=list)
+    recommended_action: str = ""
+    blocked_reason: str = ""
+    state_reconciled: bool = False
+    reconciliation_kind: str = ""
+    reconciliation_summary: str = ""
+    recovery_options: list[RecoveryOption] = Field(default_factory=list)
     request_preview: dict[str, Any] = Field(default_factory=dict)
     context_status: dict[str, Any] = Field(default_factory=dict)
     response_cache_status: dict[str, Any] = Field(default_factory=dict)
@@ -454,6 +490,13 @@ class ReviewResponse(BaseModel):
     review_version: str
     summary: str | None = None
     risk_flags: list[str] = Field(default_factory=list)
+    allowed_actions: list[str] = Field(default_factory=list)
+    recommended_action: str = ""
+    blocked_reason: str = ""
+    state_reconciled: bool = False
+    reconciliation_kind: str = ""
+    reconciliation_summary: str = ""
+    recovery_options: list[RecoveryOption] = Field(default_factory=list)
     outline_markdown: str | None = None
     outline_md_ref: str | None = None
     revision_count: int = 0

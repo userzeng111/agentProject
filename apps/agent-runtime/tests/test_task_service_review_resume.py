@@ -177,11 +177,12 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         broken.pending_review = None
         store.save(broken)
 
-        recovered = service.recover_task(task.id, force=True)
+        with self.assertRaisesRegex(ValueError, "当前没有可回填的稳定阶段"):
+            service.recover_task(task.id, force=True)
 
-        self.assertEqual(recovered.status, TaskStatus.WAITING_MANUAL_ACTION)
-        self.assertEqual(recovered.current_stage, "waiting_manual_action")
-        self.assertIn("无法恢复", recovered.error_message or "")
+        current = store.get(task.id)
+        self.assertEqual(current.status, TaskStatus.PLANNING)
+        self.assertEqual(current.current_stage, "planning")
 
     def test_recover_task_restores_outline_review_from_waiting_manual_action_when_history_exists(self) -> None:
         tmp_dir, store, service = self._build_service()
@@ -251,7 +252,52 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
 
         service._start_background = fake_start_background
 
-        recovered = service.recover_task(task.id, force=True, model_id="glm-5.1")
+        with self.assertRaisesRegex(ValueError, "当前没有可回填的稳定阶段"):
+            service.recover_task(task.id, force=True, model_id="glm-5.1")
+
+        self.assertEqual(store.get(task.id).status, TaskStatus.WAITING_MANUAL_ACTION)
+        self.assertEqual(background_calls, [])
+
+    def test_recover_task_restart_from_input_requeues_planning_with_model_override(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇港口悬疑小说",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.WAITING_MANUAL_ACTION
+        broken.current_stage = "waiting_manual_action"
+        broken.current_unit = None
+        broken.story_plan = None
+        broken.pending_review = None
+        broken.error_message = "运行失败：模型网关暂时不可用。"
+        broken.normalized_spec = {
+            "mode": "short_story",
+            "creative_mode": "original",
+            "novel_size": "short",
+            "prompt": "写一篇港口悬疑小说",
+            "model_id": "gpt-5.4",
+        }
+        store.save(broken)
+
+        background_calls: list[tuple[str, str, tuple[object, ...]]] = []
+
+        def fake_start_background(task_id: str, target, *args: object) -> None:
+            background_calls.append((task_id, target.__name__, args))
+
+        service._start_background = fake_start_background
+
+        recovered = service.recover_task(
+            task.id,
+            force=True,
+            model_id="glm-5.1",
+            recovery_mode="restart_from_input",
+        )
 
         self.assertEqual(recovered.status, TaskStatus.PLANNING)
         self.assertEqual(recovered.current_stage, "planning")
@@ -290,7 +336,7 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(store.get(task.id).model_id, "gpt-5.4")
         self.assertEqual(background_calls, [(task.id, "_resume_task_sync", (task.id, False, "继续修", "glm-5.1"))])
 
-    def test_get_review_auto_recovers_outline_review_from_history(self) -> None:
+    def test_get_review_does_not_auto_recover_outline_review_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)
 
@@ -313,8 +359,95 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         response = service.get_review(task.id)
 
         self.assertEqual(response.review_type, "outline_review")
+        self.assertEqual(response.summary, "当前审核上下文不可用，请先执行恢复动作。")
+        self.assertEqual(response.allowed_actions, ["recover_to_stable", "restart_from_input"])
+        self.assertEqual(response.recommended_action, "recover_to_stable")
+        self.assertFalse(response.state_reconciled)
+        self.assertEqual(len(response.recovery_options), 2)
+        stable_option, restart_option = response.recovery_options
+        self.assertEqual(stable_option.action, "recover_to_stable")
+        self.assertTrue(stable_option.available)
+        self.assertIsNotNone(stable_option.preview)
+        assert stable_option.preview is not None
+        self.assertEqual(stable_option.preview.target_stage, "waiting_outline_review")
+        self.assertFalse(stable_option.preview.will_resume_generation)
+        self.assertEqual(restart_option.action, "restart_from_input")
+        self.assertTrue(restart_option.available)
         restored = store.get(task.id)
-        self.assertEqual(restored.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(restored.status, TaskStatus.PLANNING)
+
+    def test_get_review_reconciles_stale_review_state_without_restart(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+                {"number": 3, "title": "第三章", "goal": "发现线索"},
+                {"number": 4, "title": "第四章", "goal": "逼近真相"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核当前章节批次。",
+            batch_index=2,
+            chapter_pair=[
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "章节摘要",
+                    "content": "第三章正文",
+                },
+                {
+                    "number": 4,
+                    "title": "第四章",
+                    "summary": "章节摘要",
+                    "content": "第四章正文",
+                },
+            ],
+            completed_count=2,
+            total_chapters=4,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-2"
+        store.save(task)
+
+        service._ensure_novel_project_seeded(task)
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
+            completed_chapter_count=4,
+            next_chapter_number=5,
+            active_batch_no=None,
+            active_continue_request_id="",
+        )
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.review_type, "verification_review")
+        self.assertTrue(response.state_reconciled)
+        self.assertEqual(response.reconciliation_kind, "stale_review_state")
+        self.assertEqual(response.reconciliation_summary, "已自动校正到最新稳定审核状态。")
+        self.assertEqual(response.allowed_actions, [])
+        repaired = store.get(task.id)
+        self.assertEqual(repaired.status, TaskStatus.WAITING_VERIFICATION_REVIEW)
 
     def test_recover_task_rebuilds_corrupted_chapter_pair_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()
@@ -802,6 +935,9 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         response = service.get_review(task.id)
 
         self.assertEqual(response.review_type, "verification_review")
+        self.assertTrue(response.state_reconciled)
+        self.assertEqual(response.reconciliation_kind, "stale_review_state")
+        self.assertEqual(response.recommended_action, "")
         repaired = store.get(task.id)
         self.assertEqual(repaired.status, TaskStatus.WAITING_VERIFICATION_REVIEW)
         self.assertIsNotNone(repaired.pending_review)

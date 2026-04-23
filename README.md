@@ -66,6 +66,10 @@ npm run build
 说明：
 - 当前仓库执行 `npm run lint` 时会进入 Next.js ESLint 初始化交互，不适合作为现成校验命令。
 - 需要做前端基础校验时，优先使用 `npm run build`。
+- 当前前端开发态与构建态产物目录已隔离：
+  - `npm run dev` 使用 `apps/web/.next-dev`
+  - `npm run build` / `npm run start` 使用 `apps/web/.next`
+  - 这样可以避免开发服务器运行时再执行构建，把 `/_next/static/*` 资源映射污染掉。
 
 ### 2.2 一键启动后端 + Tunnel
 

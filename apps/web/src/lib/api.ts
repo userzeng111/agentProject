@@ -5,6 +5,7 @@ import {
   ModelListResponse,
   ModelOption,
   DashboardResponse,
+  RecoverTaskPayload,
   ResultResponse,
   ReviewResponse,
   RagSettingsStatus,
@@ -97,7 +98,11 @@ export function runTask(taskId: string, payload?: TaskActionPayload) {
 export function resumeTask(taskId: string, approved: boolean, comment: string, modelId?: string) {
   return request<TaskRecord>(`/api/tasks/${taskId}/resume`, {
     method: "POST",
-    body: JSON.stringify({ approved, comment, model_id: modelId ?? "" }),
+    body: JSON.stringify(
+      modelId && modelId.trim()
+        ? { approved, comment, model_id: modelId.trim() }
+        : { approved, comment },
+    ),
   });
 }
 
@@ -108,7 +113,7 @@ export function continueTask(taskId: string, payload: ContinueDraftPayload) {
   });
 }
 
-export function recoverTask(taskId: string, payload?: TaskActionPayload) {
+export function recoverTask(taskId: string, payload?: RecoverTaskPayload) {
   return request<TaskRecord>(`/api/tasks/${taskId}/recover`, {
     method: "POST",
     body: JSON.stringify(payload ?? {}),

@@ -21,6 +21,8 @@ from app.domain.models import (
     ContinueDraftRequest,
     DashboardResponse,
     DraftResult,
+    RecoveryOption,
+    RecoveryPreview,
     ResultResponse,
     ReviewPayload,
     ReviewResponse,
@@ -58,6 +60,14 @@ from app.rag.service import RagService
 from app.storage.task_store import TaskLogStore
 
 logger = logging.getLogger(__name__)
+
+_STAGE_LABELS: dict[str, str] = {
+    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
+    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
+    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
+    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
+    TaskStatus.PLANNING.value: "重新进入规划",
+}
 
 
 class TaskService:
@@ -161,20 +171,32 @@ class TaskService:
     def get_task(self, task_id: str) -> TaskRecord:
         return self.recover_task(task_id)
 
-    def recover_task(self, task_id: str, force: bool = False, model_id: str | None = None) -> TaskRecord:
+    def recover_task(
+        self,
+        task_id: str,
+        force: bool = False,
+        model_id: str | None = None,
+        recovery_mode: str = "recover_to_stable",
+    ) -> TaskRecord:
         task = self.store.get(task_id)
         action_model_id = self._resolve_action_model_id(task, model_id)
+
+        if recovery_mode == "restart_from_input":
+            retried = self._retry_task_from_original_input(task, action_model_id)
+            if retried is not None:
+                return self._safe_sync_supervisor_plan(task_id, fallback=retried)
+            raise ValueError("当前任务不能按原始输入重新开始。")
+        if recovery_mode != "recover_to_stable":
+            raise ValueError("不支持的 recovery_mode。")
+
         if not self._should_attempt_recovery(task, force=force):
             return task
 
         recovered = self._recover_task_from_stable_state(task, force=force)
         if recovered is not None:
             return self._safe_sync_supervisor_plan(task_id, fallback=recovered)
-
         if force:
-            retried = self._retry_task_from_original_input(task, action_model_id)
-            if retried is not None:
-                return self._safe_sync_supervisor_plan(task_id, fallback=retried)
+            raise ValueError("当前没有可回填的稳定阶段。")
 
         if task.status is not TaskStatus.WAITING_MANUAL_ACTION or force:
             return self.store.set_waiting_manual_action(
@@ -627,7 +649,8 @@ class TaskService:
         )
 
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
-        task = self.recover_task(task_id)
+        task = self.store.get(task_id)
+        task, reconciliation = self._reconcile_task_for_read(task)
         if task.story_plan is not None and task.status in {
             TaskStatus.READY_FOR_BATCH,
             TaskStatus.WAITING_CHAPTER_REVIEW,
@@ -635,11 +658,13 @@ class TaskService:
         }:
             self._ensure_novel_project_seeded(task)
         recent_events = task.events[-20:]
+        recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
             active_trace_summary=recent_events[-1].message if recent_events else None,
             available_tabs=self._workspace_tabs(task),
+            **recovery_contract,
             request_preview=self._request_preview(task),
             context_status=self._load_context_status(task.id),
             response_cache_status=self._load_response_cache_status(task),
@@ -658,19 +683,35 @@ class TaskService:
         return payload
 
     def get_review(self, task_id: str) -> ReviewResponse:
-        task = self.recover_task(task_id)
-        task = self._reconcile_pending_review_with_novel_project(task)
+        task = self.store.get(task_id)
+        task, reconciliation = self._reconcile_task_for_read(task)
         review = task.pending_review
         auto_review_trace = task.auto_review_trace or []
+        recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         if review is None:
-            if task.story_plan is None:
-                raise ValueError("当前任务还没有可审核的内容。")
             historical_review_type = self._historical_review_type(task)
             outline_ref = self._file_ref(task, "outline.md")
+            if task.story_plan is None:
+                if recovery_contract["allowed_actions"]:
+                    return ReviewResponse(
+                        meta=self._to_summary(task),
+                        review_type=historical_review_type,
+                        review_version="v1",
+                        **recovery_contract,
+                        summary="当前审核上下文不可用，请先执行恢复动作。",
+                        risk_flags=[],
+                        outline_markdown=None,
+                        outline_md_ref=None,
+                        revision_count=0,
+                        review_history=self._review_history(task),
+                        auto_review_trace=auto_review_trace,
+                    )
+                raise ValueError("当前任务还没有可审核的内容。")
             return ReviewResponse(
                 meta=self._to_summary(task),
                 review_type=historical_review_type,
                 review_version="v1",
+                **recovery_contract,
                 summary="当前任务已有大纲，可查看历史审核结果。",
                 risk_flags=[],
                 outline_markdown=self._outline_markdown(task.story_plan) if historical_review_type != "verification_review" else None,
@@ -698,6 +739,7 @@ class TaskService:
                 meta=self._to_summary(task),
                 review_type="chapter_pair_review",
                 review_version=review.version,
+                **recovery_contract,
                 summary=review.summary,
                 risk_flags=review.risk_flags,
                 outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
@@ -716,6 +758,7 @@ class TaskService:
                 meta=self._to_summary(task),
                 review_type="verification_review",
                 review_version=review.version,
+                **recovery_contract,
                 summary=review.summary,
                 risk_flags=review.risk_flags,
                 outline_markdown=None,
@@ -731,6 +774,7 @@ class TaskService:
             meta=self._to_summary(task),
             review_type="outline_review",
             review_version=review.version,
+            **recovery_contract,
             summary=review.summary,
             risk_flags=review.risk_flags,
             outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
@@ -894,6 +938,197 @@ class TaskService:
             },
         )
         return self.store.get(record.id)
+
+    def _task_recovery_signature(self, task: TaskRecord) -> tuple[str, str, str, str, str, int]:
+        pending_review = task.pending_review
+        return (
+            task.status.value,
+            str(task.current_stage or ""),
+            str(task.current_unit or ""),
+            pending_review.type if pending_review is not None else "",
+            pending_review.version if pending_review is not None else "",
+            len(pending_review.chapter_pair or []) if pending_review is not None and pending_review.chapter_pair else 0,
+        )
+
+    def _mark_reconciliation(
+        self,
+        payload: dict[str, Any],
+        *,
+        kind: str,
+        summary: str,
+    ) -> None:
+        if not payload["state_reconciled"]:
+            payload["state_reconciled"] = True
+            payload["reconciliation_kind"] = kind
+            payload["reconciliation_summary"] = summary
+            return
+        if summary and summary not in payload["reconciliation_summary"]:
+            payload["reconciliation_summary"] = f"{payload['reconciliation_summary']}；{summary}".strip("；")
+
+    def _reconcile_task_for_read(self, task: TaskRecord) -> tuple[TaskRecord, dict[str, Any]]:
+        reconciliation = {
+            "state_reconciled": False,
+            "reconciliation_kind": "",
+            "reconciliation_summary": "",
+        }
+        current = task
+
+        before = self._task_recovery_signature(current)
+        current = self._reconcile_pending_review_with_novel_project(current)
+        if self._task_recovery_signature(current) != before:
+            self._mark_reconciliation(
+                reconciliation,
+                kind="stale_review_state",
+                summary="已自动校正到最新稳定审核状态。",
+            )
+
+        return current, reconciliation
+
+    def _recovery_blocked_reason(self, task: TaskRecord) -> str:
+        event = next(
+            (
+                item
+                for item in reversed(task.events)
+                if item.event_type == "task.recovery.blocked" and isinstance(item.payload, dict)
+            ),
+            None,
+        )
+        if event is None:
+            return ""
+        reason = event.payload.get("reason")
+        return str(reason) if reason else ""
+
+    def _recovery_allowed_model_ids(self) -> list[str]:
+        return [
+            str(item.get("id"))
+            for item in self.model_catalog.list_models()
+            if isinstance(item, dict) and item.get("id")
+        ]
+
+    def _preview_recover_to_stable(self, task: TaskRecord) -> RecoveryPreview | None:
+        allowed_model_ids = self._recovery_allowed_model_ids()
+        default_model_id = self._resolve_task_model_id(task)
+        last_action_model_id = task.last_action_model_id or ""
+
+        target_stage = ""
+        if task.status in {TaskStatus.PLANNING, TaskStatus.WAITING_OUTLINE_REVIEW} and self._can_recover_outline_review(task):
+            target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
+        elif task.status is TaskStatus.WAITING_CHAPTER_REVIEW and task.pending_review is not None:
+            if (
+                task.pending_review.type == "chapter_pair_review"
+                and self._has_novel_project(task.id)
+            ):
+                from app.storage.db_repository import get_active_batch, get_novel_project
+
+                project = get_novel_project(task.id)
+                active_batch = get_active_batch(task.id)
+                planned = int(project.planned_chapter_count or 0) if project is not None else 0
+                completed = int(project.completed_chapter_count or 0) if project is not None else 0
+                if active_batch is None and (project is not None) and (
+                    project.status == TaskStatus.WAITING_VERIFICATION_REVIEW.value
+                    or (planned > 0 and completed >= planned)
+                ):
+                    target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
+                else:
+                    target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
+            elif self._can_recover_chapter_review(task, force=False):
+                target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
+        elif task.status is TaskStatus.WAITING_VERIFICATION_REVIEW and self._can_recover_verification_review(task, force=False):
+            target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
+        elif task.status is TaskStatus.WAITING_MANUAL_ACTION:
+            if self._has_novel_project(task.id):
+                from app.storage.db_repository import get_novel_project
+
+                project = get_novel_project(task.id)
+                blocked_status = str(project.blocked_from_status or "") if project is not None else ""
+                if blocked_status in _STAGE_LABELS:
+                    target_stage = blocked_status
+            if not target_stage:
+                if task.pending_review is not None and task.pending_review.type == "verification_review":
+                    target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
+                elif task.pending_review is not None and task.pending_review.type == "chapter_pair_review":
+                    target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
+                elif self._load_story_plan_from_history(task.id) is not None:
+                    target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
+
+        if not target_stage:
+            return None
+
+        return RecoveryPreview(
+            target_stage=target_stage,
+            target_stage_label=_STAGE_LABELS.get(target_stage, target_stage),
+            will_resume_generation=False,
+            default_model_id=default_model_id,
+            last_action_model_id=last_action_model_id,
+            allowed_model_ids=allowed_model_ids,
+            fallback_actions=["restart_from_input"],
+        )
+
+    def _preview_restart_from_input(self, task: TaskRecord) -> RecoveryPreview | None:
+        can_restart = task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED}
+        if (
+            task.status is TaskStatus.PLANNING
+            and str(task.current_unit or "").startswith("outline")
+            and task.story_plan is None
+            and task.pending_review is None
+        ):
+            can_restart = True
+        if not can_restart:
+            return None
+        if not str(task.input.prompt or "").strip():
+            return None
+        return RecoveryPreview(
+            target_stage=TaskStatus.PLANNING.value,
+            target_stage_label=_STAGE_LABELS[TaskStatus.PLANNING.value],
+            will_resume_generation=True,
+            default_model_id=self._resolve_task_model_id(task),
+            last_action_model_id=task.last_action_model_id or "",
+            allowed_model_ids=self._recovery_allowed_model_ids(),
+            fallback_actions=[],
+        )
+
+    def _build_recovery_contract(
+        self,
+        task: TaskRecord,
+        *,
+        reconciliation: dict[str, Any],
+    ) -> dict[str, Any]:
+        stable_preview = self._preview_recover_to_stable(task)
+        restart_preview = self._preview_restart_from_input(task)
+
+        stable_option = RecoveryOption(
+            action="recover_to_stable",
+            label="回填最近稳定阶段",
+            kind="primary",
+            available=stable_preview is not None,
+            reason_unavailable="" if stable_preview is not None else "当前没有可回填的稳定阶段",
+            preview=stable_preview,
+        )
+        restart_option = RecoveryOption(
+            action="restart_from_input",
+            label="按原始输入重新开始",
+            kind="secondary",
+            available=restart_preview is not None,
+            reason_unavailable="" if restart_preview is not None else "当前不支持按原始输入重新开始",
+            preview=restart_preview,
+        )
+        recovery_options = [stable_option, restart_option]
+        allowed_actions = [item.action for item in recovery_options if item.available]
+        recommended_action = ""
+        if stable_option.available:
+            recommended_action = stable_option.action
+        elif restart_option.available:
+            recommended_action = restart_option.action
+
+        return {
+            "allowed_actions": allowed_actions,
+            "recommended_action": recommended_action,
+            "blocked_reason": self._recovery_blocked_reason(task),
+            "state_reconciled": bool(reconciliation.get("state_reconciled")),
+            "reconciliation_kind": str(reconciliation.get("reconciliation_kind") or ""),
+            "reconciliation_summary": str(reconciliation.get("reconciliation_summary") or ""),
+            "recovery_options": recovery_options,
+        }
 
     def _recover_task_from_stable_state(self, task: TaskRecord, *, force: bool = False) -> TaskRecord | None:
         novel_recovered = self._recover_novel_project_state(task)

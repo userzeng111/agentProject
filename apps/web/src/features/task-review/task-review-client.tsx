@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -40,10 +40,13 @@ import {
   Error as ErrorIcon,
   Check as CheckIcon,
 } from "@mui/icons-material";
-import { fetchTextRef, getModelCatalog, getReview, normalizeModelOptions, resumeTask } from "@/lib/api";
+import { fetchTextRef, getModelCatalog, getReview, normalizeModelOptions, recoverTask, resumeTask } from "@/lib/api";
+import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
+import { derivePrimaryRecoveryAction, filterRecoveryModels, resolveRecoveryPreview } from "@/features/task-recovery/recovery-state.mjs";
+import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { resultHref, workspaceHref } from "@/lib/task-routes";
-import { AgentTraceItem, ModelOption, ReviewResponse } from "@/lib/types";
+import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
 
@@ -143,6 +146,10 @@ function formatActionKindLabel(kind?: string) {
     recover: "恢复重试",
   };
   return labels[kind || ""] || kind || "";
+}
+
+function resolveReviewTaskModelId(review?: ReviewResponse | null) {
+  return review?.meta.default_model_id || review?.meta.model_id || "";
 }
 
 function ReviewHistory({ history }: { history: ReviewResponse["review_history"] }) {
@@ -521,26 +528,24 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
 
 function ReviewActionModelSelector({
   models,
+  modelRefresh,
   actionModelId,
   setActionModelId,
   defaultModelId,
   lastActionModelId,
   lastActionKind,
+  onRefreshModels,
 }: {
   models: ModelOption[];
+  modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (value: string) => void;
   defaultModelId?: string;
   lastActionModelId?: string;
   lastActionKind?: string;
+  onRefreshModels: () => void;
 }) {
-  if (!models.length) {
-    return null;
-  }
-  const resolvedModelId = models.some((item) => item.id === actionModelId) ? actionModelId : models[0]?.id || "";
-  if (!resolvedModelId) {
-    return null;
-  }
+  const resolvedModelId = models.some((item) => item.id === actionModelId) ? actionModelId : "";
 
   return (
     <Box
@@ -553,19 +558,42 @@ function ReviewActionModelSelector({
       }}
     >
       <Stack spacing={1.5}>
-        <Typography variant="subtitle2">本次继续执行模型</Typography>
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+          <Typography variant="subtitle2">本次继续执行模型</Typography>
+          <Button size="small" variant="outlined" onClick={onRefreshModels}>
+            刷新模型
+          </Button>
+        </Stack>
         <Select
           size="small"
           value={resolvedModelId}
           onChange={(event) => setActionModelId(event.target.value)}
+          displayEmpty
           sx={{ maxWidth: 360 }}
         >
-          {models.map((model) => (
-            <MenuItem key={model.id} value={model.id}>
-              {(model.display_name || model.id) + (model.provider ? ` · ${model.provider}` : "")}
+          <MenuItem value="">
+            <em>请选择本次执行模型</em>
+          </MenuItem>
+          {models.length ? (
+            models.map((model) => (
+              <MenuItem key={model.id} value={model.id}>
+                {(model.display_name || model.id) + (model.provider ? ` · ${model.provider}` : "")}
+              </MenuItem>
+            ))
+          ) : (
+            <MenuItem value="" disabled>
+              暂无可用模型
             </MenuItem>
-          ))}
+          )}
         </Select>
+        {!models.length ? (
+          <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
+        ) : !resolvedModelId ? (
+          <Alert severity="warning">任务默认模型当前不在可用模型列表中，请先手动选择本次执行模型。</Alert>
+        ) : null}
+        <Typography variant="caption" color="text.secondary">
+          {formatModelRefreshStatus(modelRefresh)}
+        </Typography>
         <Typography variant="caption" color="text.secondary">
           默认沿用当前任务模型；点击通过或驳回后继续生成时可临时切换。
         </Typography>
@@ -589,8 +617,10 @@ function OutlineReview({
   onDecision,
   error,
   models,
+  modelRefresh,
   actionModelId,
   setActionModelId,
+  onRefreshModels,
 }: {
   review: ReviewResponse;
   outlineMarkdown: string;
@@ -600,10 +630,13 @@ function OutlineReview({
   onDecision: (approved: boolean) => void;
   error: string;
   models: ModelOption[];
+  modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (v: string) => void;
+  onRefreshModels: () => void;
 }) {
   const revisionCount = review.revision_count ?? 0;
+  const hasValidActionModel = models.some((item) => item.id === actionModelId);
   return (
     <>
       <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
@@ -673,11 +706,13 @@ function OutlineReview({
             <ReviewHistory history={review.review_history} />
             <ReviewActionModelSelector
               models={models}
+              modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
               defaultModelId={review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              onRefreshModels={onRefreshModels}
             />
             <TextField
               label="审核意见"
@@ -688,13 +723,16 @@ function OutlineReview({
               placeholder="例如：通过；或者要求收束得更克制一些。"
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting} variant="contained" onClick={() => onDecision(true)}>
-                通过并进入继续创作
+              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                通过并返回工作台
               </Button>
-              <Button disabled={submitting} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并修订
+              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                拒绝并进入大纲修订
               </Button>
             </Stack>
+            <Typography variant="caption" color="text.secondary">
+              通过后将返回工作台等待继续创作；拒绝后将进入大纲修订并回到工作台。
+            </Typography>
           </Stack>
         </CardContent>
       </Card>
@@ -710,8 +748,10 @@ function ChapterPairReview({
   onDecision,
   error,
   models,
+  modelRefresh,
   actionModelId,
   setActionModelId,
+  onRefreshModels,
 }: {
   review: ReviewResponse;
   comment: string;
@@ -720,8 +760,10 @@ function ChapterPairReview({
   onDecision: (approved: boolean) => void;
   error: string;
   models: ModelOption[];
+  modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (v: string) => void;
+  onRefreshModels: () => void;
 }) {
   const chapters = review.chapter_pair || [];
   const batchIndex = review.batch_index ?? 0;
@@ -729,6 +771,7 @@ function ChapterPairReview({
   const total = review.total_chapters ?? 0;
   const revisionCount = review.chapter_pair_revision_count ?? 0;
   const batchEnd = Math.min(batchIndex + Math.max(chapters.length, 1), total);
+  const hasValidActionModel = models.some((item) => item.id === actionModelId);
 
   return (
     <>
@@ -805,11 +848,13 @@ function ChapterPairReview({
             <ReviewHistory history={review.review_history} />
             <ReviewActionModelSelector
               models={models}
+              modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
               defaultModelId={review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              onRefreshModels={onRefreshModels}
             />
             <TextField
               label="审核意见"
@@ -820,13 +865,16 @@ function ChapterPairReview({
               placeholder="例如：通过；或者第 3 段逻辑不够顺畅，请加强。"
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting} variant="contained" onClick={() => onDecision(true)}>
-                通过并返回继续创作
+              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                通过并进入下一步
               </Button>
-              <Button disabled={submitting} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并修订
+              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                拒绝并返回工作台
               </Button>
             </Stack>
+            <Typography variant="caption" color="text.secondary">
+              通过后系统会自动判断是返回工作台继续创作，还是进入全文验证；拒绝后将返回工作台等待你重新发起继续创作。
+            </Typography>
           </Stack>
         </CardContent>
       </Card>
@@ -842,8 +890,10 @@ function VerificationReview({
   onDecision,
   error,
   models,
+  modelRefresh,
   actionModelId,
   setActionModelId,
+  onRefreshModels,
 }: {
   review: ReviewResponse;
   comment: string;
@@ -852,13 +902,16 @@ function VerificationReview({
   onDecision: (approved: boolean) => void;
   error: string;
   models: ModelOption[];
+  modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (v: string) => void;
+  onRefreshModels: () => void;
 }) {
   const report = review.verification_report || {};
   const issues = report.issues || [];
   const score = report.overall_score ?? 0;
   const revisionCount = review.verification_revision_count ?? 0;
+  const hasValidActionModel = models.some((item) => item.id === actionModelId);
 
   const scoreColor = score >= 80 ? "success" : score >= 60 ? "warning" : "error";
 
@@ -948,11 +1001,13 @@ function VerificationReview({
             <ReviewHistory history={review.review_history} />
             <ReviewActionModelSelector
               models={models}
+              modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
               defaultModelId={review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              onRefreshModels={onRefreshModels}
             />
             <TextField
               label="审核意见"
@@ -963,13 +1018,16 @@ function VerificationReview({
               placeholder="例如：通过；或者人物前后不一致，请修复后再审。"
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting} variant="contained" onClick={() => onDecision(true)}>
-                通过并生成正文
+              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                通过并完成任务
               </Button>
-              <Button disabled={submitting} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并修复
+              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                拒绝并进入验证修复
               </Button>
             </Stack>
+            <Typography variant="caption" color="text.secondary">
+              通过后任务会进入收尾完成流程，并在完成后进入结果页；拒绝后将进入验证修复流程，并留在当前审核链路。
+            </Typography>
           </Stack>
         </CardContent>
       </Card>
@@ -988,7 +1046,15 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({ loading: false, error: "" });
   const [actionModelId, setActionModelId] = useState("");
+  const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false);
+  const [selectedRecoveryAction, setSelectedRecoveryAction] = useState<RecoveryMode>("recover_to_stable");
+  const [recoveryModelId, setRecoveryModelId] = useState("");
+  const [reviewInvalidated, setReviewInvalidated] = useState(false);
+  const currentActionModelIdRef = useRef("");
+  const currentTaskModelIdRef = useRef("");
+  const currentModelOptionsRef = useRef<ModelOption[]>([]);
 
   const loadReview = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -1019,39 +1085,154 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     void loadReview();
   }, [loadReview]);
 
+  const currentTaskModelId = resolveReviewTaskModelId(review);
+
   useEffect(() => {
-    async function loadModels() {
-      try {
-        const catalog = await getModelCatalog({ refresh: true });
-        setModels(selectNovelTaskModels(normalizeModelOptions(catalog.data ?? [])));
-      } catch {
-        setModels([]);
-      }
+    currentActionModelIdRef.current = actionModelId;
+  }, [actionModelId]);
+
+  useEffect(() => {
+    currentTaskModelIdRef.current = currentTaskModelId;
+  }, [currentTaskModelId]);
+
+  useEffect(() => {
+    currentModelOptionsRef.current = models;
+  }, [models]);
+
+  const loadModels = useCallback(async (refresh = false) => {
+    try {
+      setModelRefresh((current) => ({ ...current, loading: true, error: "" }));
+      const catalog = await getModelCatalog({ refresh });
+      const nextModels = selectNovelTaskModels(normalizeModelOptions(catalog.data ?? []));
+      const currentEffectiveModelId = currentActionModelIdRef.current || currentTaskModelIdRef.current;
+      const nextSelection = resolveSelectionAfterRefresh({
+        currentModelId: currentEffectiveModelId,
+        availableModels: nextModels,
+      });
+      setModels(nextModels);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: "",
+        attemptedRefresh: current.attemptedRefresh || refresh,
+        fetchedAt: catalog.meta?.fetched_at,
+        cacheAgeSeconds: catalog.meta?.cache_age_seconds,
+        cacheTtlSeconds: catalog.meta?.cache_ttl_seconds,
+        cached: catalog.meta?.cached,
+        invalidated: refresh && nextSelection.invalidated,
+        invalidatedModelLabel:
+          refresh && nextSelection.invalidated
+            ? currentModelOptionsRef.current.find((option) => option.id === currentEffectiveModelId)?.display_name ||
+              currentEffectiveModelId ||
+              undefined
+            : undefined,
+      }));
+    } catch (loadError) {
+      setModels([]);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: loadError instanceof Error ? loadError.message : "读取模型列表失败",
+        attemptedRefresh: current.attemptedRefresh || refresh,
+      }));
     }
-    void loadModels();
   }, []);
 
   useEffect(() => {
-    setActionModelId("");
-  }, [resolvedTaskId]);
-
-  const resolvedActionModelId = models.some((item) => item.id === actionModelId) ? actionModelId : models[0]?.id || "";
+    void loadModels(false);
+  }, [loadModels]);
 
   useEffect(() => {
-    const currentTaskModel = review?.meta.default_model_id || review?.meta.model_id || "";
+    setActionModelId("");
+    setModelRefresh({ loading: false, error: "" });
+    setRecoveryDialogOpen(false);
+    setSelectedRecoveryAction("recover_to_stable");
+    setRecoveryModelId("");
+    setReviewInvalidated(false);
+  }, [resolvedTaskId]);
+
+  const resolvedActionModelId = models.some((item) => item.id === actionModelId) ? actionModelId : "";
+  const primaryRecoveryAction = derivePrimaryRecoveryAction(review);
+  const recoveryPreview = resolveRecoveryPreview(review, selectedRecoveryAction);
+  const recoverySelectableModels = filterRecoveryModels(models, recoveryPreview?.allowed_model_ids);
+  const defaultRecoveryModelId =
+    recoveryPreview?.default_model_id ||
+    currentTaskModelId ||
+    "";
+
+  useEffect(() => {
     if (actionModelId && models.some((item) => item.id === actionModelId)) {
       return;
     }
-    if (currentTaskModel && models.some((item) => item.id === currentTaskModel)) {
-      setActionModelId(currentTaskModel);
+    if (currentTaskModelId && models.some((item) => item.id === currentTaskModelId)) {
+      setActionModelId(currentTaskModelId);
       return;
     }
-    if (models[0]?.id) {
-      setActionModelId(models[0].id);
+    setActionModelId("");
+  }, [actionModelId, currentTaskModelId, models]);
+
+  const hasValidActionModel = Boolean(resolvedActionModelId);
+
+  function handleActionModelChange(nextModelId: string) {
+    setActionModelId(nextModelId);
+    setModelRefresh((current) => ({ ...current, invalidated: false, invalidatedModelLabel: undefined }));
+  }
+
+  useEffect(() => {
+    if (!recoveryDialogOpen) {
+      return;
     }
-  }, [actionModelId, models, review]);
+    if (recoveryModelId && recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+      return;
+    }
+    if (defaultRecoveryModelId && recoverySelectableModels.some((item) => item.id === defaultRecoveryModelId)) {
+      setRecoveryModelId(defaultRecoveryModelId);
+      return;
+    }
+    setRecoveryModelId("");
+  }, [defaultRecoveryModelId, recoveryDialogOpen, recoveryModelId, recoverySelectableModels]);
+
+  function handleOpenRecoveryDialog() {
+    const nextAction =
+      primaryRecoveryAction?.action ||
+      (review?.recommended_action === "recover_to_stable" || review?.recommended_action === "restart_from_input"
+        ? review.recommended_action
+        : (review?.recovery_options?.find((item) => item.available)?.action ?? null));
+    if (!nextAction) {
+      return;
+    }
+    setSelectedRecoveryAction(nextAction);
+    setRecoveryModelId("");
+    setRecoveryDialogOpen(true);
+  }
+
+  async function handleRecover() {
+    try {
+      setSubmitting(true);
+      await recoverTask(resolvedTaskId, {
+        recovery_mode: selectedRecoveryAction,
+        model_id: recoveryModelId || undefined,
+      });
+      setError("");
+      setRecoveryDialogOpen(false);
+      if (selectedRecoveryAction === "restart_from_input") {
+        setReviewInvalidated(true);
+        return;
+      }
+      await loadReview();
+      router.refresh();
+    } catch (recoverError) {
+      setError(recoverError instanceof Error ? recoverError.message : "执行恢复失败");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   async function handleDecision(approved: boolean) {
+    if (!hasValidActionModel) {
+      setError("任务默认模型当前不可用，请先手动选择本次执行模型。");
+      return;
+    }
     try {
       setSubmitting(true);
       const nextTask = await resumeTask(resolvedTaskId, approved, comment, resolvedActionModelId || undefined);
@@ -1097,6 +1278,43 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
               重新加载
             </Button>
           </Box>
+        </Stack>
+      </Container>
+    );
+  }
+
+  if (reviewInvalidated) {
+    return (
+      <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
+        <Stack spacing={3} className="page-fade-in">
+          <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
+            <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
+              <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
+                首页
+              </Typography>
+            </Link>
+            <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
+              <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
+                工作台
+              </Typography>
+            </Link>
+            <Typography variant="body2">审核上下文已失效</Typography>
+          </Breadcrumbs>
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h4" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+                  当前审核上下文已失效
+                </Typography>
+                <Alert severity="info">任务已按原始输入重新开始，当前审核内容不再有效。</Alert>
+                <Box>
+                  <Button variant="contained" onClick={() => router.push(workspaceHref(resolvedTaskId))}>
+                    打开工作台
+                  </Button>
+                </Box>
+              </Stack>
+            </CardContent>
+          </Card>
         </Stack>
       </Container>
     );
@@ -1148,6 +1366,34 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
         {/* 步骤指示器 */}
         <StepIndicator steps={steps} activeStep={activeStep} />
 
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {review.state_reconciled ? (
+          <Alert severity="info">
+            {review.reconciliation_summary || "当前审核状态已自动校正到最新稳定状态。"}
+          </Alert>
+        ) : null}
+        {primaryRecoveryAction ? (
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">恢复与修复</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {primaryRecoveryAction.label === "查看恢复方案"
+                    ? "当前没有可直接回填的稳定阶段，请先查看恢复方案，再决定是否改为按原始输入重新开始。"
+                    : `推荐动作：${primaryRecoveryAction.label}。${
+                        review.recommended_action ? `后端建议动作：${primaryRecoveryAction.label}。` : ""
+                      }`}
+                </Typography>
+                <Box>
+                  <Button variant="contained" disabled={submitting} onClick={handleOpenRecoveryDialog}>
+                    {submitting ? "执行中..." : primaryRecoveryAction.label}
+                  </Button>
+                </Box>
+              </Stack>
+            </CardContent>
+          </Card>
+        ) : null}
+
         {/* 条件渲染审核内容 */}
         {reviewType === "outline_review" && (
           <OutlineReview
@@ -1159,8 +1405,10 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             onDecision={handleDecision}
             error={error}
             models={models}
+            modelRefresh={modelRefresh}
             actionModelId={actionModelId}
-            setActionModelId={setActionModelId}
+            setActionModelId={handleActionModelChange}
+            onRefreshModels={() => void loadModels(true)}
           />
         )}
 
@@ -1173,8 +1421,10 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             onDecision={handleDecision}
             error={error}
             models={models}
+            modelRefresh={modelRefresh}
             actionModelId={actionModelId}
-            setActionModelId={setActionModelId}
+            setActionModelId={handleActionModelChange}
+            onRefreshModels={() => void loadModels(true)}
           />
         )}
 
@@ -1187,10 +1437,29 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             onDecision={handleDecision}
             error={error}
             models={models}
+            modelRefresh={modelRefresh}
             actionModelId={actionModelId}
-            setActionModelId={setActionModelId}
+            setActionModelId={handleActionModelChange}
+            onRefreshModels={() => void loadModels(true)}
           />
         )}
+
+        <RecoveryDialog
+          open={recoveryDialogOpen}
+          recovery={review}
+          models={models}
+          selectedAction={selectedRecoveryAction}
+          selectedModelId={recoveryModelId}
+          defaultModelId={defaultRecoveryModelId}
+          submitting={submitting}
+          onActionChange={(action) => {
+            setSelectedRecoveryAction(action);
+            setRecoveryModelId("");
+          }}
+          onModelChange={setRecoveryModelId}
+          onCancel={() => setRecoveryDialogOpen(false)}
+          onConfirm={() => void handleRecover()}
+        />
       </Stack>
     </Container>
   );

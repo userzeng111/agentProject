@@ -44,6 +44,13 @@ import {
 } from "@mui/icons-material";
 import { Collapse, CircularProgress, Tooltip } from "@mui/material";
 import { continueTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
+import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
+import {
+  derivePrimaryRecoveryAction,
+  filterRecoveryModels,
+  resolveRecoveryPreview,
+} from "@/features/task-recovery/recovery-state.mjs";
+import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
@@ -51,6 +58,9 @@ import {
   ContextStatus,
   ModelCapabilities,
   ModelOption,
+  ModelRefreshState,
+  RecoverTaskPayload,
+  RecoveryMode,
   ResponseCacheStatus,
   SupervisorSubtaskItem,
   SupervisorSubtaskStatus,
@@ -135,6 +145,16 @@ function formatActionKindLabel(kind?: string) {
   return labels[kind || ""] || kind || "";
 }
 
+function resolveWorkspaceTaskModelId(workspace?: WorkspaceResponse | null) {
+  return (
+    workspace?.request_preview?.default_model_id ||
+    workspace?.meta.default_model_id ||
+    workspace?.request_preview?.model_id ||
+    workspace?.meta.model_id ||
+    ""
+  );
+}
+
 function formatTokenCount(value?: number) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     return "未上报";
@@ -166,6 +186,9 @@ function resolveModelCapabilities(workspace: WorkspaceResponse): ModelCapabiliti
 }
 
 function resolveRecoveryReason(workspace: WorkspaceResponse) {
+  if (typeof workspace.blocked_reason === "string" && workspace.blocked_reason) {
+    return workspace.blocked_reason;
+  }
   const event = [...(workspace.recent_events || [])]
     .reverse()
     .find((item) => item.event_type === "task.recovery.blocked" && typeof item.payload?.reason === "string");
@@ -181,6 +204,32 @@ function formatRecoveryReason(reason: string) {
     draft_batch_generation_failed: "章节生成失败，可恢复后切换模型重试",
   };
   return labels[reason] || reason;
+}
+
+function formatRecoveryActionLabel(action?: string) {
+  const labels: Record<string, string> = {
+    recover_to_stable: "回填最近稳定阶段",
+    restart_from_input: "按原始输入重新开始",
+  };
+  return labels[action || ""] || action || "未提供";
+}
+
+function getRecoveryOptions(workspace?: WorkspaceResponse | null) {
+  return Array.isArray(workspace?.recovery_options) ? workspace.recovery_options : [];
+}
+
+function resolveInitialRecoveryAction(workspace?: WorkspaceResponse | null): RecoveryMode | null {
+  const primaryAction = derivePrimaryRecoveryAction(workspace);
+  if (primaryAction?.action) {
+    return primaryAction.action;
+  }
+
+  if (workspace?.recommended_action === "recover_to_stable" || workspace?.recommended_action === "restart_from_input") {
+    return workspace.recommended_action;
+  }
+
+  const availableOption = getRecoveryOptions(workspace).find((option) => option.available);
+  return availableOption?.action ?? null;
 }
 
 function formatContextWindowLabel(capabilities?: ModelCapabilities) {
@@ -377,9 +426,16 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
   const [requestedChapterCount, setRequestedChapterCount] = useState(3);
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({ loading: false, error: "" });
   const [actionModelId, setActionModelId] = useState("");
+  const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false);
+  const [selectedRecoveryAction, setSelectedRecoveryAction] = useState<RecoveryMode>("recover_to_stable");
+  const [recoveryModelId, setRecoveryModelId] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
   const continueRequestIdRef = useRef<string | null>(null);
+  const currentActionModelIdRef = useRef("");
+  const currentTaskModelIdRef = useRef("");
+  const currentModelOptionsRef = useRef<ModelOption[]>([]);
 
   const refreshWorkspace = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -411,45 +467,114 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
   }, [workspace?.novel_progress?.default_batch_size]);
 
+  const currentTaskModelId = resolveWorkspaceTaskModelId(workspace);
+
   useEffect(() => {
-    async function loadModels() {
-      try {
-        const catalog = await getModelCatalog({ refresh: true });
-        setModels(normalizeModelOptions(catalog.data ?? []));
-      } catch {
-        setModels([]);
-      }
+    currentActionModelIdRef.current = actionModelId;
+  }, [actionModelId]);
+
+  useEffect(() => {
+    currentTaskModelIdRef.current = currentTaskModelId;
+  }, [currentTaskModelId]);
+
+  useEffect(() => {
+    currentModelOptionsRef.current = models;
+  }, [models]);
+
+  const loadModels = useCallback(async (refresh = false) => {
+    try {
+      setModelRefresh((current) => ({ ...current, loading: true, error: "" }));
+      const catalog = await getModelCatalog({ refresh });
+      const nextModels = normalizeModelOptions(catalog.data ?? []);
+      const nextSelectableModels = selectNovelTaskModels(nextModels);
+      const currentEffectiveModelId = currentActionModelIdRef.current || currentTaskModelIdRef.current;
+      const nextSelection = resolveSelectionAfterRefresh({
+        currentModelId: currentEffectiveModelId,
+        availableModels: nextSelectableModels,
+      });
+      setModels(nextModels);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: "",
+        attemptedRefresh: current.attemptedRefresh || refresh,
+        fetchedAt: catalog.meta?.fetched_at,
+        cacheAgeSeconds: catalog.meta?.cache_age_seconds,
+        cacheTtlSeconds: catalog.meta?.cache_ttl_seconds,
+        cached: catalog.meta?.cached,
+        invalidated: refresh && nextSelection.invalidated,
+        invalidatedModelLabel:
+          refresh && nextSelection.invalidated
+            ? currentModelOptionsRef.current.find((option) => option.id === currentEffectiveModelId)?.display_name ||
+              currentEffectiveModelId ||
+              undefined
+            : undefined,
+      }));
+    } catch (loadError) {
+      setModels([]);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: loadError instanceof Error ? loadError.message : "读取模型列表失败",
+        attemptedRefresh: current.attemptedRefresh || refresh,
+      }));
     }
-    void loadModels();
   }, []);
 
   useEffect(() => {
+    void loadModels(false);
+  }, [loadModels]);
+
+  useEffect(() => {
     setActionModelId("");
+    setModelRefresh({ loading: false, error: "" });
+    setRecoveryDialogOpen(false);
+    setSelectedRecoveryAction("recover_to_stable");
+    setRecoveryModelId("");
   }, [resolvedTaskId]);
 
   const selectableModels: ModelOption[] = selectNovelTaskModels(models);
   const resolvedActionModelId = selectableModels.some((item) => item.id === actionModelId)
     ? actionModelId
-    : selectableModels[0]?.id || "";
+    : "";
+  const recoveryPreview = resolveRecoveryPreview(workspace, selectedRecoveryAction);
+  const recoverySelectableModels = filterRecoveryModels(selectableModels, recoveryPreview?.allowed_model_ids);
+  const defaultRecoveryModelId =
+    recoveryPreview?.default_model_id ||
+    currentTaskModelId ||
+    "";
 
   useEffect(() => {
-    const currentTaskModel =
-      workspace?.request_preview?.default_model_id ||
-      workspace?.meta.default_model_id ||
-      workspace?.request_preview?.model_id ||
-      workspace?.meta.model_id ||
-      "";
     if (actionModelId && selectableModels.some((item) => item.id === actionModelId)) {
       return;
     }
-    if (currentTaskModel && selectableModels.some((item) => item.id === currentTaskModel)) {
-      setActionModelId(currentTaskModel);
+    if (currentTaskModelId && selectableModels.some((item) => item.id === currentTaskModelId)) {
+      setActionModelId(currentTaskModelId);
       return;
     }
-    if (selectableModels[0]?.id) {
-      setActionModelId(selectableModels[0].id);
+    setActionModelId("");
+  }, [actionModelId, currentTaskModelId, selectableModels]);
+
+  const hasValidActionModel = Boolean(resolvedActionModelId);
+
+  function handleActionModelChange(nextModelId: string) {
+    setActionModelId(nextModelId);
+    setModelRefresh((current) => ({ ...current, invalidated: false, invalidatedModelLabel: undefined }));
+  }
+
+  useEffect(() => {
+    if (!recoveryDialogOpen) {
+      return;
     }
-  }, [actionModelId, selectableModels, workspace]);
+    if (recoveryModelId && recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+      return;
+    }
+    if (defaultRecoveryModelId && recoverySelectableModels.some((item) => item.id === defaultRecoveryModelId)) {
+      setRecoveryModelId(defaultRecoveryModelId);
+      return;
+    }
+    setRecoveryModelId("");
+  }, [defaultRecoveryModelId, recoveryDialogOpen, recoveryModelId, recoverySelectableModels]);
 
   useEffect(() => {
     if (!resolvedTaskId) {
@@ -511,6 +636,10 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   }, [resolvedTaskId, refreshWorkspace]);
 
   async function handleRun() {
+    if (!hasValidActionModel) {
+      setError("任务默认模型当前不可用，请先手动选择本次动作模型。");
+      return;
+    }
     try {
       setRunning(true);
       await runTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
@@ -523,11 +652,22 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
   }
 
-  async function handleRecover() {
+  function handleOpenRecoveryDialog() {
+    const nextAction = resolveInitialRecoveryAction(workspace);
+    if (!nextAction) {
+      return;
+    }
+    setSelectedRecoveryAction(nextAction);
+    setRecoveryModelId("");
+    setRecoveryDialogOpen(true);
+  }
+
+  async function handleRecover(payload: RecoverTaskPayload) {
     try {
       setRunning(true);
-      await recoverTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
+      await recoverTask(resolvedTaskId, payload);
       await refreshWorkspace();
+      setRecoveryDialogOpen(false);
       setError("");
     } catch (recoverError) {
       setError(recoverError instanceof Error ? recoverError.message : "恢复任务失败");
@@ -537,6 +677,10 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   }
 
   async function handleContinueDraft() {
+    if (!hasValidActionModel) {
+      setError("任务默认模型当前不可用，请先手动选择本次动作模型。");
+      return;
+    }
     try {
       setRunning(true);
       const requestId = continueRequestIdRef.current ?? crypto.randomUUID();
@@ -623,6 +767,14 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const modelCapabilities = resolveModelCapabilities(workspace);
   const recoveryReason = resolveRecoveryReason(workspace);
   const novelProgress = workspace.novel_progress;
+  const primaryRecoveryAction = derivePrimaryRecoveryAction(workspace);
+  const primaryRecoveryPreview = primaryRecoveryAction ? resolveRecoveryPreview(workspace, primaryRecoveryAction.action) : null;
+  const recoveryStableAvailable = Boolean(
+    getRecoveryOptions(workspace).find((option) => option.action === "recover_to_stable")?.available,
+  );
+  const recommendedRecoveryLabel =
+    getRecoveryOptions(workspace).find((option) => option.action === workspace.recommended_action)?.label ||
+    formatRecoveryActionLabel(workspace.recommended_action);
 
   const canReview = [
     "waiting_outline_review",
@@ -709,6 +861,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       </Card>
 
       {error ? <Alert severity="error">{error}</Alert> : null}
+      {!error && workspace.state_reconciled ? (
+        <Alert severity="info">
+          {workspace.reconciliation_summary || "当前页面已自动校正到最新稳定状态。"}
+        </Alert>
+      ) : null}
       {!error && workspace.meta.status === "waiting_manual_action" && workspace.meta.error_message ? (
         <Alert severity="warning">
           <Stack spacing={1}>
@@ -725,7 +882,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Stack>
             ) : null}
             <Typography variant="caption" color="text.secondary">
-              可先点击“恢复任务”尝试回填最近稳定阶段；若仍无法恢复，再考虑基于原任务重建新任务。
+              {primaryRecoveryAction
+                ? `可先点击“${primaryRecoveryAction.label}”查看恢复方案；若主恢复动作不可用，再改为按原始输入重新开始。`
+                : "当前暂无可执行的恢复方案，请先检查任务状态与模型可用性。"}
             </Typography>
           </Stack>
         </Alert>
@@ -741,17 +900,22 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Typography>
               <Stack direction="row" spacing={1}>
                 {["created", "sources_ingested"].includes(workspace.meta.status) && (
-                  <Button variant="contained" disabled={running} onClick={handleRun} size="small">
+                  <Button variant="contained" disabled={running || !hasValidActionModel} onClick={handleRun} size="small">
                     {running ? "启动中..." : "开始执行"}
                   </Button>
                 )}
-                {workspace.meta.status === "waiting_manual_action" && (
-                  <Button variant="contained" disabled={running} onClick={handleRecover} size="small">
-                    {running ? "恢复中..." : "恢复任务"}
+                {primaryRecoveryAction && (
+                  <Button
+                    variant="contained"
+                    disabled={running}
+                    onClick={handleOpenRecoveryDialog}
+                    size="small"
+                  >
+                    {running ? "提交中..." : primaryRecoveryAction.label}
                   </Button>
                 )}
                 {workspace.meta.status === "ready_for_batch" && (
-                  <Button variant="contained" disabled={running} onClick={handleContinueDraft} size="small">
+                  <Button variant="contained" disabled={running || !hasValidActionModel} onClick={handleContinueDraft} size="small">
                     {running ? "生成中..." : "继续创作"}
                   </Button>
                 )}
@@ -771,42 +935,95 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Stack>
             </Stack>
             <Typography>{workspace.request_preview?.prompt || workspace.meta.summary || "暂无请求摘要"}</Typography>
-            {selectableModels.length > 0 && (
+            {primaryRecoveryAction ? (
               <Box
                 sx={{
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(39, 100, 81, 0.03)",
+                  backgroundColor: "rgba(255, 152, 0, 0.06)",
                 }}
               >
-                <Stack spacing={1.5}>
+                <Stack spacing={1}>
+                  <Typography variant="subtitle1">恢复方案</Typography>
+                  <Typography variant="body2">
+                    {recoveryStableAvailable ? "当前存在可回填的稳定阶段。" : "当前没有可回填的稳定阶段。"}
+                    推荐动作：{recommendedRecoveryLabel}。
+                  </Typography>
+                  <Typography variant="body2">当前主 CTA：{primaryRecoveryAction.label}</Typography>
+                  {primaryRecoveryPreview ? (
+                    <Typography variant="caption" color="text.secondary">
+                      当前预览：将定位到 {primaryRecoveryPreview.target_stage_label}
+                      {primaryRecoveryPreview.will_resume_generation ? "，并继续进入生成链路。" : "，恢复后停留在该阶段。"}
+                    </Typography>
+                  ) : (
+                    <Typography variant="caption" color="text.secondary">
+                      当前动作暂未返回恢复预览。
+                    </Typography>
+                  )}
+                </Stack>
+              </Box>
+            ) : null}
+            <Box
+              sx={{
+                p: 2,
+                borderRadius: 2,
+                border: "1px solid",
+                borderColor: "divider",
+                backgroundColor: "rgba(39, 100, 81, 0.03)",
+              }}
+            >
+              <Stack spacing={1.5}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
                   <Typography variant="subtitle1">本次动作模型</Typography>
-                  <Select
-                    size="small"
-                    value={resolvedActionModelId}
-                    onChange={(event) => setActionModelId(event.target.value)}
-                    sx={{ maxWidth: 360 }}
-                  >
-                    {selectableModels.map((model) => (
+                  <Button size="small" variant="outlined" onClick={() => void loadModels(true)}>
+                    刷新模型
+                  </Button>
+                </Stack>
+                <Select
+                  size="small"
+                  value={hasValidActionModel ? actionModelId : ""}
+                  onChange={(event) => handleActionModelChange(event.target.value)}
+                  displayEmpty
+                  sx={{ maxWidth: 360 }}
+                >
+                  <MenuItem value="">
+                    <em>请选择本次动作模型</em>
+                  </MenuItem>
+                  {selectableModels.length ? (
+                    selectableModels.map((model) => (
                       <MenuItem key={model.id} value={model.id}>
                         {(model.display_name || model.id) + (model.provider ? ` · ${model.provider}` : "")}
                       </MenuItem>
-                    ))}
-                  </Select>
-                  <Typography variant="caption" color="text.secondary">
-                    默认沿用当前任务模型；开始执行、恢复重试和继续创作时都可临时切换。
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    任务默认模型：{workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
-                    {workspace.meta.last_action_model_id
-                      ? ` · 最近一次动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
-                      : ""}
-                  </Typography>
-                </Stack>
-              </Box>
-            )}
+                    ))
+                  ) : (
+                    <MenuItem value="" disabled>
+                      暂无可用模型
+                    </MenuItem>
+                  )}
+                </Select>
+                {!selectableModels.length ? (
+                  <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
+                ) : !hasValidActionModel ? (
+                  <Alert severity="warning">
+                    任务默认模型当前不在可用模型列表中，请先手动选择本次动作模型。
+                  </Alert>
+                ) : null}
+                <Typography variant="caption" color="text.secondary">
+                  {formatModelRefreshStatus(modelRefresh)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  默认沿用当前任务模型；开始执行和继续创作时都可临时切换。恢复动作请在恢复面板中单独选择模型。
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  任务默认模型：{workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
+                  {workspace.meta.last_action_model_id
+                    ? ` · 最近一次动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
+                    : ""}
+                </Typography>
+              </Stack>
+            </Box>
             <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap>
               <Chip
                 label={`类型: ${formatTaskTypeLabel({
@@ -1275,6 +1492,27 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           )}
         </CardContent>
       </Card>
+      <RecoveryDialog
+        open={recoveryDialogOpen}
+        recovery={workspace}
+        models={selectableModels}
+        selectedAction={selectedRecoveryAction}
+        selectedModelId={recoveryModelId}
+        defaultModelId={defaultRecoveryModelId}
+        submitting={running}
+        onActionChange={(action) => {
+          setSelectedRecoveryAction(action);
+          setRecoveryModelId("");
+        }}
+        onModelChange={setRecoveryModelId}
+        onCancel={() => setRecoveryDialogOpen(false)}
+        onConfirm={() =>
+          void handleRecover({
+            recovery_mode: selectedRecoveryAction,
+            model_id: recoveryModelId,
+          })
+        }
+      />
       {/* 章节正文弹窗 */}
       <Dialog
         open={chapterDialogOpen}

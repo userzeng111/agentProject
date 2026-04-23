@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from app.domain.models import ChatRequest, ContinueDraftRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
+from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
 from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
@@ -227,9 +227,14 @@ def build_router(
             raise _handle_error(exc) from exc
 
     @router.post("/tasks/{task_id}/recover")
-    def recover_task(task_id: str, payload: TaskActionRequest | None = None):
+    def recover_task(task_id: str, payload: RecoveryRequest | None = None):
         try:
-            return task_service.recover_task(task_id, force=True, model_id=(payload.model_id if payload else ""))
+            return task_service.recover_task(
+                task_id,
+                force=True,
+                model_id=(payload.model_id if payload else ""),
+                recovery_mode=(payload.recovery_mode.value if payload else "recover_to_stable"),
+            )
         except Exception as exc:
             raise _handle_error(exc) from exc
 

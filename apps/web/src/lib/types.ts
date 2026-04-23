@@ -36,8 +36,43 @@ export interface TaskCreatePayload extends TaskInput {
   auto_review?: boolean;
 }
 
+export type RecoveryMode = "recover_to_stable" | "restart_from_input";
+
+export interface RecoveryPreview {
+  target_stage: string;
+  target_stage_label: string;
+  will_resume_generation?: boolean;
+  default_model_id?: string;
+  last_action_model_id?: string;
+  allowed_model_ids: string[];
+  fallback_actions?: RecoveryMode[];
+}
+
+export interface RecoveryOption {
+  action: RecoveryMode;
+  label?: string;
+  kind?: "primary" | "secondary";
+  available: boolean;
+  reason_unavailable?: string;
+  preview?: RecoveryPreview | null;
+}
+
+export interface RecoveryContractFields {
+  allowed_actions?: RecoveryMode[];
+  recommended_action?: RecoveryMode;
+  blocked_reason?: string;
+  state_reconciled?: boolean;
+  reconciliation_kind?: string;
+  reconciliation_summary?: string;
+  recovery_options?: RecoveryOption[];
+}
+
 export interface TaskActionPayload {
   model_id?: string;
+}
+
+export interface RecoverTaskPayload extends TaskActionPayload {
+  recovery_mode?: RecoveryMode;
 }
 
 export interface ModelContextWindowCapability {
@@ -97,6 +132,18 @@ export interface ModelOption {
   provider?: string;
   capabilities?: ModelCapabilities;
   metadata?: ModelMetadata;
+}
+
+export interface ModelRefreshState {
+  loading: boolean;
+  error: string;
+  attemptedRefresh?: boolean;
+  fetchedAt?: string;
+  cacheAgeSeconds?: number;
+  cacheTtlSeconds?: number;
+  cached?: boolean;
+  invalidated?: boolean;
+  invalidatedModelLabel?: string;
 }
 
 export interface ModelListResponse {
@@ -263,7 +310,7 @@ export interface SourceAsset {
   uploaded_at: string;
 }
 
-export interface WorkspaceResponse {
+export interface WorkspaceResponse extends RecoveryContractFields {
   meta: WorkspaceMeta;
   recent_events: WorkspaceEvent[];
   active_trace_summary?: string;
@@ -407,7 +454,7 @@ export interface AgentTraceItem {
   created_at?: string;
 }
 
-export interface ReviewResponse {
+export interface ReviewResponse extends RecoveryContractFields {
   meta: WorkspaceMeta;
   review_type: string;
   review_version: string;

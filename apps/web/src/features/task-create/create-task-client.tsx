@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -21,11 +21,12 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { createTask, getModels, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
+import { createTask, getModelCatalog, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
 import { isNovelTaskModelSupported, selectNovelTaskModels } from "@/lib/model-options.mjs";
+import { formatModelRefreshStatus, isCurrentSelectionValid, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
 import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
-import { CreativeMode, ModelOption, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
+import { CreativeMode, ModelOption, ModelRefreshState, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
 
 const defaultPayload: TaskCreatePayload = {
   creative_mode: "original",
@@ -117,6 +118,7 @@ export default function CreateTaskClient() {
   const [payload, setPayload] = useState(defaultPayload);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({ loading: false, error: "" });
   const [styleProfiles, setStyleProfiles] = useState<StyleProfile[]>([]);
   const [styleProfilesLoading, setStyleProfilesLoading] = useState(true);
   const [styleProfilesError, setStyleProfilesError] = useState("");
@@ -125,27 +127,73 @@ export default function CreateTaskClient() {
   const [error, setError] = useState("");
   const [retryLoaded, setRetryLoaded] = useState(false);
   const [ragStatus, setRagStatus] = useState<RagSettingsStatus | null>(null);
+  const currentModelIdRef = useRef(payload.model_id);
+  const currentModelsRef = useRef<ModelOption[]>([]);
 
   useEffect(() => {
-    async function loadModels() {
-      try {
-        setModelsLoading(true);
-        const nextModels = normalizeModelOptions(await getModels({ refresh: true }));
-        const selectableModelOptions = selectNovelTaskModels(nextModels);
-        setModels(nextModels);
-        setPayload((current) => ({
-          ...current,
-          model_id: current.model_id || selectableModelOptions[0]?.id || nextModels[0]?.id || "",
-        }));
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "读取模型列表失败");
-      } finally {
-        setModelsLoading(false);
-      }
-    }
+    currentModelIdRef.current = payload.model_id;
+  }, [payload.model_id]);
 
-    void loadModels();
+  useEffect(() => {
+    currentModelsRef.current = models;
+  }, [models]);
+
+  const loadModels = useCallback(async (refresh = false) => {
+    try {
+      setModelsLoading(true);
+      setModelRefresh((current) => ({ ...current, loading: true, error: "" }));
+      const response = await getModelCatalog({ refresh });
+      const nextModels = normalizeModelOptions(response.data ?? []);
+      const selectableModelOptions = selectNovelTaskModels(nextModels);
+      const previousModelId = typeof currentModelIdRef.current === "string" ? currentModelIdRef.current.trim() : "";
+      const nextSelection = resolveSelectionAfterRefresh({
+        currentModelId: previousModelId,
+        availableModels: selectableModelOptions,
+      });
+      setModels(nextModels);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: "",
+        attemptedRefresh: current.attemptedRefresh || refresh,
+        fetchedAt: response.meta?.fetched_at,
+        cacheAgeSeconds: response.meta?.cache_age_seconds,
+        cacheTtlSeconds: response.meta?.cache_ttl_seconds,
+        cached: response.meta?.cached,
+        invalidated: refresh && nextSelection.invalidated,
+        invalidatedModelLabel:
+          refresh && nextSelection.invalidated
+            ? currentModelsRef.current.find((option) => option.id === previousModelId)?.display_name || previousModelId || undefined
+            : undefined,
+      }));
+      setPayload((current) => {
+        if (!current.model_id) {
+          return {
+            ...current,
+            model_id: selectableModelOptions[0]?.id || "",
+          };
+        }
+        return {
+          ...current,
+          model_id: nextSelection.invalidated ? "" : nextSelection.selectedModelId,
+        };
+      });
+    } catch (loadError) {
+      const nextError = loadError instanceof Error ? loadError.message : "读取模型列表失败";
+      setError(nextError);
+      setModelRefresh((current) => ({
+        ...current,
+        loading: false,
+        error: nextError,
+      }));
+    } finally {
+      setModelsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadModels(false);
+  }, [loadModels]);
 
   useEffect(() => {
     async function loadStyleProfiles() {
@@ -222,22 +270,22 @@ export default function CreateTaskClient() {
     void loadRetryTask();
   }, [retryLoaded]);
 
-  const resetPayload = useMemo(
-    () => ({
-      ...defaultPayload,
-      model_id: payload.model_id || models[0]?.id || "",
-    }),
-    [models, payload.model_id],
-  );
-
   const selectedModel = useMemo(
-    () => models.find((item) => item.id === payload.model_id) ?? models[0],
+    () => models.find((item) => item.id === payload.model_id),
     [models, payload.model_id],
   );
   const selectableModels = useMemo(
     () => models.filter((item) => isNovelTaskModelSupported(item)),
     [models],
   );
+  const resetPayload = useMemo(
+    () => ({
+      ...defaultPayload,
+      model_id: selectableModels.find((item) => item.id === payload.model_id)?.id || selectableModels[0]?.id || "",
+    }),
+    [payload.model_id, selectableModels],
+  );
+  const hasValidSelectedModel = isCurrentSelectionValid(payload.model_id, selectableModels);
 
   const selectedModelCapabilities = selectedModel?.capabilities;
   const selectedStyleProfile = useMemo(
@@ -257,7 +305,7 @@ export default function CreateTaskClient() {
   }, [payload.target_chapter_count]);
   const canSubmit =
     Boolean(payload.prompt.trim()) &&
-    Boolean(selectedModel && isNovelTaskModelSupported(selectedModel)) &&
+    Boolean(hasValidSelectedModel && selectedModel && isNovelTaskModelSupported(selectedModel)) &&
     Number(payload.target_chapter_count || 0) > 0 &&
     (!requiresStyleProfile || Boolean(selectedStyleProfile));
   const modelFeatures = useMemo(
@@ -267,19 +315,6 @@ export default function CreateTaskClient() {
         : [],
     [selectedModelCapabilities],
   );
-
-  useEffect(() => {
-    if (selectedModel && isNovelTaskModelSupported(selectedModel)) {
-      return;
-    }
-    if (!selectableModels.length) {
-      return;
-    }
-    setPayload((current) => ({
-      ...current,
-      model_id: selectableModels[0].id,
-    }));
-  }, [selectedModel, selectableModels]);
 
   useEffect(() => {
     if (!requiresStyleProfile) {
@@ -303,6 +338,10 @@ export default function CreateTaskClient() {
         field === "chapter_word_min" || field === "target_chapter_count"
           ? Number(event.target.value)
           : event.target.value;
+      if (field === "model_id") {
+        setModelRefresh((current) => ({ ...current, invalidated: false, invalidatedModelLabel: undefined }));
+      }
+      setError("");
       setPayload((current) => ({ ...current, [field]: value }));
     };
 
@@ -425,31 +464,52 @@ export default function CreateTaskClient() {
             {modelsLoading ? (
               <Skeleton variant="rounded" height={56} />
             ) : (
-              <TextField
-                select
-                label="生成模型"
-                value={payload.model_id ?? ""}
-                onChange={updateField("model_id")}
-                helperText={
-                  models.length
-                    ? selectedModel && !isNovelTaskModelSupported(selectedModel)
-                      ? "当前模型未完成小说工作流兼容性验证，请改用已验证模型。"
-                      : "模型选项来自后端 /api/models 接口，能力字段缺失时会自动兼容。"
-                    : "当前后端没有返回可用模型"
-                }
-              >
-                {models.length ? (
-                  models.map((option) => (
-                    <MenuItem key={option.id} value={option.id} disabled={!isNovelTaskModelSupported(option)}>
-                      {(option.display_name || option.id) + (!isNovelTaskModelSupported(option) ? "（未验证）" : "")}
-                    </MenuItem>
-                  ))
-                ) : (
-                  <MenuItem value="" disabled>
-                    暂无可用模型
+              <Stack spacing={1.5}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+                  <Typography variant="subtitle2">生成模型</Typography>
+                  <Button size="small" variant="outlined" onClick={() => void loadModels(true)}>
+                    刷新模型
+                  </Button>
+                </Stack>
+                <TextField
+                  select
+                  label="生成模型"
+                  value={hasValidSelectedModel ? payload.model_id : ""}
+                  onChange={updateField("model_id")}
+                  helperText={
+                    !models.length
+                      ? "当前后端没有返回可用模型"
+                      : !selectableModels.length
+                        ? "当前没有通过小说工作流兼容性验证的模型"
+                        : payload.model_id && !hasValidSelectedModel
+                          ? "当前已选模型不可用，请手动重新选择兼容模型。"
+                          : selectedModel && !isNovelTaskModelSupported(selectedModel)
+                        ? "当前模型未完成小说工作流兼容性验证，请改用已验证模型。"
+                        : "模型选项来自后端 /api/models 接口。"
+                  }
+                >
+                  <MenuItem value="">
+                    <em>请选择生成模型</em>
                   </MenuItem>
-                )}
-              </TextField>
+                  {models.length ? (
+                    models.map((option) => (
+                      <MenuItem key={option.id} value={option.id} disabled={!isNovelTaskModelSupported(option)}>
+                        {(option.display_name || option.id) + (!isNovelTaskModelSupported(option) ? "（未验证）" : "")}
+                      </MenuItem>
+                    ))
+                  ) : (
+                    <MenuItem value="" disabled>
+                      暂无可用模型
+                    </MenuItem>
+                  )}
+                </TextField>
+                <Typography variant="caption" color="text.secondary">
+                  {formatModelRefreshStatus(modelRefresh)}
+                </Typography>
+                {!hasValidSelectedModel ? (
+                  <Alert severity="warning">当前已选模型已失效或尚未选择，请手动重选后再创建任务。</Alert>
+                ) : null}
+              </Stack>
             )}
 
             {!modelsLoading && selectedModel && (

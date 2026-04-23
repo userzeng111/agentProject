@@ -25,7 +25,8 @@ import { getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultMode
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
-import { DashboardResponse, ModelListResponse, ModelOption, TaskCardSummary, TaskStatus } from "@/lib/types";
+import { DashboardResponse, ModelListResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
+import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -229,12 +230,14 @@ function SidebarStats({
   dashboard,
   models,
   modelMeta,
+  modelRefresh,
   onModelChange,
   onRefreshModels,
 }: {
   dashboard: DashboardResponse;
   models: ModelOption[];
   modelMeta: ModelListResponse["meta"] | null;
+  modelRefresh: ModelRefreshState;
   onModelChange: (modelId: string) => void;
   onRefreshModels: () => void;
 }) {
@@ -323,12 +326,9 @@ function SidebarStats({
             </Typography>
             <Typography variant="caption" color="text.secondary">
               可用小说模型 {selectableModels.length} 个
-              {typeof modelMeta?.cache_ttl_seconds === "number"
-                ? ` · 缓存 ${Math.round(modelMeta.cache_ttl_seconds)}s`
-                : ""}
-              {typeof modelMeta?.cache_age_seconds === "number"
-                ? ` · 当前缓存年龄 ${Math.round(modelMeta.cache_age_seconds)}s`
-                : ""}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {formatModelRefreshStatus(modelRefresh)}
             </Typography>
           </Stack>
         </CardContent>
@@ -376,6 +376,10 @@ export default function Home() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelMeta, setModelMeta] = useState<ModelListResponse["meta"] | null>(null);
+  const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({
+    loading: false,
+    error: "",
+  });
   const [error, setError] = useState("");
   const [modelUpdating, setModelUpdating] = useState(false);
 
@@ -391,25 +395,40 @@ export default function Home() {
   };
 
   const fetchModels = useCallback((refresh = false) => {
+    setModelRefresh((current) => ({
+      ...current,
+      loading: true,
+      error: "",
+    }));
     void getModelCatalog({ refresh })
       .then((response) => {
         setModels(normalizeModelOptions(response.data ?? []));
         setModelMeta(response.meta ?? null);
+        setModelRefresh((current) => ({
+          ...current,
+          loading: false,
+          error: "",
+          attemptedRefresh: current.attemptedRefresh || refresh,
+          fetchedAt: response.meta?.fetched_at,
+          cacheAgeSeconds: response.meta?.cache_age_seconds,
+          cacheTtlSeconds: response.meta?.cache_ttl_seconds,
+          cached: response.meta?.cached,
+          invalidated: false,
+          invalidatedModelLabel: undefined,
+        }));
       })
-      .catch(() => {
-        // 模型列表加载失败不影响主流程
+      .catch((reason) => {
+        setModelRefresh((current) => ({
+          ...current,
+          loading: false,
+          error: reason instanceof Error ? reason.message : "读取模型列表失败",
+        }));
       });
   }, []);
 
   useEffect(() => {
     fetchDashboard();
-    fetchModels(true);
-  }, [fetchModels]);
-
-  useEffect(() => {
-    const handleFocus = () => fetchModels(true);
-    window.addEventListener("focus", handleFocus);
-    return () => window.removeEventListener("focus", handleFocus);
+    fetchModels(false);
   }, [fetchModels]);
 
   const handleModelChange = (modelId: string) => {
@@ -419,7 +438,7 @@ export default function Home() {
       .then(() => {
         // 更新成功后刷新 dashboard 和模型列表
         fetchDashboard();
-        fetchModels(true);
+        fetchModels(false);
       })
       .catch((reason) => {
         setError(`切换模型失败：${reason instanceof Error ? reason.message : "未知错误"}`);
@@ -474,6 +493,7 @@ export default function Home() {
                 dashboard={dashboard}
                 models={models}
                 modelMeta={modelMeta}
+                modelRefresh={modelRefresh}
                 onModelChange={handleModelChange}
                 onRefreshModels={() => fetchModels(true)}
               />

@@ -264,6 +264,86 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertEqual(workspace.request_preview["last_action_model_id"], "glm-5.1")
             self.assertEqual(workspace.request_preview["last_action_kind"], "run")
 
+    def test_workspace_exposes_explicit_recovery_contract_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(workspace.allowed_actions, [])
+            self.assertEqual(workspace.recommended_action, "")
+            self.assertEqual(workspace.blocked_reason, "")
+            self.assertFalse(workspace.state_reconciled)
+            self.assertEqual(workspace.reconciliation_kind, "")
+            self.assertEqual(workspace.reconciliation_summary, "")
+            self.assertEqual(len(workspace.recovery_options), 2)
+            self.assertEqual(workspace.recovery_options[0].action, "recover_to_stable")
+            self.assertFalse(workspace.recovery_options[0].available)
+            self.assertEqual(workspace.recovery_options[1].action, "restart_from_input")
+            self.assertFalse(workspace.recovery_options[1].available)
+
+    def test_workspace_keeps_waiting_manual_action_on_read_and_recommends_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            broken = store.get(task.id)
+            broken.status = TaskStatus.WAITING_MANUAL_ACTION
+            broken.current_stage = "waiting_manual_action"
+            broken.current_unit = None
+            broken.story_plan = None
+            broken.pending_review = None
+            broken.error_message = "运行失败：模型网关暂时不可用。"
+            broken.normalized_spec = {
+                "mode": "short_story",
+                "creative_mode": "original",
+                "novel_size": "short",
+                "prompt": "写一部克制风格的都市悬疑小说",
+                "model_id": "gpt-5.4",
+            }
+            store.save(broken)
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(workspace.meta.status, TaskStatus.WAITING_MANUAL_ACTION)
+            self.assertEqual(store.get(task.id).status, TaskStatus.WAITING_MANUAL_ACTION)
+            self.assertEqual(workspace.allowed_actions, ["restart_from_input"])
+            self.assertEqual(workspace.recommended_action, "restart_from_input")
+            self.assertEqual(workspace.recovery_options[0].action, "recover_to_stable")
+            self.assertFalse(workspace.recovery_options[0].available)
+            self.assertEqual(workspace.recovery_options[1].action, "restart_from_input")
+            self.assertTrue(workspace.recovery_options[1].available)
+
     def test_dashboard_treats_dead_statuses_as_failed_attention_items(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
@@ -344,7 +424,15 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
                     model_id="gpt-5.4",
                 )
             )
-            store.set_waiting_manual_action(task.id, "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。")
+            store.set_waiting_manual_action(
+                task.id,
+                "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。",
+                payload={
+                    "summary": "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。",
+                    "display_level": "public",
+                    "reason": "missing_stable_state",
+                },
+            )
 
             workspace = service.get_workspace(task.id)
 
@@ -353,6 +441,24 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
                 workspace.meta.error_message,
                 "任务当前无法恢复，缺少可恢复的稳定产物，已转入待人工处理。",
             )
+            self.assertEqual(workspace.allowed_actions, ["restart_from_input"])
+            self.assertEqual(workspace.recommended_action, "restart_from_input")
+            self.assertEqual(workspace.blocked_reason, "missing_stable_state")
+            self.assertFalse(workspace.state_reconciled)
+            self.assertEqual(workspace.reconciliation_kind, "")
+            self.assertEqual(workspace.reconciliation_summary, "")
+            self.assertEqual(len(workspace.recovery_options), 2)
+            stable_option, restart_option = workspace.recovery_options
+            self.assertEqual(stable_option.action, "recover_to_stable")
+            self.assertFalse(stable_option.available)
+            self.assertIsNone(stable_option.preview)
+            self.assertEqual(restart_option.action, "restart_from_input")
+            self.assertTrue(restart_option.available)
+            self.assertIsNotNone(restart_option.preview)
+            assert restart_option.preview is not None
+            self.assertEqual(restart_option.preview.target_stage, "planning")
+            self.assertTrue(restart_option.preview.will_resume_generation)
+            self.assertEqual(store.get(task.id).status, TaskStatus.WAITING_MANUAL_ACTION)
 
     def test_second_equivalent_task_hits_context_and_response_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
