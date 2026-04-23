@@ -44,6 +44,9 @@ class AgentBlueprint(BaseModel):
     dependencies: list[str] = Field(default_factory=list)  # 依赖的 agent_id
     group: str = ""  # 分组标识（同组可并行）
     is_synthesis: bool = False  # 是否为综合决策 Agent
+    execution_kind: str = "subagent"  # subagent | synthesis
+    created_by: str = "main_agent"  # 只有主 Agent 可以派发蓝图
+    invocation_kind: str = "function_call"  # 子执行单元的调用方式
     output_format: str = "json"  # json | text
 
 
@@ -125,6 +128,10 @@ class TaskExecutionResult(BaseModel):
     role: str
     dimension: str
     weight: float = 1.0
+    execution_kind: str = "subagent"
+    parent_agent_id: str | None = None
+    created_by: str = "main_agent"
+    invocation_kind: str = "function_call"
     score: float = 0.0
     issues: list[dict[str, Any] | str] = Field(default_factory=list)
     warnings: list[dict[str, Any] | str] = Field(default_factory=list)

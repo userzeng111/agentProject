@@ -195,12 +195,12 @@ const theme = createTheme({
         root: {
           borderRadius: 8,
           fontWeight: 500,
-        },
-        selected: {
-          backgroundColor: "primary.main",
-          color: "#fff",
-          "&:hover": {
-            backgroundColor: "primary.dark",
+          "&.Mui-selected": {
+            backgroundColor: "primary.main",
+            color: "#fff",
+            "&:hover": {
+              backgroundColor: "primary.dark",
+            },
           },
         },
       },

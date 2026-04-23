@@ -136,19 +136,10 @@ class TaskOrchestrator:
             synthesis_result = None
             agent_results: list[TaskExecutionResult] = []
             for r in results:
-                # 通过蓝图标记判断是否为综合 Agent
-                bp_map = {bp.agent_id: bp for bp in blueprints}
-                # 通过 agent_id 匹配蓝图（results 中的 agent_id 对应 DynamicAgent.id）
-                is_synthesis = False
-                for bp in blueprints:
-                    if bp.is_synthesis and bp.role == r.role:
-                        is_synthesis = True
-                        break
-
-                if is_synthesis:
+                if r.execution_kind == "synthesis":
                     synthesis_result = r
-                else:
-                    agent_results.append(r)
+                    continue
+                agent_results.append(r)
 
             # 如果没有综合 Agent，取最后执行的结果
             if synthesis_result is None and results:
@@ -292,6 +283,9 @@ class TaskOrchestrator:
                         role=agent.blueprint.role,
                         dimension=agent.blueprint.dimension,
                         weight=agent.blueprint.weight,
+                        execution_kind=agent.blueprint.execution_kind,
+                        created_by=agent.blueprint.created_by,
+                        invocation_kind=agent.blueprint.invocation_kind,
                         error=str(e),
                         started_at=datetime.now(timezone.utc),
                         completed_at=datetime.now(timezone.utc),
@@ -303,8 +297,8 @@ class TaskOrchestrator:
     def _calculate_overall_score(results: list[TaskExecutionResult]) -> float:
         """计算加权平均整体评分。"""
         # 分离分析型 Agent 和综合 Agent
-        analysis_results = [r for r in results if r.is_success and r.role != "synthesis"]
-        synthesis_results = [r for r in results if r.is_success and r.role == "synthesis"]
+        analysis_results = [r for r in results if r.is_success and r.execution_kind != "synthesis"]
+        synthesis_results = [r for r in results if r.is_success and r.execution_kind == "synthesis"]
 
         # 如果有综合 Agent 的评分，直接使用
         if synthesis_results:

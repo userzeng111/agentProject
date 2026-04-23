@@ -120,34 +120,63 @@ class MasterAgent(BaseAgent):
         # 建立 role -> agent_id 的映射，用于解析依赖关系
         role_to_id: dict[str, str] = {}
         blueprints: list[AgentBlueprint] = []
+        normalized_sources: list[dict[str, Any]] = []
+        seen_analysis_keys: set[tuple[str, str]] = set()
+        synthesis_seen = False
 
         # 先创建所有蓝图（不含依赖）
         for agent_data in agents_data:
+            role = str(agent_data.get("role", "unknown")).strip() or "unknown"
+            dimension = str(agent_data.get("dimension", "未知维度")).strip() or "未知维度"
+            is_synthesis = bool(agent_data.get("is_synthesis", False) or role == "synthesis")
+
+            if is_synthesis:
+                if synthesis_seen:
+                    logger.warning("检测到重复综合 Agent 定义，已忽略: %s", agent_data.get("agent_name"))
+                    continue
+                synthesis_seen = True
+            else:
+                dedupe_key = (role.lower(), dimension.lower())
+                if dedupe_key in seen_analysis_keys:
+                    logger.warning(
+                        "检测到重复分析 Agent 定义，已忽略: role=%s, dimension=%s",
+                        role,
+                        dimension,
+                    )
+                    continue
+                seen_analysis_keys.add(dedupe_key)
+
             bp = AgentBlueprint(
                 agent_name=agent_data.get("agent_name", "未命名 Agent"),
-                role=agent_data.get("role", "unknown"),
-                dimension=agent_data.get("dimension", "未知维度"),
+                role=role,
+                dimension=dimension,
                 weight=float(agent_data.get("weight", 1.0)),
                 system_prompt=agent_data.get("system_prompt", "你是一个分析专家。"),
                 user_prompt_template=agent_data.get("user_prompt_template", "请分析以下内容：{content}"),
                 dependencies=[],  # 先留空，后面填充
                 group=agent_data.get("group", "default"),
-                is_synthesis=bool(agent_data.get("is_synthesis", False)),
+                is_synthesis=is_synthesis,
+                execution_kind="synthesis" if is_synthesis else "subagent",
+                created_by="main_agent",
+                invocation_kind="function_call",
                 output_format=agent_data.get("output_format", "json"),
             )
             blueprints.append(bp)
-            role_to_id[bp.role] = bp.agent_id
+            normalized_sources.append(agent_data)
+            role_to_id.setdefault(bp.role, bp.agent_id)
 
         # 再填充依赖关系（将 role 转为 agent_id）
-        for bp, agent_data in zip(blueprints, agents_data):
+        for bp, agent_data in zip(blueprints, normalized_sources):
             dep_roles = agent_data.get("dependencies", [])
             dep_ids = [role_to_id[r] for r in dep_roles if r in role_to_id]
-            bp.dependencies = dep_ids
+            if bp.is_synthesis and not dep_ids:
+                dep_ids = [item.agent_id for item in blueprints if not item.is_synthesis]
+            bp.dependencies = list(dict.fromkeys(dep_ids))
 
         reasoning = response.get("analysis_reasoning", "")
         logger.info("Master Agent 分析推理: %s", reasoning[:200])
 
-        return blueprints
+        return blueprints or self._fallback_blueprints()
 
     def _fallback_blueprints(self) -> list[AgentBlueprint]:
         """当 LLM 无法生成有效蓝图时的降级方案。"""
@@ -162,5 +191,8 @@ class MasterAgent(BaseAgent):
                 dependencies=[],
                 group="analysis",
                 is_synthesis=False,
+                execution_kind="subagent",
+                created_by="main_agent",
+                invocation_kind="function_call",
             ),
         ]

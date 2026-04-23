@@ -35,6 +35,8 @@ class AgentFactory:
 
     def create(self, blueprint: AgentBlueprint) -> DynamicAgent:
         """根据蓝图创建单个 DynamicAgent 实例。"""
+        if blueprint.created_by != "main_agent":
+            raise ValueError(f"仅允许主 Agent 派发子执行单元，当前来源: {blueprint.created_by}")
         agent = DynamicAgent(
             blueprint=blueprint,
             status=DynamicAgentStatus.IDLE,
@@ -150,6 +152,9 @@ class AgentFactory:
                 role=bp.role,
                 dimension=bp.dimension,
                 weight=bp.weight,
+                execution_kind=bp.execution_kind,
+                created_by=bp.created_by,
+                invocation_kind=bp.invocation_kind,
                 score=score,
                 issues=issues,
                 warnings=warnings,
@@ -180,6 +185,9 @@ class AgentFactory:
                 role=bp.role,
                 dimension=bp.dimension,
                 weight=bp.weight,
+                execution_kind=bp.execution_kind,
+                created_by=bp.created_by,
+                invocation_kind=bp.invocation_kind,
                 error=str(e),
                 started_at=started_at,
                 completed_at=completed_at,

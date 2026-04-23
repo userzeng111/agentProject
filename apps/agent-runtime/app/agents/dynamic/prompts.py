@@ -42,10 +42,15 @@ MASTER_BLUEPRINT_PROMPT = """请根据以下任务信息，动态规划所需的
    - 系统 prompt（定义该角色的职责和评分标准）
    - 用户 prompt 模板（包含需要评估的内容占位符）
 3. 如需综合决策，额外设计一个综合 Agent（is_synthesis: true，权重 1.0）
+   - 综合 Agent 最多只能有 1 个，role 固定为 "synthesis"
 4. 分析 Agent 之间的依赖关系：
    - 分析型 Agent 之间无依赖（可并行）
    - 综合 Agent 依赖所有分析型 Agent
 5. 将同组可并行的 Agent 归入同一 group
+6. 分析型 Agent 的职责不得重叠：
+   - role 必须唯一
+   - role + dimension 的组合必须唯一
+   - 子 Agent 仅作为主 Agent 派发的工具执行单元
 
 【输出要求】
 严格返回 JSON：

@@ -29,6 +29,8 @@ from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
 logger = logging.getLogger(__name__)
 
+MAIN_REVIEW_AGENT_ID = "dynamic-review-main"
+
 
 class DynamicReviewBridge:
     """
@@ -228,11 +230,28 @@ class DynamicReviewBridge:
             comment = self._build_fallback_comment(result.agent_results, overall_score, pass_threshold)
 
         # 构建 agent_trace（兼容 AgentResult 格式）
-        agent_trace: list[DomainAgentResult] = []
+        agent_trace: list[DomainAgentResult] = [
+            DomainAgentResult(
+                agent_id=MAIN_REVIEW_AGENT_ID,
+                agent_name="主审核编排 Agent",
+                role="orchestrator",
+                execution_kind="main_agent",
+                created_by="system",
+                invocation_kind="orchestrate",
+                status="completed",
+                score=overall_score,
+                reasoning=reasoning or f"主 Agent 完成 {review_type} 审核编排",
+            )
+        ]
         for r in result.agent_results:
             agent_trace.append(DomainAgentResult(
+                agent_id=r.agent_id,
                 agent_name=r.agent_name,
                 role=r.role,
+                execution_kind=r.execution_kind or "subagent",
+                parent_agent_id=r.parent_agent_id or MAIN_REVIEW_AGENT_ID,
+                created_by=r.created_by or "main_agent",
+                invocation_kind=r.invocation_kind or "function_call",
                 status="completed" if r.is_success else "failed",
                 score=r.score,
                 issues=r.issues if all(isinstance(i, dict) for i in r.issues) else [],
@@ -245,8 +264,13 @@ class DynamicReviewBridge:
         # 加入综合 Agent
         if synthesis:
             agent_trace.append(DomainAgentResult(
+                agent_id=synthesis.agent_id,
                 agent_name=synthesis.agent_name,
                 role=synthesis.role,
+                execution_kind="synthesis",
+                parent_agent_id=synthesis.parent_agent_id or MAIN_REVIEW_AGENT_ID,
+                created_by=synthesis.created_by or "main_agent",
+                invocation_kind=synthesis.invocation_kind or "function_call",
                 status="completed" if synthesis.is_success else "failed",
                 score=synthesis.score,
                 reasoning=synthesis.reasoning,

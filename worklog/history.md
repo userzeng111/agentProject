@@ -1,5 +1,14 @@
 # 历史问题索引
 
+- 标题：Agent 审核追踪轮次统计修复
+  路径：`worklog/archive/agent架构/20260422-02-Agent审核追踪轮次统计修复.md`
+  摘要：修复审核追踪将累计历史 trace 误统计为当前轮次主/子 Agent 数量的问题，并完成前后端验证。
+- 标题：Agent 审核追踪动态派发语义修正
+  路径：`worklog/archive/agent架构/20260422-01-Agent审核追踪动态派发语义修正.md`
+  摘要：完成主 Agent、subagent 与综合裁决语义拆分，并修正前端展示与后端动态蓝图去重约束。
+- 标题：MUI PaginationItem 样式告警修复
+  路径：`worklog/archive/UI优化/20260422-01-MUI-PaginationItem样式告警修复.md`
+  摘要：修复前端开发态 `MuiPaginationItem` 状态类覆盖告警，并保持分页选中态视觉不变。
 - 标题：模型切换安全化只读分析
   路径：`worklog/archive/功能开发/20260423-02-模型切换安全化只读分析.md`
   摘要：已确认模型失效保护缺口并由后续实现消除运行页、审核页静默回退风险，恢复弹窗保持显式阻断。

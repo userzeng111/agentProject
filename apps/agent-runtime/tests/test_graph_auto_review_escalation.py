@@ -303,7 +303,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         self.assertEqual(result["__interrupt__"][0].value["revision_count"], 1)
         self.assertEqual(engine.revision_comments, ["先自动修订一次。"])
 
-    def test_short_story_target_words_are_raised_by_100(self) -> None:
+    def test_short_story_chapter_word_min_is_preserved(self) -> None:
         engine = FakeEngine()
         graph = build_graph(
             engine,
@@ -319,7 +319,8 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
 
         self.assertTrue(engine.seen_specs)
         self.assertEqual(engine.seen_specs[0]["requested_target_words"], 1500)
-        self.assertEqual(engine.seen_specs[0]["target_words"], 1600)
+        self.assertEqual(engine.seen_specs[0]["target_words"], 1500)
+        self.assertEqual(engine.seen_specs[0]["chapter_word_min"], 1500)
 
     def test_dynamic_review_bridge_can_run_without_legacy_auto_review_manager(self) -> None:
         engine = FakeDynamicEngine()
