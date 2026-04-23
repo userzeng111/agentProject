@@ -12,7 +12,7 @@ from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskM
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
-from app.storage.db_repository import update_project_status
+from app.storage.db_repository import create_batch, update_project_status
 
 
 class FakeGatewayClient:
@@ -448,6 +448,67 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(response.allowed_actions, [])
         repaired = store.get(task.id)
         self.assertEqual(repaired.status, TaskStatus.WAITING_VERIFICATION_REVIEW)
+
+    def test_workspace_recovery_preview_points_to_specific_chapter_generation_target(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇校园悬疑短篇",
+                model_id="gpt-5.4",
+                target_words=1600,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="旧校钟声",
+            logline="学生在深夜追查教学楼异响来源。",
+            world_notes=["旧教学楼夜间封闭。"],
+            character_notes=["主角是学生会干事。"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见钟声"},
+                {"number": 2, "title": "第二章", "goal": "排查旧楼"},
+                {"number": 3, "title": "第三章", "goal": "锁定线索"},
+                {"number": 4, "title": "第四章", "goal": "揭开真相"},
+            ],
+        )
+        task.status = TaskStatus.WAITING_MANUAL_ACTION
+        task.current_stage = "waiting_manual_action"
+        task.error_message = "继续创作失败：第 4 章生成过程中断。"
+        store.save(task)
+
+        service._ensure_novel_project_seeded(task)
+        create_batch(
+            task.id,
+            continue_request_id="req-4",
+            requested_count=1,
+            effective_count=1,
+            actual_start_chapter=4,
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            completed_chapter_count=3,
+            next_chapter_number=4,
+            active_batch_no=1,
+            active_continue_request_id="req-4",
+            blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+            current_generating_chapter_number=4,
+        )
+
+        workspace = service.get_workspace(task.id)
+
+        stable_option = next(item for item in (workspace.recovery_options or []) if item.action == "recover_to_stable")
+        self.assertTrue(stable_option.available)
+        self.assertIsNotNone(stable_option.preview)
+        assert stable_option.preview is not None
+        self.assertEqual(stable_option.preview.target_stage, "waiting_chapter_generation")
+        self.assertEqual(stable_option.preview.target_chapter_number, 4)
+        self.assertEqual(stable_option.preview.target_chapter_numbers, [4])
+        self.assertFalse(stable_option.preview.reuse_existing_draft)
 
     def test_recover_task_rebuilds_corrupted_chapter_pair_from_history(self) -> None:
         tmp_dir, store, service = self._build_service()

@@ -181,6 +181,10 @@ class RecoveryMode(str, Enum):
 class RecoveryPreview(BaseModel):
     target_stage: str = ""
     target_stage_label: str = ""
+    target_chapter_number: int | None = None
+    target_chapter_numbers: list[int] = Field(default_factory=list)
+    target_batch_no: int | None = None
+    reuse_existing_draft: bool = False
     will_resume_generation: bool = False
     default_model_id: str = ""
     last_action_model_id: str = ""

@@ -48,6 +48,7 @@ class NovelProjectModel(Base):
     default_batch_size: Mapped[int] = mapped_column(Integer, default=3)
     completed_chapter_count: Mapped[int] = mapped_column(Integer, default=0)
     next_chapter_number: Mapped[int] = mapped_column(Integer, default=1)
+    current_generating_chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     status: Mapped[str] = mapped_column(String(64), default="created", index=True)
     active_batch_no: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     active_continue_request_id: Mapped[str] = mapped_column(String(128), default="")

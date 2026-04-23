@@ -320,6 +320,71 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("中文小说章节起草助手", first_call_messages[0]["content"])
             self.assertNotEqual(first_call_messages[0]["content"], "你是小说策划助手。")
 
+    def test_generate_chapter_pair_includes_previous_fulltext_uses_recent_twenty_summaries_and_existing_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "number": 22,
+                        "title": "第二十二章",
+                        "summary": "主角进入最终调查。",
+                        "content": "第二十二章内容",
+                    }
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            completed = [
+                {
+                    "number": number,
+                    "title": f"第{number}章",
+                    "summary": f"摘要{number}",
+                    "content": f"第{number}章正文",
+                }
+                for number in range(1, 22)
+            ]
+
+            engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "写一篇校园悬疑长篇",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "chapter_word_min": 2200,
+                    "chapter_word_max": 2860,
+                    "model_id": "gpt-5.4",
+                },
+                story_plan={
+                    "working_title": "旧校钟声",
+                    "logline": "学生在深夜追查教学楼异响来源。",
+                    "chapter_plan": [
+                        {"number": number, "title": f"第{number}章", "goal": f"推进{number}"}
+                        for number in range(1, 23)
+                    ],
+                },
+                batch_index=21,
+                completed_chapters=completed,
+                reference_text="旧教学楼、巡夜钟声。",
+                model="gpt-5.4",
+                draft_seeds={22: "这是第二十二章的历史草稿片段。"},
+            )
+
+            prompt = fake_gateway.calls[0]["messages"][-1]["content"]
+            self.assertIn("上一章全文：第21章正文", prompt)
+            self.assertIn("当前章节历史草稿：这是第二十二章的历史草稿片段。", prompt)
+            self.assertIn("第2章:摘要2", prompt)
+            self.assertIn("第21章:摘要21", prompt)
+            self.assertNotIn("第1章:摘要1", prompt)
+
     def test_build_story_plan_uses_persistent_response_cache_across_engine_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

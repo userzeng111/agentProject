@@ -313,6 +313,7 @@ class TaskService:
                         status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
                         completed_chapter_count=completed_count,
                         next_chapter_number=next_chapter_number,
+                        current_generating_chapter_number=None,
                     )
                     note = comment.strip() or "当前批次审核通过，全部章节已完成，等待全文验证。"
                     task.pending_review = ReviewPayload(
@@ -329,6 +330,7 @@ class TaskService:
                     status=TaskStatus.READY_FOR_BATCH.value,
                     completed_chapter_count=completed_count,
                     next_chapter_number=next_chapter_number,
+                    current_generating_chapter_number=None,
                 )
                 snapshot = self.store.set_ready_for_batch(
                     task_id,
@@ -343,6 +345,7 @@ class TaskService:
                 status=TaskStatus.READY_FOR_BATCH.value,
                 completed_chapter_count=project.completed_chapter_count,
                 next_chapter_number=project.next_chapter_number,
+                current_generating_chapter_number=None,
             )
             snapshot = self.store.set_ready_for_batch(
                 task_id,
@@ -454,6 +457,7 @@ class TaskService:
             next_chapter_number=completed_count + 1,
             active_batch_no=batch.batch_no,
             active_continue_request_id=request.continue_request_id,
+            current_generating_chapter_number=completed_count + 1,
         )
 
         task = self.store.mark_stage(
@@ -468,6 +472,10 @@ class TaskService:
         task = self._record_last_action(task_id, model_id=action_model_id, kind="continue")
 
         completed_chapters = self.get_current_chapters(task_id)[:completed_count]
+        draft_seed_map = self._load_draft_seed_map(
+            task_id,
+            list(range(completed_count + 1, completed_count + effective_count + 1)),
+        )
         try:
             chapter_pair = self.engine.generate_chapter_pair(
                 spec=self._with_model_id(
@@ -480,6 +488,7 @@ class TaskService:
                 reference_text="\n\n".join(source.content for source in task.sources),
                 model=action_model_id,
                 requested_batch_size=effective_count,
+                draft_seeds=draft_seed_map,
             )
             chapter_drafts = [ChapterDraft.model_validate(item) for item in chapter_pair]
             for chapter in chapter_drafts:
@@ -509,6 +518,7 @@ class TaskService:
                 status=TaskStatus.WAITING_CHAPTER_REVIEW.value,
                 completed_chapter_count=completed_count,
                 next_chapter_number=completed_count + 1,
+                current_generating_chapter_number=None,
             )
             review = ReviewPayload(
                 type="chapter_pair_review",
@@ -531,6 +541,7 @@ class TaskService:
                 active_batch_no=None,
                 active_continue_request_id="",
                 blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+                current_generating_chapter_number=self._current_generating_chapter_number_from_error(task_id, completed_count + 1),
             )
             snapshot = self.store.set_waiting_manual_action(
                 task_id,
@@ -925,6 +936,7 @@ class TaskService:
             next_chapter_number=int(project.next_chapter_number or (completed + 1)),
             active_batch_no=None,
             active_continue_request_id="",
+            current_generating_chapter_number=None,
         )
         self.store.append_event(
             task.id,
@@ -1011,6 +1023,10 @@ class TaskService:
         last_action_model_id = task.last_action_model_id or ""
 
         target_stage = ""
+        target_chapter_number: int | None = None
+        target_chapter_numbers: list[int] = []
+        target_batch_no: int | None = None
+        reuse_existing_draft = False
         if task.status in {TaskStatus.PLANNING, TaskStatus.WAITING_OUTLINE_REVIEW} and self._can_recover_outline_review(task):
             target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
         elif task.status is TaskStatus.WAITING_CHAPTER_REVIEW and task.pending_review is not None:
@@ -1031,33 +1047,84 @@ class TaskService:
                     target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
                 else:
                     target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
+                    target_chapter_numbers = [
+                        int(ch.number if isinstance(ch, ChapterDraft) else ch.get("number"))
+                        for ch in (task.pending_review.chapter_pair or [])
+                        if (isinstance(ch, ChapterDraft) and ch.number) or (isinstance(ch, dict) and ch.get("number"))
+                    ]
+                    target_chapter_number = target_chapter_numbers[-1] if target_chapter_numbers else None
             elif self._can_recover_chapter_review(task, force=False):
                 target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
         elif task.status is TaskStatus.WAITING_VERIFICATION_REVIEW and self._can_recover_verification_review(task, force=False):
             target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
         elif task.status is TaskStatus.WAITING_MANUAL_ACTION:
             if self._has_novel_project(task.id):
-                from app.storage.db_repository import get_novel_project
+                from app.storage.db_repository import get_active_batch, get_novel_project
 
                 project = get_novel_project(task.id)
                 blocked_status = str(project.blocked_from_status or "") if project is not None else ""
-                if blocked_status in _STAGE_LABELS:
+                active_batch = get_active_batch(task.id) if project is not None else None
+                if blocked_status == TaskStatus.READY_FOR_BATCH.value and project is not None:
+                    target_stage = "waiting_chapter_generation"
+                    target_batch_no = int(active_batch.batch_no) if active_batch is not None else None
+                    if active_batch is not None:
+                        target_chapter_numbers = list(
+                            range(
+                                int(active_batch.actual_start_chapter),
+                                int(active_batch.expected_end_chapter) + 1,
+                            )
+                        )
+                    target_chapter_number = int(
+                        project.current_generating_chapter_number
+                        or project.next_chapter_number
+                        or (target_chapter_numbers[0] if target_chapter_numbers else 0)
+                    ) or None
+                    reuse_existing_draft = bool(
+                        target_chapter_number and self._load_chapter_draft_from_history(task.id, target_chapter_number)
+                    )
+                elif blocked_status in _STAGE_LABELS:
                     target_stage = blocked_status
             if not target_stage:
                 if task.pending_review is not None and task.pending_review.type == "verification_review":
                     target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
                 elif task.pending_review is not None and task.pending_review.type == "chapter_pair_review":
                     target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
+                    target_chapter_numbers = [
+                        int(ch.number if isinstance(ch, ChapterDraft) else ch.get("number"))
+                        for ch in (task.pending_review.chapter_pair or [])
+                        if (isinstance(ch, ChapterDraft) and ch.number) or (isinstance(ch, dict) and ch.get("number"))
+                    ]
+                    target_chapter_number = target_chapter_numbers[-1] if target_chapter_numbers else None
                 elif self._load_story_plan_from_history(task.id) is not None:
                     target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
 
         if not target_stage:
             return None
 
+        target_stage_label = _STAGE_LABELS.get(target_stage, target_stage)
+        if target_stage == "waiting_chapter_generation" and target_chapter_numbers:
+            if len(target_chapter_numbers) == 1:
+                target_stage_label = f"恢复到第 {target_chapter_numbers[0]} 章待生成"
+            else:
+                target_stage_label = (
+                    f"恢复到第 {target_chapter_numbers[0]}-{target_chapter_numbers[-1]} 章批次待生成"
+                )
+        elif target_stage == TaskStatus.WAITING_CHAPTER_REVIEW.value and target_chapter_numbers:
+            if len(target_chapter_numbers) == 1:
+                target_stage_label = f"恢复到第 {target_chapter_numbers[0]} 章待审核"
+            else:
+                target_stage_label = (
+                    f"恢复到第 {target_chapter_numbers[0]}-{target_chapter_numbers[-1]} 章待审核"
+                )
+
         return RecoveryPreview(
             target_stage=target_stage,
-            target_stage_label=_STAGE_LABELS.get(target_stage, target_stage),
-            will_resume_generation=False,
+            target_stage_label=target_stage_label,
+            target_chapter_number=target_chapter_number,
+            target_chapter_numbers=target_chapter_numbers,
+            target_batch_no=target_batch_no,
+            reuse_existing_draft=reuse_existing_draft,
+            will_resume_generation=target_stage == "waiting_chapter_generation",
             default_model_id=default_model_id,
             last_action_model_id=last_action_model_id,
             allowed_model_ids=allowed_model_ids,
@@ -1170,6 +1237,7 @@ class TaskService:
                         task.id,
                         status=TaskStatus.WAITING_MANUAL_ACTION.value,
                         blocked_from_status=project.status,
+                        current_generating_chapter_number=int(chapter.chapter_number),
                     )
                     return self.store.set_waiting_manual_action(
                         task.id,
@@ -1193,6 +1261,7 @@ class TaskService:
                     task.id,
                     status=TaskStatus.WAITING_MANUAL_ACTION.value,
                     blocked_from_status=project.status,
+                    current_generating_chapter_number=int(chapter.chapter_number),
                 )
                 return self.store.set_waiting_manual_action(
                     task.id,
@@ -1215,6 +1284,7 @@ class TaskService:
                     task.id,
                     status=TaskStatus.WAITING_MANUAL_ACTION.value,
                     blocked_from_status=project.status,
+                    current_generating_chapter_number=int(batch.actual_start_chapter),
                 )
                 return self.store.set_waiting_manual_action(
                     task.id,
@@ -1231,6 +1301,7 @@ class TaskService:
                     blocked_from_status="",
                     active_batch_no=project.active_batch_no,
                     active_continue_request_id=project.active_continue_request_id,
+                    current_generating_chapter_number=None,
                 )
                 return snapshot
             if blocked_status == TaskStatus.READY_FOR_BATCH.value and task.story_plan is not None:
@@ -1241,6 +1312,11 @@ class TaskService:
                     active_batch_no=None,
                     active_continue_request_id="",
                     blocked_from_status="",
+                    current_generating_chapter_number=(
+                        int(project.current_generating_chapter_number)
+                        if project.current_generating_chapter_number
+                        else None
+                    ),
                 )
                 return snapshot
 
@@ -1526,6 +1602,48 @@ class TaskService:
                 continue
             items.append(payload.model_dump(mode="json"))
         return items
+
+    def _load_chapter_draft_from_history(self, task_id: str, chapter_number: int) -> dict[str, Any] | None:
+        relative_path = f"context/drafting/chapter-{chapter_number:02d}-history.json"
+        try:
+            history = self.store.read_json(task_id, relative_path)
+        except Exception:
+            return None
+        messages = history.get("messages") if isinstance(history, dict) else []
+        if not isinstance(messages, list):
+            return None
+        for message in reversed(messages):
+            if message.get("role") != "assistant":
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            try:
+                payload = ChapterDraft.model_validate_json(content)
+            except Exception:
+                continue
+            return payload.model_dump(mode="json")
+        return None
+
+    def _load_draft_seed_map(self, task_id: str, chapter_numbers: list[int]) -> dict[int, str]:
+        draft_seed_map: dict[int, str] = {}
+        for chapter_number in chapter_numbers:
+            payload = self._load_chapter_draft_from_history(task_id, chapter_number)
+            if payload is None:
+                continue
+            content = str(payload.get("content") or "").strip()
+            if content:
+                draft_seed_map[int(chapter_number)] = content
+        return draft_seed_map
+
+    def _current_generating_chapter_number_from_error(self, task_id: str, default_value: int) -> int:
+        task = self.store.get(task_id)
+        for event in reversed(task.events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            chapter_number = payload.get("chapter_number")
+            if isinstance(chapter_number, int) and chapter_number > 0:
+                return chapter_number
+        return int(default_value)
 
     def _resume_seed_state(self, task: TaskRecord, action_model_id: str | None = None) -> tuple[dict[str, Any], str] | None:
         if task.pending_review is None:
@@ -2000,6 +2118,13 @@ class TaskService:
             completed_count = int(project.completed_chapter_count or 0)
             next_chapter_number = int(project.next_chapter_number or (completed_count + 1))
             default_batch_size = int(project.default_batch_size or 3)
+            current_generating_chapter_number = (
+                int(project.current_generating_chapter_number)
+                if project.current_generating_chapter_number
+                else None
+            )
+        if project is None:
+            current_generating_chapter_number = None
         target_chapter_count = int(task.target_chapter_count or task.input.target_chapter_count or 0)
         chapter_count_min = int(task.chapter_count_min or task.input.chapter_count_min)
         chapter_count_max = int(task.chapter_count_max or task.input.chapter_count_max)
@@ -2011,6 +2136,7 @@ class TaskService:
             "planned_chapter_count": planned_count,
             "completed_chapter_count": completed_count,
             "next_chapter_number": next_chapter_number,
+            "current_generating_chapter_number": current_generating_chapter_number if project is not None else None,
             "remaining_chapter_count": remaining,
             "default_batch_size": default_batch_size,
         }
@@ -2136,6 +2262,8 @@ class TaskService:
 
     def _build_progress_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:
+            from app.storage.db_repository import update_project_status
+
             stage = str(event.get("stage") or "drafting")
             event_type = str(event.get("event_type") or "task.updated")
             unit_id = event.get("unit_id")
@@ -2178,6 +2306,13 @@ class TaskService:
                     unit_id=unit_id,
                 )
             elif event_type == "chapter.started":
+                chapter_number = payload.get("chapter_number")
+                if isinstance(chapter_number, int) and chapter_number > 0:
+                    update_project_status(
+                        task_id,
+                        status=TaskStatus.DRAFTING.value,
+                        current_generating_chapter_number=chapter_number,
+                    )
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",

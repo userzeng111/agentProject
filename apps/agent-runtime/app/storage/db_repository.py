@@ -17,6 +17,7 @@ from app.storage.db_models import (
 )
 
 logger = logging.getLogger(__name__)
+_UNSET = object()
 
 
 def _task_title(task: TaskRecord) -> str:
@@ -88,6 +89,8 @@ def upsert_novel_project(task: TaskRecord, story_plan: StoryPlan | None = None) 
         row.default_batch_size = 3
         row.completed_chapter_count = int(row.completed_chapter_count or 0)
         row.next_chapter_number = max(row.completed_chapter_count + 1, 1)
+        if row.current_generating_chapter_number is not None and row.current_generating_chapter_number <= 0:
+            row.current_generating_chapter_number = None
         if not row.status:
             row.status = task.status.value
         row.updated_at = utc_now()
@@ -333,6 +336,7 @@ def update_project_status(
     active_batch_no: int | None = None,
     active_continue_request_id: str | None = None,
     blocked_from_status: str | None = None,
+    current_generating_chapter_number: int | None | object = _UNSET,
 ) -> None:
     with get_session() as session:
         row = session.query(NovelProjectModel).filter_by(task_id=task_id).first()
@@ -347,6 +351,12 @@ def update_project_status(
         row.active_continue_request_id = active_continue_request_id or ""
         if blocked_from_status is not None:
             row.blocked_from_status = blocked_from_status
+        if current_generating_chapter_number is not _UNSET:
+            row.current_generating_chapter_number = (
+                int(current_generating_chapter_number)
+                if isinstance(current_generating_chapter_number, int) and current_generating_chapter_number > 0
+                else None
+            )
         row.updated_at = utc_now()
         session.commit()
 

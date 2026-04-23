@@ -19,7 +19,7 @@ import {
   Typography,
 } from "@mui/material";
 
-import { ModelOption, RecoveryContractFields, RecoveryMode } from "@/lib/types";
+import { ModelOption, RecoveryContractFields, RecoveryMode, RecoveryPreview } from "@/lib/types";
 import { filterRecoveryModels, resolveRecoveryPreview } from "./recovery-state.mjs";
 
 const ACTION_ORDER: RecoveryMode[] = ["recover_to_stable", "restart_from_input"];
@@ -38,6 +38,22 @@ function formatFallbackActions(actions?: RecoveryMode[]) {
     return "";
   }
   return actions.map((action) => ACTION_LABELS[action] || action).join("、");
+}
+
+function formatTargetChapters(preview?: RecoveryPreview | null) {
+  const chapterNumbers = Array.isArray(preview?.target_chapter_numbers)
+    ? preview.target_chapter_numbers.filter((item) => Number.isInteger(item))
+    : [];
+  if (chapterNumbers.length === 1) {
+    return `第 ${chapterNumbers[0]} 章`;
+  }
+  if (chapterNumbers.length > 1) {
+    return `第 ${chapterNumbers[0]}-${chapterNumbers[chapterNumbers.length - 1]} 章`;
+  }
+  if (typeof preview?.target_chapter_number === "number" && Number.isInteger(preview.target_chapter_number)) {
+    return `第 ${preview.target_chapter_number} 章`;
+  }
+  return "";
 }
 
 export interface RecoveryDialogProps {
@@ -81,6 +97,7 @@ export default function RecoveryDialog({
   const stableOption = options.find((option) => option.action === "recover_to_stable") ?? null;
   const noStableTarget = stableOption && !stableOption.available;
   const fallbackActions = formatFallbackActions(preview?.fallback_actions);
+  const targetChapters = formatTargetChapters(preview);
 
   return (
     <Dialog
@@ -152,6 +169,15 @@ export default function RecoveryDialog({
               <Typography variant="body2">
                 恢复目标：{preview?.target_stage_label || "当前动作暂未提供恢复目标"}
               </Typography>
+              {targetChapters ? (
+                <Typography variant="body2">
+                  目标章节：{targetChapters}
+                  {typeof preview?.target_batch_no === "number" ? ` · 批次 ${preview.target_batch_no}` : ""}
+                </Typography>
+              ) : null}
+              {preview?.reuse_existing_draft ? (
+                <Typography variant="body2">草稿策略：将优先复用该章节已有历史草稿。</Typography>
+              ) : null}
               <Typography variant="body2">
                 恢复后果：
                 {preview

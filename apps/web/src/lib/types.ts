@@ -41,6 +41,10 @@ export type RecoveryMode = "recover_to_stable" | "restart_from_input";
 export interface RecoveryPreview {
   target_stage: string;
   target_stage_label: string;
+  target_chapter_number?: number | null;
+  target_chapter_numbers?: number[];
+  target_batch_no?: number | null;
+  reuse_existing_draft?: boolean;
   will_resume_generation?: boolean;
   default_model_id?: string;
   last_action_model_id?: string;

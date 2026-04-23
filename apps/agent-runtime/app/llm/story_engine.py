@@ -116,6 +116,7 @@ class StoryEngine(BaseAgent):
                     "单章字数下限：{chapter_word_min}\n当前章节建议字数：{chapter_word_range}\n"
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
                     "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
+                    "上一章全文：{previous_chapter_full_text}\n当前章节历史草稿：{current_chapter_existing_draft}\n"
                     "风格目标：{style}\n风格约束：{style_requirements}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
                     "要求：当前章节内容控制在 {chapter_word_range} 字，严格遵守上述风格约束，不得退回默认通用风格。",
@@ -356,6 +357,7 @@ class StoryEngine(BaseAgent):
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
+        previous_chapter_full_text = "无"
         conversation_history: list[dict[str, str]] = [
             {"role": str(item.get("role") or "user"), "content": str(item.get("content") or "")}
             for item in (initial_conversation_history or [])
@@ -390,6 +392,8 @@ class StoryEngine(BaseAgent):
                 chapter_goal=item["goal"],
                 chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
                 completed_summaries="；".join(completed_summaries) if completed_summaries else "无",
+                previous_chapter_full_text=previous_chapter_full_text,
+                current_chapter_existing_draft="无",
                 style=self._style_label(spec),
                 style_requirements=self._style_requirements(spec),
                 context_memory=self._context_memory(context_packet),
@@ -410,6 +414,8 @@ class StoryEngine(BaseAgent):
             chapter_draft = ChapterDraft.model_validate(chapter_payload)
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
+            completed_summaries = completed_summaries[-20:]
+            previous_chapter_full_text = chapter_draft.content or previous_chapter_full_text
             if active_progress_callback is not None:
                 active_progress_callback(
                     {
@@ -450,6 +456,7 @@ class StoryEngine(BaseAgent):
         model: str | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         requested_batch_size: int | None = None,
+        draft_seeds: dict[int, str] | None = None,
     ) -> list[ChapterDraft]:
         """按当前批次生成章节：首批可为两章，后续批次可为单章。"""
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
@@ -470,10 +477,9 @@ class StoryEngine(BaseAgent):
         if not pair_plans:
             return []
 
-        completed_summaries = [
-            f"{ch['title']}:{ch['summary']}" for ch in completed_chapters
-        ]
+        completed_summaries = self._recent_completed_summaries(completed_chapters)
         completed_text = "；".join(completed_summaries) if completed_summaries else "无"
+        previous_chapter_full_text = self._previous_chapter_full_text(completed_chapters)
 
         # 构建对话历史
         conversation_history: list[dict[str, str]] = []
@@ -509,6 +515,8 @@ class StoryEngine(BaseAgent):
                 chapter_goal=plan["goal"],
                 chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
                 completed_summaries=completed_text,
+                previous_chapter_full_text=previous_chapter_full_text,
+                current_chapter_existing_draft=self._existing_draft_text(draft_seeds, int(plan["number"])),
                 style=self._style_label(spec),
                 style_requirements=self._style_requirements(spec),
                 context_memory=self._context_memory(context_packet),
@@ -531,7 +539,9 @@ class StoryEngine(BaseAgent):
 
             drafts.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
+            completed_summaries = completed_summaries[-20:]
             completed_text = "；".join(completed_summaries)
+            previous_chapter_full_text = chapter_draft.content or previous_chapter_full_text
 
             if active_progress_callback:
                 active_progress_callback({
@@ -936,6 +946,24 @@ class StoryEngine(BaseAgent):
             return "无"
         memory_text = str(context_packet.get("memory_text") or "").strip()
         return memory_text or "无"
+
+    def _recent_completed_summaries(self, completed_chapters: list[dict[str, Any]], limit: int = 20) -> list[str]:
+        if limit <= 0:
+            return []
+        recent_items = completed_chapters[-limit:]
+        return [f"{ch['title']}:{ch['summary']}" for ch in recent_items]
+
+    def _previous_chapter_full_text(self, completed_chapters: list[dict[str, Any]]) -> str:
+        if not completed_chapters:
+            return "无"
+        content = str(completed_chapters[-1].get("content") or "").strip()
+        return content or "无"
+
+    def _existing_draft_text(self, draft_seeds: dict[int, str] | None, chapter_number: int) -> str:
+        if not isinstance(draft_seeds, dict):
+            return "无"
+        content = str(draft_seeds.get(chapter_number) or "").strip()
+        return content or "无"
 
     def _theme_tail(self, mode: str) -> str:
         if mode == TaskMode.LONG_STORY.value:
