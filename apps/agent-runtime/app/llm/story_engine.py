@@ -336,6 +336,15 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
         )
 
+    @staticmethod
+    def _normalize_chapter_payload(payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "number": int(payload.get("number") or 0),
+            "title": str(payload.get("title") or ""),
+            "summary": str(payload.get("summary") or ""),
+            "content": str(payload.get("content") or ""),
+        }
+
     def generate_draft(
         self,
         spec: dict[str, Any],
@@ -411,7 +420,7 @@ class StoryEngine(BaseAgent):
                 exchange_callback=active_exchange_callback,
                 progress_callback=active_progress_callback,
             )
-            chapter_draft = ChapterDraft.model_validate(chapter_payload)
+            chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(chapter_payload))
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
             completed_summaries = completed_summaries[-20:]
@@ -535,7 +544,7 @@ class StoryEngine(BaseAgent):
                 exchange_callback=active_exchange_callback,
                 progress_callback=active_progress_callback,
             )
-            chapter_draft = ChapterDraft.model_validate(payload)
+            chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(payload))
 
             drafts.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
@@ -608,7 +617,7 @@ class StoryEngine(BaseAgent):
             progress_callback=active_progress_callback,
         )
         items = payload if isinstance(payload, list) else [payload]
-        return [ChapterDraft.model_validate(item) for item in items]
+        return [ChapterDraft.model_validate(self._normalize_chapter_payload(item)) for item in items]
 
     def verify_full_story(
         self,

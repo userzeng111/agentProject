@@ -268,9 +268,10 @@ class TaskServiceRecoveryMixin:
         reuse_existing_draft = False
         if task.status in {TaskStatus.PLANNING, TaskStatus.WAITING_OUTLINE_REVIEW} and self._can_recover_outline_review(task):
             target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
-        elif task.status is TaskStatus.WAITING_CHAPTER_REVIEW and task.pending_review is not None:
+        elif task.status is TaskStatus.WAITING_CHAPTER_REVIEW and self._can_recover_chapter_review(task):
             if (
-                task.pending_review.type == "chapter_pair_review"
+                task.pending_review is not None
+                and task.pending_review.type == "chapter_pair_review"
                 and self._has_novel_project(task.id)
             ):
                 from app.storage.db_repository import get_active_batch, get_novel_project
@@ -292,7 +293,7 @@ class TaskServiceRecoveryMixin:
                         if (isinstance(ch, ChapterDraft) and ch.number) or (isinstance(ch, dict) and ch.get("number"))
                     ]
                     target_chapter_number = target_chapter_numbers[-1] if target_chapter_numbers else None
-            elif self._can_recover_chapter_review(task, force=False):
+            else:
                 target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
         elif task.status is TaskStatus.WAITING_VERIFICATION_REVIEW and self._can_recover_verification_review(task, force=False):
             target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
@@ -324,9 +325,9 @@ class TaskServiceRecoveryMixin:
                 elif blocked_status in _STAGE_LABELS:
                     target_stage = blocked_status
             if not target_stage:
-                if task.pending_review is not None and task.pending_review.type == "verification_review":
+                if self._can_recover_verification_review(task):
                     target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
-                elif task.pending_review is not None and task.pending_review.type == "chapter_pair_review":
+                elif self._can_recover_chapter_review(task):
                     target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
                     target_chapter_numbers = [
                         int(ch.number if isinstance(ch, ChapterDraft) else ch.get("number"))
@@ -334,7 +335,7 @@ class TaskServiceRecoveryMixin:
                         if (isinstance(ch, ChapterDraft) and ch.number) or (isinstance(ch, dict) and ch.get("number"))
                     ]
                     target_chapter_number = target_chapter_numbers[-1] if target_chapter_numbers else None
-                elif self._load_story_plan_from_history(task.id) is not None:
+                elif self._can_recover_outline_review(task):
                     target_stage = TaskStatus.WAITING_OUTLINE_REVIEW.value
 
         if not target_stage:
@@ -595,7 +596,7 @@ class TaskServiceRecoveryMixin:
         if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
             return task.pending_review is None or task.story_plan is None
         if task.status is TaskStatus.WAITING_MANUAL_ACTION:
-            return task.pending_review is None and task.story_plan is None
+            return task.pending_review is None and self._load_story_plan_from_history(task.id) is not None
         return (
             task.status is TaskStatus.PLANNING
             and str(task.current_unit or "").startswith("outline")
@@ -606,22 +607,20 @@ class TaskServiceRecoveryMixin:
     def _can_recover_chapter_review(self, task: TaskRecord, *, force: bool = False) -> bool:
         if task.pending_review is None or task.pending_review.type != "chapter_pair_review":
             return False
-        return (
-            task.status in {TaskStatus.WAITING_CHAPTER_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}
-            and (
-                task.story_plan is None
-                or force
-                or self._chapter_pair_payload_is_dirty(task)
-            )
-        )
+        if task.status not in {TaskStatus.WAITING_CHAPTER_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}:
+            return False
+        if task.status is TaskStatus.WAITING_CHAPTER_REVIEW:
+            return task.story_plan is None or force or self._chapter_pair_payload_is_dirty(task)
+        return True
 
     def _can_recover_verification_review(self, task: TaskRecord, *, force: bool = False) -> bool:
-        return (
-            task.status in {TaskStatus.WAITING_VERIFICATION_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}
-            and task.pending_review is not None
-            and task.pending_review.type == "verification_review"
-            and (task.story_plan is None or force)
-        )
+        if task.pending_review is None or task.pending_review.type != "verification_review":
+            return False
+        if task.status not in {TaskStatus.WAITING_VERIFICATION_REVIEW, TaskStatus.WAITING_MANUAL_ACTION}:
+            return False
+        if task.status is TaskStatus.WAITING_VERIFICATION_REVIEW:
+            return task.story_plan is None or force
+        return True
 
     def _recover_outline_review(self, task: TaskRecord) -> TaskRecord | None:
         story_plan = self._load_story_plan_from_history(task.id)

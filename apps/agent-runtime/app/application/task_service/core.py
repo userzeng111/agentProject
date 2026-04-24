@@ -292,7 +292,15 @@ class TaskServiceCoreMixin:
 
             elif review_type == "chapter_pair_review":
                 current_chapter_pair = values.get("current_chapter_pair") or []
-                review.chapter_pair = [ChapterDraft.model_validate(ch) for ch in current_chapter_pair]
+                # 补全缺失字段，防止旧 checkpoint 数据不完整导致验证失败
+                def _normalize_chapter(ch: dict[str, Any]) -> dict[str, Any]:
+                    return {
+                        "number": ch.get("number") if ch.get("number") is not None else 0,
+                        "title": ch.get("title") or "",
+                        "summary": ch.get("summary") or "",
+                        "content": ch.get("content") or "",
+                    }
+                review.chapter_pair = [ChapterDraft.model_validate(_normalize_chapter(ch)) for ch in current_chapter_pair]
                 batch_index = values.get("batch_index", 0)
                 completed = values.get("completed_chapters") or []
                 chapter_plan = (story_plan_data or {}).get("chapter_plan") or []

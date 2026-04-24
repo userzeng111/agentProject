@@ -196,6 +196,7 @@ class TaskLogStore:
         task.current_stage = "waiting_outline_review"
         task.current_unit = "outline"
         task.progress = 55
+        task.error_message = ""
         if auto_review_trace is not None:
             task.auto_review_trace = auto_review_trace
         self.append_event(
@@ -222,6 +223,7 @@ class TaskLogStore:
         chapter_items = review.chapter_pair or []
         batch_end = min(batch + len(chapter_items), total) if total > 0 else batch + len(chapter_items)
         task.progress = 55 + int(35 * completed / total) if total > 0 else 60
+        task.error_message = ""
         if auto_review_trace is not None:
             task.auto_review_trace = auto_review_trace
         self.append_event(
@@ -246,6 +248,7 @@ class TaskLogStore:
         task.current_stage = "ready_for_batch"
         task.current_unit = None
         task.progress = max(task.progress, 58)
+        task.error_message = ""
         self.append_event(
             task_id,
             stage="ready_for_batch",
@@ -263,6 +266,7 @@ class TaskLogStore:
         task.current_stage = "waiting_verification_review"
         task.current_unit = "verification"
         task.progress = 92
+        task.error_message = ""
         if auto_review_trace is not None:
             task.auto_review_trace = auto_review_trace
         self.append_event(
@@ -291,6 +295,7 @@ class TaskLogStore:
         task.current_stage = "completed"
         task.current_unit = None
         task.progress = 100
+        task.error_message = ""
         self.append_event(
             task_id,
             stage="completed",

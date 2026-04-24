@@ -157,6 +157,19 @@ class TaskServiceRunnerMixin:
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
                 self._rehydrate_resume_state_if_needed(task, action_model_id)
+                # 若已有 checkpoint 但未停留在审核中断节点，强制校准 as_node，
+                # 确保 Command(resume=...) 被正确的审核中断节点消费，避免误入旧生成节点
+                values = self._graph_state_values(task_id)
+                if values:
+                    review_type = task.pending_review.type if task.pending_review else None
+                    as_node_map = {
+                        "outline_review": "review_outline",
+                        "chapter_pair_review": "review_chapter_pair",
+                        "verification_review": "review_verification",
+                    }
+                    as_node = as_node_map.get(review_type)
+                    if as_node and hasattr(self.graph, "update_state"):
+                        self.graph.update_state(self._config(task_id), {}, as_node=as_node)
                 result = self.graph.invoke(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),

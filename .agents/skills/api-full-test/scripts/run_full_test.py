@@ -55,7 +55,7 @@ class Stats:
     def __init__(self):
         self.ok = 0
         self.warn = 0
-        self.fail = 0
+        self.failed = 0
 
     def pass_(self, name: str):
         self.ok += 1
@@ -66,7 +66,7 @@ class Stats:
         print(f"  [WARN] {name} — {reason}")
 
     def fail(self, name: str, reason: str):
-        self.fail += 1
+        self.failed += 1
         print(f"  [FAIL] {name} — {reason}")
 
 
@@ -117,11 +117,12 @@ def main() -> int:
     print("\n── 2. 任务 CRUD ──")
 
     status, body = request_json(f"{backend}/api/tasks", timeout, method="POST", payload={
-        "mode": "short_story",
+        "creative_mode": "original",
+        "novel_size": "short",
         "prompt": "接口自检测试任务",
         "genre": "玄幻",
         "style": "轻松",
-        "target_words": 1000,
+        "chapter_word_min": 1000,
         "audience": "年轻人",
         "banned": "",
         "title_hint": "自检测试",
@@ -197,7 +198,12 @@ def main() -> int:
     status, models_body = request_json(f"{backend}/api/models", timeout)
     model_id = None
     if models_body and models_body.get("data"):
-        model_id = models_body["data"][0]["id"]
+        gateway_backed = [
+            item for item in models_body["data"]
+            if "gateway" in str((item.get("metadata") or {}).get("source") or "")
+        ]
+        selected_models = gateway_backed or models_body["data"]
+        model_id = selected_models[0]["id"]
 
     if model_id:
         status, body = request_json(
@@ -288,10 +294,10 @@ def main() -> int:
 
     # ── 汇总 ──
     print("\n" + "=" * 60)
-    print(f"测试完成：✅ {stats.ok} 通过  ⚠️ {stats.warn} 警告  ❌ {stats.fail} 失败")
+    print(f"测试完成：✅ {stats.ok} 通过  ⚠️ {stats.warn} 警告  ❌ {stats.failed} 失败")
     print("=" * 60)
 
-    return 1 if stats.fail > 0 else 0
+    return 1 if stats.failed > 0 else 0
 
 
 if __name__ == "__main__":
