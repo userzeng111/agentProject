@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+from app.observability import get_logger
 from pathlib import Path
 
 try:
@@ -14,7 +14,7 @@ try:
 except ImportError:  # pragma: no cover
     from langgraph.checkpoint.memory import InMemorySaver as MemorySaver
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _create_checkpointer(db_path: str | Path | None = None):

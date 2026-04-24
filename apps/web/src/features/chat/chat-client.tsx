@@ -45,7 +45,6 @@ import {
   resolveDefaultChatModelId,
 } from "./model-selection.mjs";
 import {
-  type StoredConversation,
   type StoredMessage,
   listConversations,
   getConversation,
@@ -399,7 +398,7 @@ export function ChatClient() {
         streamingRef.current = false;
       },
     );
-  }, [currentModel, input, loading, messages, ragAvailable, scrollToBottom]);
+  }, [currentModel, input, loading, messages, ragAvailable]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

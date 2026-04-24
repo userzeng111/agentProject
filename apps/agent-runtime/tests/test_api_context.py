@@ -11,7 +11,7 @@ from app.domain.models import CreativeMode, DraftResult, NovelSize, ReviewPayloa
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.gateway_client import StreamChunk
 from app.llm.story_engine import StoryEngine
-from app.rag.service import RagHit, RagSearchResult
+from app.rag.service import RagHit
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
 from tests.fakes import FakeRagService
@@ -527,9 +527,15 @@ class ApiContextIntegrationTests(unittest.TestCase):
             selected_contexts=["港口档案记载夜航记录曾被改写。"],
         )
 
+        from app.services import ChatService
+
         app = FastAPI()
         fake_engine = FakeEngine()
-        app.include_router(build_router(self.task_service, engine=fake_engine, rag_service=fake_rag), prefix="/api")
+        chat_service = ChatService(
+            gateway_client=fake_engine.gateway_client,
+            rag_service=fake_rag,
+        )
+        app.include_router(build_router(self.task_service, chat_service=chat_service, rag_service=fake_rag), prefix="/api")
         client = TestClient(app)
 
         response = client.post(
@@ -573,8 +579,15 @@ class ApiContextIntegrationTests(unittest.TestCase):
             model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
+            from app.services import ChatService
+
             app = FastAPI()
-            app.include_router(build_router(task_service, engine=engine), prefix="/api")
+            chat_service = ChatService(
+                gateway_client=engine.gateway_client,
+                rag_service=None,
+                default_model_resolver=lambda: engine.resolve_model(None),
+            )
+            app.include_router(build_router(task_service, chat_service=chat_service), prefix="/api")
             client = TestClient(app)
 
             update_response = client.patch("/api/settings/default-model", json={"model_id": "glm-5.1"})

@@ -25,7 +25,7 @@ import { getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultMode
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
-import { DashboardResponse, ModelListResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
+import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
@@ -229,14 +229,12 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
 function SidebarStats({
   dashboard,
   models,
-  modelMeta,
   modelRefresh,
   onModelChange,
   onRefreshModels,
 }: {
   dashboard: DashboardResponse;
   models: ModelOption[];
-  modelMeta: ModelListResponse["meta"] | null;
   modelRefresh: ModelRefreshState;
   onModelChange: (modelId: string) => void;
   onRefreshModels: () => void;
@@ -375,7 +373,6 @@ function HomeSkeleton() {
 export default function Home() {
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [modelMeta, setModelMeta] = useState<ModelListResponse["meta"] | null>(null);
   const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({
     loading: false,
     error: "",
@@ -403,7 +400,6 @@ export default function Home() {
     void getModelCatalog({ refresh })
       .then((response) => {
         setModels(normalizeModelOptions(response.data ?? []));
-        setModelMeta(response.meta ?? null);
         setModelRefresh((current) => ({
           ...current,
           loading: false,
@@ -492,7 +488,6 @@ export default function Home() {
               <SidebarStats
                 dashboard={dashboard}
                 models={models}
-                modelMeta={modelMeta}
                 modelRefresh={modelRefresh}
                 onModelChange={handleModelChange}
                 onRefreshModels={() => fetchModels(true)}

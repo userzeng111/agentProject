@@ -122,7 +122,7 @@ class RagRebuildTests(unittest.TestCase):
 
             app = FastAPI()
             app.include_router(
-                build_router(task_service, engine=engine, rag_rebuild_service=FakeRagRebuildService()),
+                build_router(task_service, rag_rebuild_service=FakeRagRebuildService()),
                 prefix="/api",
             )
             client = TestClient(app)

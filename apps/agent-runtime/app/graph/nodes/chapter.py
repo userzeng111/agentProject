@@ -4,7 +4,7 @@ from typing import Any
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
 from app.graph.state import WorkflowState, MAX_CHAPTER_PAIR_REVISIONS
-from app.graph.utils.spec import _chapter_batch_size, _is_style_remix
+from app.graph.utils.spec import _chapter_batch_size
 from app.graph.utils.helpers import (
     _resolve_model_profile,
     _build_references,

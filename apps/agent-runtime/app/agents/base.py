@@ -13,7 +13,7 @@ Agent 基类
 from __future__ import annotations
 
 import json
-import logging
+from app.observability import get_logger
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -21,7 +21,7 @@ from typing import Any
 from app.agents.loader import SkillLoader
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # JSON 重试提示词（全局共享）
 _RETRY_JSON_PROMPT = (

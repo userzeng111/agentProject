@@ -25,7 +25,7 @@ class TaskStoreContextTests(unittest.TestCase):
                 payload={"stage": "planning", "summary": "已压缩参考素材"},
             )
 
-            self.assertEqual(relative_path, f"context/planning/outline-context.json")
+            self.assertEqual(relative_path, "context/planning/outline-context.json")
             snapshot = store.read_json(task.id, relative_path)
             self.assertEqual(snapshot["summary"], "已压缩参考素材")
 

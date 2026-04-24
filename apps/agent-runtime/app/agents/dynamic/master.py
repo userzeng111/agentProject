@@ -7,8 +7,7 @@ Master Agent
 
 from __future__ import annotations
 
-import json
-import logging
+from app.observability import get_logger
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -16,7 +15,7 @@ from app.agents.dynamic.models import AgentBlueprint
 from app.agents.dynamic.prompts import MASTER_BLUEPRINT_PROMPT, MASTER_SYSTEM_PROMPT
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class MasterAgent(BaseAgent):

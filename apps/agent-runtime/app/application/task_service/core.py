@@ -1,65 +1,40 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
+from app.observability import get_logger
 import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from langgraph.types import Command
 
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from app.context.manager import ContextManager
 from app.domain.models import (
-    AgentRunRecord,
-    ArchiveTaskDetailResponse,
-    ArchiveTaskListResponse,
-    ArtifactItem,
     ChapterDraft,
-    ContinueDraftRequest,
-    DashboardResponse,
     DraftResult,
-    RecoveryOption,
-    RecoveryPreview,
-    ResultResponse,
     ReviewPayload,
-    ReviewResponse,
     SourceAsset,
     StoryPlan,
-    SubtaskRecord,
-    SubtaskStatus,
     TaskCreateRequest,
-    TaskMode,
     TaskRecord,
     TaskStatus,
     TaskSummary,
     TaskEvent,
-    WorkspaceResponse,
     utc_now,
 )
 from app.graph.main_graph import (
-    _build_references,
-    _chapter_pair_instruction,
-    _outline_instruction,
-    _resolve_model_profile,
-    build_normalized_spec,
-    build_graph,
+    build_default_callbacks,
 )
+from app.workflow.engine import NovelWorkflowEngine
 from app.graph.supervisor_graph import build_initial_supervisor_plan
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import (
     StoryEngine,
-    reset_exchange_callback,
-    reset_progress_callback,
-    set_exchange_callback,
-    set_progress_callback,
 )
 from app.rag.service import RagService
 from app.storage.task_store import TaskLogStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
@@ -105,17 +80,19 @@ class TaskServiceCoreMixin:
         self.auto_review = auto_review
         self.auto_review_policy = auto_review_policy or {}
         checkpoint_db_path = str(Path(self.store.root_dir) / "checkpoints.db")
-        self.graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=self.context_manager,
             model_catalog=self.model_catalog,
-            history_loader=self._load_message_history,
-            checkpoint_db_path=checkpoint_db_path,
             rag_service=self.rag_service,
             novel_skill_service=self.novel_skill_service,
             style_profile_service=self.style_profile_service,
             auto_review=auto_review,
             auto_review_policy=self.auto_review_policy,
+        )
+        self.workflow_engine = NovelWorkflowEngine(
+            callbacks=callbacks,
+            checkpoint_db_path=checkpoint_db_path,
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
@@ -130,6 +107,44 @@ class TaskServiceCoreMixin:
         runtime_default = self.model_catalog._effective_default_model()
         if self.model_catalog._runtime_default_model and hasattr(self.engine, "set_runtime_default_model"):
             self.engine.set_runtime_default_model(runtime_default)
+
+    @property
+    def graph(self):
+        """向后兼容：旧代码与测试通过 graph 属性访问工作流引擎。"""
+        return getattr(self, "workflow_engine", None)
+
+    @graph.setter
+    def graph(self, value):
+        """允许外部注入 FakeGraph（测试兼容性）。
+
+        若注入对象仅提供旧式 ``invoke`` 接口，自动包装为 ``NovelWorkflowEngine``
+        兼容形态，使 ``start/resume/get_state/update_state`` 均可正常调用。
+        """
+        if value is None or all(hasattr(value, attr) for attr in ("start", "resume", "get_state", "update_state")):
+            self.workflow_engine = value
+            return
+
+        class _FakeEngineAdapter:
+            def __init__(self, _graph):
+                self._graph = _graph
+
+            def start(self, state, config=None):
+                return self._graph.invoke(state, config=config)
+
+            def resume(self, command, config=None):
+                return self._graph.invoke(command, config=config)
+
+            def get_state(self, config):
+                if hasattr(self._graph, "get_state"):
+                    return self._graph.get_state(config)
+                from types import SimpleNamespace
+                return SimpleNamespace(values={})
+
+            def update_state(self, config, values, as_node=None):
+                if hasattr(self._graph, "update_state"):
+                    return self._graph.update_state(config, values, as_node=as_node)
+
+        self.workflow_engine = _FakeEngineAdapter(value)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
@@ -238,7 +253,7 @@ class TaskServiceCoreMixin:
         result: dict[str, Any],
         review_comment: str = "",
     ) -> TaskRecord:
-        snapshot = self.graph.get_state(self._config(task_id))
+        snapshot = self.workflow_engine.get_state(self._config(task_id))
         values = snapshot.values if snapshot and hasattr(snapshot, "values") else {}
         normalized_spec = values.get("normalized_spec")
         if normalized_spec:
@@ -408,7 +423,7 @@ class TaskServiceCoreMixin:
 
     def _graph_state_values(self, task_id: str) -> dict[str, Any]:
         try:
-            snapshot = self.graph.get_state(self._config(task_id))
+            snapshot = self.workflow_engine.get_state(self._config(task_id))
         except Exception:
             return {}
         return snapshot.values if snapshot and hasattr(snapshot, "values") and isinstance(snapshot.values, dict) else {}

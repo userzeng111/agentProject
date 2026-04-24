@@ -8,7 +8,7 @@ Planner Agent
 from __future__ import annotations
 
 import json
-import logging
+from app.observability import get_logger
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -21,7 +21,7 @@ from app.agents.dynamic.models import (
 from app.agents.dynamic.prompts import PLANNER_DAG_PROMPT, PLANNER_SYSTEM_PROMPT
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PlannerAgent(BaseAgent):
@@ -180,7 +180,6 @@ class PlannerAgent(BaseAgent):
         blueprints: list[AgentBlueprint],
     ) -> TaskDAG:
         """验证 DAG 完整性，修复缺失的节点和层级。"""
-        bp_map = {bp.agent_id: bp for bp in blueprints}
         existing_ids = {n.agent_id for n in dag.nodes}
 
         # 补充缺失的节点

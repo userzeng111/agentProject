@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import Response
 
 from app.api.routes import build_router
 from app.api.dynamic_routes import build_dynamic_router
@@ -13,8 +12,9 @@ from app.application.task_service import TaskService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.novel_skills import NovelSkillService
-from app.observability import TracingMiddleware
+from app.observability import TracingMiddleware, init_logging
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
+from app.services import ChatService
 from app.settings.config import get_settings
 from app.style_profiles import StyleProfileService
 from app.storage.task_store import TaskLogStore
@@ -37,6 +37,8 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
             response.headers["Cache-Control"] = "public, max-age=60"
         return response
 
+
+init_logging()
 
 settings = get_settings()
 store = TaskLogStore(root_dir=settings.tasklog_root)
@@ -65,6 +67,12 @@ task_service = TaskService(
     style_profile_service=style_profile_service,
     auto_review=settings.auto_review,
     auto_review_policy=auto_review_policy,
+)
+
+chat_service = ChatService(
+    gateway_client=engine.gateway_client,
+    rag_service=rag_service,
+    default_model_resolver=lambda: engine.resolve_model(None),
 )
 
 app = FastAPI(title=settings.app_name)
@@ -96,7 +104,7 @@ app.add_middleware(
 app.include_router(
     build_router(
         task_service,
-        engine=engine,
+        chat_service=chat_service,
         rag_service=rag_service,
         rag_rebuild_service=rag_rebuild_service,
         novel_skill_service=novel_skill_service,

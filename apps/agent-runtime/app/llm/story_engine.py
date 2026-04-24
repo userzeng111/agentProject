@@ -4,11 +4,11 @@ from collections.abc import Callable
 from contextvars import ContextVar, Token
 import hashlib
 import json
-import logging
+from app.observability import get_logger
 from pathlib import Path
 from typing import Any
 
-from app.agents.base import BaseAgent, _RETRY_JSON_PROMPT
+from app.agents.base import BaseAgent
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
@@ -17,7 +17,7 @@ from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan,
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 from app.settings.config import Settings
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _OUTLINE_RETRY_JSON_PROMPT = (
     "上一次返回的大纲 JSON 不完整、被截断或不可解析。"
@@ -362,7 +362,6 @@ class StoryEngine(BaseAgent):
         summary = story_plan["logline"]
         chapter_plan = story_plan["chapter_plan"]
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        draft_prompt_text = ""
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
@@ -889,7 +888,7 @@ class StoryEngine(BaseAgent):
                     progress_callback=None,
                 )
                 return StoryPlan.model_validate(payload)
-            except (GatewayClientError, ValidationError) as exc:
+            except (GatewayClientError, ValidationError):
                 if attempt == 1:
                     raise
                 attempt_messages = [dict(item) for item in request_messages] + [

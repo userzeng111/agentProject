@@ -46,7 +46,7 @@ import { derivePrimaryRecoveryAction, filterRecoveryModels, resolveRecoveryPrevi
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { resultHref, workspaceHref } from "@/lib/task-routes";
-import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse } from "@/lib/types";
+import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse, VerificationIssue } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
 
@@ -329,8 +329,8 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
         {visibleAgents.map((agent: AgentTraceItem, index: number) => {
           const isExpanded = expanded === `agent-${index}`;
           const issues = agent.issues ?? [];
-          const criticalIssues = issues.filter((i: any) => i.severity === "critical");
-          const warnings = issues.filter((i: any) => i.severity === "warning");
+          const criticalIssues = issues.filter((i: VerificationIssue) => i.severity === "critical");
+          const warnings = issues.filter((i: VerificationIssue) => i.severity === "warning");
           const executionKind = inferExecutionKind(agent);
 
           return (
@@ -439,7 +439,7 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                         严重问题
                       </Typography>
                       <Stack spacing={0.5}>
-                        {criticalIssues.map((issue: any, i: number) => (
+                        {criticalIssues.map((issue: VerificationIssue, i: number) => (
                           <Alert severity="error" key={i} sx={{ py: 0.5, fontSize: 12 }}>
                             <Typography variant="body2" fontSize={12}>
                               [{issue.location || issue.dimension || "general"}] {issue.description}
@@ -462,7 +462,7 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                         警告项
                       </Typography>
                       <Stack spacing={0.5}>
-                        {warnings.map((warning: any, i: number) => (
+                        {warnings.map((warning: VerificationIssue, i: number) => (
                           <Alert severity="warning" key={i} sx={{ py: 0.5, fontSize: 12 }}>
                             <Typography variant="body2" fontSize={12}>
                               {warning.description}

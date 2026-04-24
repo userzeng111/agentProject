@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.context.manager import ContextManager
 from app.context.models import ModelContextProfile, ReferenceMaterial
 from app.llm.model_catalog import ModelCatalogService
 
@@ -139,7 +138,7 @@ def _normalize_story_plan(story_plan: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(chapter_plan, list):
         normalized["planned_chapter_count"] = len(chapter_plan)
     else:
-        normalized["planned_chapter_count"] = _positive_int(normalized.get("planned_chapter_count"))
+        normalized["planned_chapter_count"] = int(normalized.get("planned_chapter_count") or 0)
     return normalized
 
 

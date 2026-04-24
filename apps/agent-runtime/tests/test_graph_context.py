@@ -5,7 +5,7 @@ from langgraph.types import Command
 from app.context.manager import ContextManager
 from app.context.models import ReferenceMaterial
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
-from app.graph.main_graph import build_graph
+from app.graph.main_graph import build_default_callbacks, build_graph
 from app.rag.service import RagHit, RagSearchResult
 
 
@@ -104,11 +104,12 @@ class FakeRagService:
 class GraphContextIntegrationTests(unittest.TestCase):
     def test_graph_builds_outline_and_chapter_pair_context_snapshots(self) -> None:
         engine = FakeEngine()
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=ContextManager(),
             model_catalog=FakeModelCatalog(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-graph-1"}}
         initial_state = {
             "task_id": "task-graph-1",
@@ -143,12 +144,13 @@ class GraphContextIntegrationTests(unittest.TestCase):
 
     def test_graph_injects_rag_context_into_outline_and_chapter_snapshots(self) -> None:
         engine = FakeEngine()
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=ContextManager(),
             model_catalog=FakeModelCatalog(),
             rag_service=FakeRagService(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-graph-rag-1"}}
         initial_state = {
             "task_id": "task-graph-rag-1",

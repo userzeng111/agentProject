@@ -5,7 +5,6 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
-from app.llm.auto_reviewer import AutoReviewManager
 
 from app.graph.state import WorkflowState, MAX_OUTLINE_REVISIONS
 from app.graph.utils.spec import build_normalized_spec

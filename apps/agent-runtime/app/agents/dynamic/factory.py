@@ -7,7 +7,7 @@ Agent 工厂
 
 from __future__ import annotations
 
-import logging
+from app.observability import get_logger
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -17,9 +17,9 @@ from app.agents.dynamic.models import (
     DynamicAgentStatus,
     TaskExecutionResult,
 )
-from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class AgentFactory:

@@ -2,24 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
-from uuid import uuid4
 
-import logging
+from app.observability import get_logger
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
-from app.llm.gateway_client import GatewayClientError
 from app.storage.task_store import TaskNotFoundError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def build_router(
     task_service,
-    engine=None,
+    chat_service=None,
     rag_service=None,
     rag_rebuild_service=None,
     style_profile_service=None,
@@ -27,8 +24,6 @@ def build_router(
 ) -> APIRouter:
     router = APIRouter()
     active_style_service = novel_skill_service or style_profile_service
-    # 从 engine 获取 gateway_client 用于流式聊天
-    _gateway_client = engine.gateway_client if engine else None
 
     def _handle_error(exc: Exception) -> HTTPException:
         if isinstance(exc, TaskNotFoundError):
@@ -41,26 +36,6 @@ def build_router(
 
     def _sse_payload(event_name: str, payload: dict) -> str:
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-    def _apply_chat_rag(messages: list[dict[str, str]], payload: ChatRequest) -> list[dict[str, str]]:
-        if rag_service is None or not payload.rag_enabled:
-            return messages
-        try:
-            augmented_messages, _ = rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
-            return augmented_messages
-        except Exception:
-            logger.exception("RAG 增强失败，回退到原始消息")
-            return messages
-
-    def _resolve_chat_model(requested_model: str | None) -> str:
-        candidate = (requested_model or "").strip()
-        if candidate:
-            return candidate
-        if engine is not None and hasattr(engine, "resolve_model"):
-            resolved = str(engine.resolve_model(None) or "").strip()
-            if resolved:
-                return resolved
-        raise HTTPException(status_code=400, detail="未指定模型且系统默认模型不可用。")
 
     def _split_file_ref(ref: str) -> tuple[str, str]:
         parts = [item for item in ref.removeprefix("/").split("/") if item]
@@ -375,39 +350,12 @@ def build_router(
     @router.post("/chat/stream")
     async def chat_stream(payload: ChatRequest):
         """流式聊天端点，SSE 逐 token 返回。"""
-        if _gateway_client is None:
-            raise HTTPException(status_code=503, detail="模型网关未配置，请检查 .env 中的 LLM_BASE_URL 与 LLM_API_KEY。")
+        if chat_service is None:
+            raise HTTPException(status_code=503, detail="聊天服务未配置。")
 
-        messages = [{"role": m.role, "content": m.content} for m in payload.messages]
-        if not messages:
-            raise HTTPException(status_code=400, detail="messages 不能为空。")
-        messages = _apply_chat_rag(messages, payload)
-
-        resolved_model = _resolve_chat_model(payload.model)
-
-        async def _sse_stream():
-            try:
-                async for chunk in _gateway_client.complete_stream(
-                    messages=messages,
-                    model=resolved_model,
-                ):
-                    data: dict[str, Any] = {
-                        "content": chunk.content,
-                    }
-                    if chunk.reasoning_content:
-                        data["reasoning_content"] = chunk.reasoning_content
-                    if chunk.finish_reason:
-                        data["finish_reason"] = chunk.finish_reason
-                    if chunk.usage:
-                        data["usage"] = chunk.usage
-                    yield _sse_payload("chat.chunk", data)
-                yield _sse_payload("chat.done", {"model": resolved_model})
-            except GatewayClientError as exc:
-                logger.exception("流式聊天网关错误")
-                yield _sse_payload("chat.error", {"message": str(exc)})
-
+        stream = await chat_service.chat_stream(payload)
         return StreamingResponse(
-            _sse_stream(),
+            stream,
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -419,45 +367,15 @@ def build_router(
     @router.post("/chat/completions")
     async def chat_completions(payload: ChatRequest):
         """OpenAI 兼容端点，同时支持流式和非流式。"""
-        if _gateway_client is None:
-            raise HTTPException(status_code=503, detail="模型网关未配置。")
+        if chat_service is None:
+            raise HTTPException(status_code=503, detail="聊天服务未配置。")
 
-        messages = [{"role": m.role, "content": m.content} for m in payload.messages]
-        if not messages:
-            raise HTTPException(status_code=400, detail="messages 不能为空。")
-        messages = _apply_chat_rag(messages, payload)
+        result = await chat_service.chat_completions(payload)
 
-        resolved_model = _resolve_chat_model(payload.model)
-
-        if payload.stream:
-            # 流式模式：以 OpenAI 兼容 SSE 格式返回
-            async def _openai_sse_stream():
-                chat_id = f"chatcmpl-{uuid4().hex[:24]}"
-                try:
-                    # 首个 chunk：带 role
-                    yield f"data: {json.dumps(_openai_chunk(chat_id, resolved_model, {'role': 'assistant', 'content': ''}), ensure_ascii=False)}\n\n"
-
-                    async for chunk in _gateway_client.complete_stream(
-                        messages=messages,
-                        model=resolved_model,
-                    ):
-                        delta: dict[str, Any] = {}
-                        if chunk.content:
-                            delta["content"] = chunk.content
-                        if chunk.reasoning_content:
-                            delta["reasoning_content"] = chunk.reasoning_content
-                        if not delta and not chunk.finish_reason:
-                            continue
-                        yield f"data: {json.dumps(_openai_chunk(chat_id, resolved_model, delta, chunk.finish_reason), ensure_ascii=False)}\n\n"
-
-                    yield "data: [DONE]\n\n"
-                except GatewayClientError as exc:
-                    logger.exception("OpenAI 流式聊天网关错误")
-                    error_chunk = {"error": {"message": str(exc), "type": "gateway_error"}}
-                    yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
-
+        # 如果返回的是异步生成器，则包装为 StreamingResponse
+        if hasattr(result, "__aiter__"):
             return StreamingResponse(
-                _openai_sse_stream(),
+                result,
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -465,62 +383,6 @@ def build_router(
                     "X-Accel-Buffering": "no",
                 },
             )
-        else:
-            # 非流式模式：收集全部内容一次性返回
-            try:
-                full_content = ""
-                full_reasoning = ""
-                usage_data = {}
-                async for chunk in _gateway_client.complete_stream(
-                    messages=messages,
-                    model=resolved_model,
-                ):
-                    full_content += chunk.content
-                    full_reasoning += chunk.reasoning_content
-                    if chunk.usage:
-                        usage_data = chunk.usage
-                message: dict[str, Any] = {"role": "assistant", "content": full_content}
-                if full_reasoning:
-                    message["reasoning_content"] = full_reasoning
-                return {
-                    "id": f"chatcmpl-{uuid4().hex[:24]}",
-                    "object": "chat.completion",
-                    "model": resolved_model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": message,
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": usage_data,
-                }
-            except GatewayClientError as exc:
-                logger.exception("OpenAI 非流式聊天网关错误")
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return result
 
     return router
-
-
-def _openai_chunk(
-    chat_id: str,
-    model: str,
-    delta: dict[str, Any],
-    finish_reason: str | None = None,
-) -> dict[str, Any]:
-    """构造 OpenAI 兼容的 chunk 格式。"""
-    from datetime import datetime, timezone
-
-    return {
-        "id": chat_id,
-        "object": "chat.completion.chunk",
-        "created": int(datetime.now(timezone.utc).timestamp()),
-        "model": model,
-        "choices": [
-            {
-                "index": 0,
-                "delta": delta,
-                "finish_reason": finish_reason,
-            }
-        ],
-    }

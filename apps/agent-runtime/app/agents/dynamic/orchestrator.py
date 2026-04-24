@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from app.observability import get_logger
 from datetime import datetime, timezone
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -19,7 +19,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.agents.dynamic.factory import AgentFactory
 from app.agents.dynamic.master import MasterAgent
 from app.agents.dynamic.models import (
-    AgentBlueprint,
     DynamicAgent,
     OrchestrationResult,
     TaskDAG,
@@ -29,7 +28,7 @@ from app.agents.dynamic.planner import PlannerAgent
 from app.agents.dynamic.registry import AgentRegistry
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TaskOrchestrator:

@@ -17,7 +17,7 @@ from app.settings.config import Settings
 from app.storage.database import get_session
 from app.storage.db_models import TaskIndexModel
 from app.storage.task_store import TaskLogStore
-from app.domain.models import CreativeMode, NovelSize, TaskCreateRequest, TaskMode
+from app.domain.models import CreativeMode, NovelSize, TaskCreateRequest
 
 
 class FailingGatewayClient:

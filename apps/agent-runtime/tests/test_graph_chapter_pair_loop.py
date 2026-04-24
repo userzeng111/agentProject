@@ -9,7 +9,7 @@ import unittest
 from langgraph.types import Command
 
 from app.domain.models import ChapterPlan, StoryPlan
-from app.graph.main_graph import build_graph, build_normalized_spec
+from app.graph.main_graph import build_default_callbacks, build_graph, build_normalized_spec
 from tests.fakes import FakeContextManager, FakeStoryEngine
 
 
@@ -73,10 +73,11 @@ class GraphChapterPairLoopTests(unittest.TestCase):
 
     def test_five_chapters_must_finish_all_pairs_before_verification(self) -> None:
         engine = FakeStoryEngine()
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-five-chapters"}}
         initial_state = {
             "task_id": "task-five-chapters",
@@ -121,10 +122,11 @@ class GraphChapterPairLoopTests(unittest.TestCase):
 
     def test_style_remix_long_story_can_switch_to_single_chapter_batches_after_first_pair(self) -> None:
         engine = FakeStoryEngine()
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-style-remix-batches"}}
         initial_state = {
             "task_id": "task-style-remix-batches",
@@ -170,10 +172,11 @@ class GraphChapterPairLoopTests(unittest.TestCase):
 
     def test_graph_uses_actual_chapter_plan_length_when_planned_count_is_larger(self) -> None:
         engine = FakeMismatchedPlanEngine()
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-mismatched-plan-count"}}
         initial_state = {
             "task_id": "task-mismatched-plan-count",

@@ -108,7 +108,7 @@ instances:
 
             app = FastAPI()
             app.include_router(
-                build_router(task_service, engine=engine, style_profile_service=FakeStyleProfileService()),
+                build_router(task_service, style_profile_service=FakeStyleProfileService()),
                 prefix="/api",
             )
             client = TestClient(app)

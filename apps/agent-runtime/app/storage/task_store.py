@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
+from app.observability import get_logger
 import shutil
 import threading
 from pathlib import Path
@@ -27,7 +27,7 @@ from app.domain.models import (
 class TaskNotFoundError(Exception):
     pass
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class TaskLogStore:

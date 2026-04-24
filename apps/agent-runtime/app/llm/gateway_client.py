@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from app.observability import get_logger
 import re
 import time
 from collections.abc import AsyncGenerator, Generator
@@ -12,7 +12,7 @@ import httpx
 
 from app.observability.metrics import record_llm_call
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GatewayClientError(Exception):

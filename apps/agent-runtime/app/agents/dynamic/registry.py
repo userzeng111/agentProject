@@ -6,17 +6,16 @@ Agent 注册表
 
 from __future__ import annotations
 
-import logging
+from app.observability import get_logger
 import threading
 from typing import Any
 
 from app.agents.dynamic.models import (
-    AgentBlueprint,
     DynamicAgent,
     DynamicAgentStatus,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class AgentRegistry:

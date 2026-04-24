@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from app.observability import get_logger
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -17,7 +17,7 @@ from app.agents.dynamic.models import OrchestrationResult
 from app.agents.dynamic.orchestrator import TaskOrchestrator
 from app.llm.gateway_client import GatewayClientError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DynamicOrchestrationRequest(BaseModel):

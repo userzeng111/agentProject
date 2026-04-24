@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-import logging
+from app.observability import get_logger
 from pathlib import Path
-from typing import Any
 
 from app.domain.models import StoryPlan, TaskRecord, utc_now
 from app.storage.database import get_session
@@ -16,7 +15,7 @@ from app.storage.db_models import (
     TaskIndexModel,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 _UNSET = object()
 
 

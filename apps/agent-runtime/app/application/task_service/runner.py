@@ -1,65 +1,25 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import threading
-from datetime import timedelta
-from pathlib import Path
+from app.observability import get_logger
 from typing import Any
 
 from langgraph.types import Command
 
-from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
-from app.context.manager import ContextManager
 from app.domain.models import (
-    AgentRunRecord,
-    ArchiveTaskDetailResponse,
-    ArchiveTaskListResponse,
-    ArtifactItem,
-    ChapterDraft,
-    ContinueDraftRequest,
-    DashboardResponse,
-    DraftResult,
-    RecoveryOption,
-    RecoveryPreview,
-    ResultResponse,
-    ReviewPayload,
-    ReviewResponse,
-    SourceAsset,
-    StoryPlan,
-    SubtaskRecord,
-    SubtaskStatus,
-    TaskCreateRequest,
-    TaskMode,
     TaskRecord,
     TaskStatus,
-    TaskSummary,
-    TaskEvent,
-    WorkspaceResponse,
-    utc_now,
 )
 from app.graph.main_graph import (
-    _build_references,
-    _chapter_pair_instruction,
-    _outline_instruction,
-    _resolve_model_profile,
     build_normalized_spec,
-    build_graph,
 )
-from app.graph.supervisor_graph import build_initial_supervisor_plan
-from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import (
-    StoryEngine,
     reset_exchange_callback,
     reset_progress_callback,
     set_exchange_callback,
     set_progress_callback,
 )
-from app.rag.service import RagService
-from app.storage.task_store import TaskLogStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
@@ -110,7 +70,7 @@ class TaskServiceRunnerMixin:
             progress_token = set_progress_callback(self._build_progress_callback(task_id))
             exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
             try:
-                result = self.graph.invoke(initial_state, config=self._config(task_id))
+                result = self.workflow_engine.start(initial_state, config=self._config(task_id))
             finally:
                 reset_progress_callback(progress_token)
                 reset_exchange_callback(exchange_token)
@@ -168,9 +128,9 @@ class TaskServiceRunnerMixin:
                         "verification_review": "review_verification",
                     }
                     as_node = as_node_map.get(review_type)
-                    if as_node and hasattr(self.graph, "update_state"):
-                        self.graph.update_state(self._config(task_id), {}, as_node=as_node)
-                result = self.graph.invoke(
+                    if as_node and hasattr(self.workflow_engine, "update_state"):
+                        self.workflow_engine.update_state(self._config(task_id), {}, as_node=as_node)
+                result = self.workflow_engine.resume(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),
                 )

@@ -1,65 +1,28 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import logging
-import threading
-from datetime import timedelta
-from pathlib import Path
+from app.observability import get_logger
 from typing import Any
 
-from langgraph.types import Command
 
-from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
-from app.context.manager import ContextManager
 from app.domain.models import (
-    AgentRunRecord,
-    ArchiveTaskDetailResponse,
-    ArchiveTaskListResponse,
-    ArtifactItem,
     ChapterDraft,
-    ContinueDraftRequest,
-    DashboardResponse,
-    DraftResult,
     RecoveryOption,
     RecoveryPreview,
-    ResultResponse,
     ReviewPayload,
-    ReviewResponse,
-    SourceAsset,
     StoryPlan,
-    SubtaskRecord,
-    SubtaskStatus,
-    TaskCreateRequest,
     TaskMode,
     TaskRecord,
     TaskStatus,
-    TaskSummary,
-    TaskEvent,
-    WorkspaceResponse,
-    utc_now,
 )
 from app.graph.main_graph import (
     _build_references,
     _chapter_pair_instruction,
     _outline_instruction,
     _resolve_model_profile,
-    build_normalized_spec,
-    build_graph,
 )
-from app.graph.supervisor_graph import build_initial_supervisor_plan
-from app.llm.model_catalog import ModelCatalogService
-from app.llm.story_engine import (
-    StoryEngine,
-    reset_exchange_callback,
-    reset_progress_callback,
-    set_exchange_callback,
-    set_progress_callback,
-)
-from app.rag.service import RagService
-from app.storage.task_store import TaskLogStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
@@ -1000,7 +963,7 @@ class TaskServiceRecoveryMixin:
 
     def _rehydrate_resume_state_if_needed(self, task: TaskRecord, action_model_id: str | None = None) -> None:
         values = self._graph_state_values(task.id)
-        if not hasattr(self.graph, "update_state"):
+        if not hasattr(self.workflow_engine, "update_state"):
             return
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
         patch: dict[str, Any] = {}
@@ -1011,12 +974,12 @@ class TaskServiceRecoveryMixin:
         if isinstance(normalized_spec, dict) and str(normalized_spec.get("model_id") or "").strip() != resolved_model_id:
             patch["normalized_spec"] = self._with_model_id(normalized_spec, resolved_model_id)
         if patch:
-            self.graph.update_state(self._config(task.id), patch)
+            self.workflow_engine.update_state(self._config(task.id), patch)
         if values.get("input_payload"):
             return
         seeded = self._resume_seed_state(task, action_model_id)
         if seeded is None:
             return
         seed_values, as_node = seeded
-        self.graph.update_state(self._config(task.id), seed_values, as_node=as_node)
+        self.workflow_engine.update_state(self._config(task.id), seed_values, as_node=as_node)
 

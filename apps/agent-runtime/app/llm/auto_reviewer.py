@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import json
-import logging
+from app.observability import get_logger
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -23,16 +23,13 @@ from app.agents.base import BaseAgent
 from app.domain.models import (
     AgentResult,
     AutoReviewPolicy,
-    ChapterDraft,
     ReviewDecision,
-    ReviewMode,
     ReviewPayload,
-    StoryPlan,
     Strictness,
 )
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # 严格度对应的阈值调整因子
 _STRICTNESS_MULTIPLIERS = {
@@ -720,7 +717,6 @@ class AutoReviewManager(BaseAgent):
 
         max_workers = min(len(specs), self.max_workers)
         outputs: list[SubAgentOutput] = []
-        output_lock = threading.Lock()
 
         def _worker(spec: SubAgentSpec) -> SubAgentOutput:
             prompt_text = prompt_factory(spec)

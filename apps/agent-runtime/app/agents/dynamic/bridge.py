@@ -10,8 +10,7 @@
 from __future__ import annotations
 
 import json
-import logging
-from datetime import datetime, timezone
+from app.observability import get_logger
 from typing import Any
 
 from app.agents.dynamic.models import (
@@ -27,7 +26,7 @@ from app.domain.models import (
 )
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MAIN_REVIEW_AGENT_ID = "dynamic-review-main"
 

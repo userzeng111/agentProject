@@ -2,7 +2,7 @@ import unittest
 
 from app.context.manager import ContextManager
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
-from app.graph.main_graph import build_graph
+from app.graph.main_graph import build_default_callbacks, build_graph
 
 
 class FakeEngine:
@@ -71,12 +71,13 @@ class FakeNovelSkillService:
 
 class GraphStyleProfileTests(unittest.TestCase):
     def test_style_remix_request_is_compiled_into_normalized_spec(self) -> None:
-        graph = build_graph(
+        callbacks = build_default_callbacks(
             FakeEngine(),
             context_manager=ContextManager(),
             model_catalog=FakeModelCatalog(),
             novel_skill_service=FakeNovelSkillService(),
         )
+        graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-style-graph"}}
         initial_state = {
             "task_id": "task-style-graph",

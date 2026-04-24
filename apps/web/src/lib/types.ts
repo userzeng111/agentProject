@@ -425,6 +425,7 @@ export interface VerificationIssue {
   location: string;
   description: string;
   suggestion: string;
+  dimension?: string;
 }
 
 /** 自动审核 Agent 执行追踪项 [NEW] */
