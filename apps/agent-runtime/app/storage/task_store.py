@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import shutil
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ class TaskLogStore:
         self.tail_limit = tail_limit
         self._tasks: dict[str, TaskRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        self._lock = threading.Lock()
 
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +55,8 @@ class TaskLogStore:
             input=payload,
             auto_review=payload.auto_review,
         )
-        self._tasks[task.id] = task
+        with self._lock:
+            self._tasks[task.id] = task
         self.append_event(
             task.id,
             stage="created",
@@ -66,7 +69,8 @@ class TaskLogStore:
 
     def save(self, task: TaskRecord) -> TaskRecord:
         task.updated_at = utc_now()
-        self._tasks[task.id] = task
+        with self._lock:
+            self._tasks[task.id] = task
         self._write_task_files(task)
         self._sync_to_db(task)
         self._archive_completed_task(task)
@@ -79,39 +83,43 @@ class TaskLogStore:
             from app.storage.db_repository import upsert_task_index
             upsert_task_index(task)
         except Exception:
-            logger.warning("任务 %s 数据库索引同步失败", task.id, exc_info=True)
+            logger.exception("任务 %s 数据库索引同步失败", task.id)
 
     def get(self, task_id: str) -> TaskRecord:
-        task = self._tasks.get(task_id)
+        with self._lock:
+            task = self._tasks.get(task_id)
         if not task:
             raise TaskNotFoundError(task_id)
         return task
 
     def summaries(self) -> list[dict[str, Any]]:
-        return [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
+        with self._lock:
+            return [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
 
     def counts(self) -> dict[str, int]:
-        return {
-            "active_runs": sum(
-                1
-                for task in self._tasks.values()
-                if task.storage_state == "runs"
-                and task.status in {
-                    TaskStatus.PLANNING,
-                    TaskStatus.DRAFTING,
-                    TaskStatus.ASSEMBLING,
-                    TaskStatus.WAITING_MANUAL_ACTION,
-                }
-            ),
+        with self._lock:
+            return {
+                "active_runs": sum(
+                    1
+                    for task in self._tasks.values()
+                    if task.storage_state == "runs"
+                    and task.status in {
+                        TaskStatus.PLANNING,
+                        TaskStatus.DRAFTING,
+                        TaskStatus.ASSEMBLING,
+                        TaskStatus.WAITING_MANUAL_ACTION,
+                    }
+                ),
             "archived_runs": sum(1 for task in self._tasks.values() if task.storage_state == "archive"),
         }
 
     def list_archive_tasks(self) -> list[TaskRecord]:
-        return sorted(
-            [task for task in self._tasks.values() if task.storage_state == "archive"],
-            key=lambda item: item.updated_at,
-            reverse=True,
-        )
+        with self._lock:
+            return sorted(
+                [task for task in self._tasks.values() if task.storage_state == "archive"],
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )
 
     def list_archive_tasks_paginated(
         self, page: int = 1, page_size: int = 10
@@ -123,11 +131,12 @@ class TaskLogStore:
         return all_archived[skip : skip + page_size], total
 
     def list_run_tasks(self) -> list[TaskRecord]:
-        return sorted(
-            [task for task in self._tasks.values() if task.storage_state == "runs"],
-            key=lambda item: item.updated_at,
-            reverse=True,
-        )
+        with self._lock:
+            return sorted(
+                [task for task in self._tasks.values() if task.storage_state == "runs"],
+                key=lambda item: item.updated_at,
+                reverse=True,
+            )
 
     def list_subtasks(self, task_id: str) -> list[SubtaskRecord]:
         task = self.get(task_id)
@@ -361,7 +370,8 @@ class TaskLogStore:
                 f"请先取消任务后再删除。"
             )
         # 从内存字典中移除
-        self._tasks.pop(task_id, None)
+        with self._lock:
+            self._tasks.pop(task_id, None)
         # 从 SQLite 索引中删除
         try:
             from app.storage.db_repository import delete_task_index
@@ -493,14 +503,15 @@ class TaskLogStore:
         )
         target.events.append(event)
         target.updated_at = utc_now()
-        self._tasks[target.id] = target
+        with self._lock:
+            self._tasks[target.id] = target
         self._broadcast_event(target.id, event)
         self._write_events(target)
         self._write_trace(target)
         return target
 
     def subscribe(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
         self._subscribers.setdefault(task_id, []).append(queue)
         return queue
 
@@ -508,6 +519,8 @@ class TaskLogStore:
         queues = self._subscribers.get(task_id, [])
         if queue in queues:
             queues.remove(queue)
+        if not queues:
+            self._subscribers.pop(task_id, None)
 
     def read_text(self, task_id: str, relative_path: str) -> str:
         return self._resolve_task_path(task_id, relative_path).read_text(encoding="utf-8")
@@ -556,10 +569,17 @@ class TaskLogStore:
 
     def _broadcast_event(self, task_id: str, event: TaskEvent) -> None:
         payload = event.model_dump(mode="json")
+        dead_queues: list[asyncio.Queue[dict[str, Any]]] = []
         for queue in self._subscribers.get(task_id, []):
-            queue.put_nowait(payload)
+            try:
+                queue.put_nowait(payload)
+            except (asyncio.QueueFull, Exception):
+                dead_queues.append(queue)
+        for queue in dead_queues:
+            self.unsubscribe(task_id, queue)
 
     def _load_existing_tasks(self) -> None:
+        loaded: dict[str, TaskRecord] = {}
         for base_dir, storage_state in ((self.runs_dir, "runs"), (self.archive_dir, "archive")):
             for task_dir in sorted(base_dir.glob("task_*")):
                 snapshot_path = task_dir / "state" / "task.json"
@@ -571,11 +591,13 @@ class TaskLogStore:
                     data = json.loads(snapshot_path.read_text(encoding="utf-8"))
                     task = TaskRecord.model_validate(data)
                     task.storage_state = storage_state
-                    self._tasks[task.id] = task
+                    loaded[task.id] = task
                 except json.JSONDecodeError:
                     logger.warning("跳过损坏的任务快照 %s: JSON 解析失败", snapshot_path)
                 except Exception:
                     logger.warning("跳过无法加载的任务 %s", snapshot_path)
+        with self._lock:
+            self._tasks.update(loaded)
 
     def _write_specs(self) -> None:
         specs = {
@@ -693,11 +715,13 @@ class TaskLogStore:
                 event.md_ref = event.md_ref.replace(run_prefix, archive_prefix, 1)
             if event.json_ref and event.json_ref.startswith(run_prefix):
                 event.json_ref = event.json_ref.replace(run_prefix, archive_prefix, 1)
-        self._tasks[task.id] = task
+        with self._lock:
+            self._tasks[task.id] = task
         self._write_task_files(task)
 
     def _write_index(self) -> None:
-        summaries = [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
+        with self._lock:
+            summaries = [self._summary(task) for task in sorted(self._tasks.values(), key=lambda item: item.updated_at, reverse=True)]
         self._write_json(self.root_dir / "index.json", {"items": summaries})
         lines = ["# tasklog index", ""]
         for item in summaries:

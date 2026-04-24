@@ -119,6 +119,8 @@ class TaskServiceCoreMixin:
         )
         self._active_runs: set[str] = set()
         self._run_lock = threading.Lock()
+        self._chapter_file_locks: dict[str, threading.Lock] = {}
+        self._active_threads: dict[str, threading.Thread] = {}
 
         # 初始化 SQLite 业务数据库
         from app.storage.database import init_db
@@ -173,11 +175,14 @@ class TaskServiceCoreMixin:
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
-        # 检查任务是否在活跃运行中，如果是则先移除
+        # 检查任务是否在活跃运行中，如果是则先移除并等待后台线程结束
         with self._run_lock:
             was_active = task_id in self._active_runs
+            thread = self._active_threads.pop(task_id, None)
             if was_active:
                 self._active_runs.discard(task_id)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=10)
         record = self.store.cancel_task(task_id, comment=comment)
         self._sync_supervisor_plan(task_id)
         return record
@@ -191,6 +196,9 @@ class TaskServiceCoreMixin:
         return self.store.delete_task(task_id)
 
     def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在运行中，请勿重复提交。")
         task = self.store.get(task_id)
         if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
             raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
@@ -487,12 +495,18 @@ class TaskServiceCoreMixin:
                     self._mark_failed_unless_stable(task_id, f"后台任务异常：{exc}")
                 except Exception:
                     logger.exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
+            finally:
+                # 兜底清理，防止 _active_runs 泄漏
+                self._leave_active_run(task_id)
+                self._active_threads.pop(task_id, None)
 
-        threading.Thread(
+        t = threading.Thread(
             target=runner,
             name=f"task-worker-{task_id}",
             daemon=True,
-        ).start()
+        )
+        self._active_threads[task_id] = t
+        t.start()
 
     def _emit_trace_summary(
         self,

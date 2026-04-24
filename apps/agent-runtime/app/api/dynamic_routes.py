@@ -27,7 +27,7 @@ class DynamicOrchestrationRequest(BaseModel):
     task_description: str = Field(..., description="任务描述")
     task_context: dict[str, Any] = Field(default_factory=dict, description="任务上下文变量")
     model: str | None = Field(default=None, description="使用的模型（默认系统配置）")
-    max_workers: int = Field(default=4, description="最大并行 Agent 数")
+    max_workers: int = Field(default=4, ge=1, le=16, description="最大并行 Agent 数")
 
 
 class DynamicOrchestrationResponse(BaseModel):

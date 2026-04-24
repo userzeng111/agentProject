@@ -59,7 +59,16 @@ function writeAllConversations(data: Record<string, StoredConversation>): void {
     // eslint-disable-next-line no-alert
     console.warn("聊天历史数据已超过 4MB，建议删除部分旧会话以释放空间。");
   }
-  localStorage.setItem(STORAGE_KEY, json);
+  try {
+    localStorage.setItem(STORAGE_KEY, json);
+  } catch (err) {
+    if (err instanceof Error && (err.name === "QuotaExceededError" || err.message.toLowerCase().includes("quota"))) {
+      console.error("localStorage 存储空间已满，建议删除部分旧会话以释放空间。", err);
+      alert("存储空间已满，无法保存聊天历史。请删除部分旧会话后重试。");
+    } else {
+      console.error("localStorage 写入失败", err);
+    }
+  }
 }
 
 /** 生成唯一会话 ID */

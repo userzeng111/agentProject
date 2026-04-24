@@ -21,7 +21,7 @@ def _create_checkpointer(db_path: str | Path | None = None):
     """创建 checkpointer：优先 SQLite 持久化，回退到内存。"""
     if _HAS_SQLITE and db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False)
+        conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False, timeout=30.0)
         return SqliteSaver(conn)
     if db_path and not _HAS_SQLITE:
         logger.warning(

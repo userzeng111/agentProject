@@ -224,6 +224,9 @@ class TaskServiceReviewMixin:
             )
         snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
         snapshot = self._sync_supervisor_plan(task_id)
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在运行中，请勿重复提交。")
         self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
         return snapshot
 

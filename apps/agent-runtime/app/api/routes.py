@@ -57,8 +57,10 @@ def build_router(
         if candidate:
             return candidate
         if engine is not None and hasattr(engine, "resolve_model"):
-            return str(engine.resolve_model(None) or "").strip()
-        return ""
+            resolved = str(engine.resolve_model(None) or "").strip()
+            if resolved:
+                return resolved
+        raise HTTPException(status_code=400, detail="未指定模型且系统默认模型不可用。")
 
     def _split_file_ref(ref: str) -> tuple[str, str]:
         parts = [item for item in ref.removeprefix("/").split("/") if item]

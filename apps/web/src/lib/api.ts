@@ -34,16 +34,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return response;
   };
 
+  const method = (init?.method ?? "GET").toUpperCase();
+  const canRetry = method === "GET";
+
   let response: Response;
   try {
     response = await makeRequest();
   } catch (err) {
-    console.warn(`请求失败，准备重试: ${url}`, err instanceof Error ? err.message : String(err));
-    try {
-      response = await makeRequest();
-    } catch (retryErr) {
-      console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
-      throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+    if (canRetry) {
+      console.warn(`请求失败，准备重试: ${url}`, err instanceof Error ? err.message : String(err));
+      try {
+        response = await makeRequest();
+      } catch (retryErr) {
+        console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
+        throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+      }
+    } else {
+      console.error(`请求失败（写操作不重试）: ${url}`, err instanceof Error ? err.message : String(err));
+      throw new Error(err instanceof Error ? err.message : "请求失败");
     }
   }
 
@@ -296,11 +304,13 @@ export async function streamChat(
   onChunk: (chunk: ChatStreamChunk) => void,
   onDone: (event: ChatDoneEvent | null) => void,
   onError: (message: string) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ messages, model, stream: true, rag_enabled: ragEnabled }),
+    signal,
   });
 
   if (!response.ok) {
@@ -374,6 +384,11 @@ export async function streamChat(
 
     onDone({ model: model ?? "" });
   } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      console.log("streamChat 用户主动取消");
+      onDone(null);
+      return;
+    }
     const msg = err instanceof Error ? err.message : "流式读取中断";
     console.error("streamChat 流式读取异常:", msg);
     onError(msg);
