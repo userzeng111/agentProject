@@ -1,5 +1,13 @@
 # 历史问题索引
 
+- 标题：agent-runtime 架构拆分与日志统一
+  路径：`worklog/archive/架构重构/20260424-01-agent-runtime架构拆分与日志统一.md`
+  摘要：完成工作流引擎抽象层、TaskService 解耦、API 层解耦与日志统一，142 测试全通，版本 0.1.3 → 0.1.4。
+
+- 标题：日志模块整合：统一 agent-runtime 日志使用方式
+  路径：`worklog/archive/架构重构/20260424-01-日志模块整合.md`
+  摘要：将文件轮转能力合并到结构化日志模块，并全局替换 23 个文件的标准 logging 导入。
+
 - 标题：镜中人任务恢复失败排查
   路径：`worklog/archive/功能开发/20260424-03-镜中人任务恢复失败排查.md`
   摘要：修复 runner.py as_node 校准、story_engine.py payload 规范化、recovery.py 恢复门禁与前端缺失 import，任务成功恢复并完成。

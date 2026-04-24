@@ -1,65 +1,16 @@
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import threading
-from datetime import timedelta
-from pathlib import Path
-from typing import Any
+from app.observability import get_logger
 
-from langgraph.types import Command
 
-from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
-from app.context.manager import ContextManager
 from app.domain.models import (
-    AgentRunRecord,
-    ArchiveTaskDetailResponse,
-    ArchiveTaskListResponse,
-    ArtifactItem,
     ChapterDraft,
-    ContinueDraftRequest,
-    DashboardResponse,
-    DraftResult,
-    RecoveryOption,
-    RecoveryPreview,
-    ResultResponse,
     ReviewPayload,
-    ReviewResponse,
-    SourceAsset,
-    StoryPlan,
-    SubtaskRecord,
-    SubtaskStatus,
-    TaskCreateRequest,
-    TaskMode,
     TaskRecord,
     TaskStatus,
-    TaskSummary,
-    TaskEvent,
-    WorkspaceResponse,
-    utc_now,
 )
-from app.graph.main_graph import (
-    _build_references,
-    _chapter_pair_instruction,
-    _outline_instruction,
-    _resolve_model_profile,
-    build_normalized_spec,
-    build_graph,
-)
-from app.graph.supervisor_graph import build_initial_supervisor_plan
-from app.llm.model_catalog import ModelCatalogService
-from app.llm.story_engine import (
-    StoryEngine,
-    reset_exchange_callback,
-    reset_progress_callback,
-    set_exchange_callback,
-    set_progress_callback,
-)
-from app.rag.service import RagService
-from app.storage.task_store import TaskLogStore
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
