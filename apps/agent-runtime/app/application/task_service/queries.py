@@ -1,0 +1,825 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+from datetime import timedelta
+from pathlib import Path
+from typing import Any
+
+from langgraph.types import Command
+
+from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
+from app.context.manager import ContextManager
+from app.domain.models import (
+    AgentRunRecord,
+    ArchiveTaskDetailResponse,
+    ArchiveTaskListResponse,
+    ArtifactItem,
+    ChapterDraft,
+    ContinueDraftRequest,
+    DashboardResponse,
+    DraftResult,
+    RecoveryOption,
+    RecoveryPreview,
+    ResultResponse,
+    ReviewPayload,
+    ReviewResponse,
+    SourceAsset,
+    StoryPlan,
+    SubtaskRecord,
+    SubtaskStatus,
+    TaskCreateRequest,
+    TaskMode,
+    TaskRecord,
+    TaskStatus,
+    TaskSummary,
+    TaskEvent,
+    WorkspaceResponse,
+    utc_now,
+)
+from app.graph.main_graph import (
+    _build_references,
+    _chapter_pair_instruction,
+    _outline_instruction,
+    _resolve_model_profile,
+    build_normalized_spec,
+    build_graph,
+)
+from app.graph.supervisor_graph import build_initial_supervisor_plan
+from app.llm.model_catalog import ModelCatalogService
+from app.llm.story_engine import (
+    StoryEngine,
+    reset_exchange_callback,
+    reset_progress_callback,
+    set_exchange_callback,
+    set_progress_callback,
+)
+from app.rag.service import RagService
+from app.storage.task_store import TaskLogStore
+
+logger = logging.getLogger(__name__)
+
+_STAGE_LABELS: dict[str, str] = {
+    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
+    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
+    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
+    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
+    TaskStatus.PLANNING.value: "重新进入规划",
+}
+
+
+class TaskServiceQueriesMixin:
+
+    def list_artifacts(self, task_id: str) -> list[ArtifactItem]:
+        return self.store.get(task_id).artifacts
+
+    def list_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
+        return self.model_catalog.list_models(force_refresh=force_refresh)
+
+    def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
+        return self.model_catalog.list_models_payload(force_refresh=force_refresh)
+
+    def update_default_model(self, model_id: str) -> dict[str, Any]:
+        """更新默认模型，同时持久化到配置文件并更新运行时状态。"""
+        result = self.model_catalog.update_default_model(model_id)
+        # 同步到 StoryEngine，使其立即生效
+        self.engine.set_runtime_default_model(model_id)
+        return result
+
+    def get_dashboard(self) -> DashboardResponse:
+        tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
+        dead_statuses = {
+            TaskStatus.WAITING_MANUAL_ACTION,
+            TaskStatus.CANCELLED,
+            TaskStatus.ASSEMBLING,
+        }
+        continue_statuses = {
+            TaskStatus.CREATED,
+            TaskStatus.SOURCES_INGESTED,
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.READY_FOR_BATCH,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+        }
+        running_statuses = {
+            TaskStatus.PLANNING,
+            TaskStatus.DRAFTING,
+        }
+        running_tasks = [
+            self._to_summary(task)
+            for task in tasks
+            if task.status in running_statuses and not self._is_stale_running_task(task)
+        ]
+        continue_tasks = [self._to_summary(task) for task in tasks if task.status in continue_statuses]
+        failed_tasks = [self._to_summary(task) for task in tasks if task.status is TaskStatus.FAILED]
+        failed_tasks.extend(self._to_summary(task) for task in tasks if task.status in dead_statuses)
+        failed_tasks.extend(self._to_stale_run_summary(task) for task in tasks if self._is_stale_running_task(task))
+        completed_tasks = [
+            self._to_summary(task)
+            for task in tasks
+            if task.status is TaskStatus.COMPLETED and task.storage_state != "archive"
+        ]
+        return DashboardResponse(
+            continue_tasks=continue_tasks,
+            running_tasks=running_tasks,
+            failed_tasks=failed_tasks,
+            completed_tasks=completed_tasks,
+            model_summary=self._model_summary(),
+            system_summary={
+                "active_runs": len(running_tasks),
+                "archived_runs": sum(1 for task in tasks if task.storage_state == "archive"),
+            },
+            continue_total=len(continue_tasks),
+            running_total=len(running_tasks),
+            failed_total=len(failed_tasks),
+            completed_total=len(completed_tasks),
+        )
+
+    def get_archive_list(self, page: int = 1, page_size: int = 10) -> ArchiveTaskListResponse:
+        paginated_tasks, total = self.store.list_archive_tasks_paginated(page, page_size)
+        items = [self._to_summary(task) for task in paginated_tasks]
+        total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+        return ArchiveTaskListResponse(
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+            total_pages=total_pages,
+        )
+
+    def get_archive_detail(self, task_id: str) -> ArchiveTaskDetailResponse:
+        task = self.store.get(task_id)
+        if task.storage_state != "archive":
+            raise ValueError("当前任务尚未归档。")
+        if task.draft_result is None:
+            raise ValueError("归档任务缺少正文结果。")
+        return ArchiveTaskDetailResponse(
+            meta=self._to_summary(task),
+            request_preview=self._request_preview(task),
+            sources=task.sources,
+            recent_events=task.events[-20:],
+            result_summary=task.draft_result.summary,
+            result_markdown=self._result_markdown(task.draft_result),
+            result_md_ref=self._file_ref(task, "result.md"),
+            chapter_index=[
+                {
+                    "number": chapter.number,
+                    "title": chapter.title,
+                    "summary": chapter.summary,
+                    "md_ref": self._artifact_ref(task, f"chapter-{chapter.number:02d}.md"),
+                    "content": chapter.content,
+                }
+                for chapter in task.draft_result.chapters
+            ],
+            artifact_index=[self._artifact_index_item(task, artifact) for artifact in task.artifacts],
+            history_index=self._review_history(task),
+        )
+
+    def get_workspace(self, task_id: str) -> WorkspaceResponse:
+        task = self.store.get(task_id)
+        task, reconciliation = self._reconcile_task_for_read(task)
+        if task.story_plan is not None and task.status in {
+            TaskStatus.READY_FOR_BATCH,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+        }:
+            self._ensure_novel_project_seeded(task)
+        recent_events = task.events[-20:]
+        recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
+        return WorkspaceResponse(
+            meta=self._to_summary(task),
+            recent_events=recent_events,
+            active_trace_summary=recent_events[-1].message if recent_events else None,
+            available_tabs=self._workspace_tabs(task),
+            **recovery_contract,
+            request_preview=self._request_preview(task),
+            context_status=self._load_context_status(task.id),
+            response_cache_status=self._load_response_cache_status(task),
+            novel_progress=self._novel_progress(task),
+            sources=task.sources,
+            supervisor_plan=task.supervisor_plan,
+            agent_runs=task.agent_runs,
+        )
+
+    def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get(task_id)
+        if task.supervisor_plan is None:
+            raise ValueError("当前任务还没有 supervisor 规划结果。")
+        payload = task.supervisor_plan.model_dump(mode="json")
+        payload["agent_runs"] = [item.model_dump(mode="json") for item in task.agent_runs]
+        return payload
+
+    def get_review(self, task_id: str) -> ReviewResponse:
+        task = self.store.get(task_id)
+        task, reconciliation = self._reconcile_task_for_read(task)
+        review = task.pending_review
+        auto_review_trace = task.auto_review_trace or []
+        recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
+        if review is None:
+            historical_review_type = self._historical_review_type(task)
+            outline_ref = self._file_ref(task, "outline.md")
+            if task.story_plan is None:
+                if recovery_contract["allowed_actions"]:
+                    return ReviewResponse(
+                        meta=self._to_summary(task),
+                        review_type=historical_review_type,
+                        review_version="v1",
+                        **recovery_contract,
+                        summary="当前审核上下文不可用，请先执行恢复动作。",
+                        risk_flags=[],
+                        outline_markdown=None,
+                        outline_md_ref=None,
+                        revision_count=0,
+                        review_history=self._review_history(task),
+                        auto_review_trace=auto_review_trace,
+                    )
+                raise ValueError("当前任务还没有可审核的内容。")
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type=historical_review_type,
+                review_version="v1",
+                **recovery_contract,
+                summary="当前任务已有大纲，可查看历史审核结果。",
+                risk_flags=[],
+                outline_markdown=self._outline_markdown(task.story_plan) if historical_review_type != "verification_review" else None,
+                outline_md_ref=outline_ref if historical_review_type != "verification_review" else None,
+                revision_count=0,
+                review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
+            )
+
+        review_type = review.type
+        outline_ref = self._file_ref(task, "outline.md")
+
+        if review_type == "chapter_pair_review":
+            chapter_pair_data = review.chapter_pair or []
+            chapter_index = [
+                {
+                    "number": ch.number,
+                    "title": ch.title,
+                    "summary": ch.summary,
+                    "content": ch.content,
+                }
+                for ch in chapter_pair_data
+            ]
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type="chapter_pair_review",
+                review_version=review.version,
+                **recovery_contract,
+                summary=review.summary,
+                risk_flags=review.risk_flags,
+                outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
+                outline_md_ref=outline_ref,
+                review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
+                chapter_pair=chapter_index,
+                batch_index=review.batch_index,
+                completed_count=review.completed_count,
+                total_chapters=review.total_chapters,
+                chapter_pair_revision_count=review.chapter_pair_revision_count,
+            )
+
+        elif review_type == "verification_review":
+            return ReviewResponse(
+                meta=self._to_summary(task),
+                review_type="verification_review",
+                review_version=review.version,
+                **recovery_contract,
+                summary=review.summary,
+                risk_flags=review.risk_flags,
+                outline_markdown=None,
+                outline_md_ref=None,
+                review_history=self._review_history(task),
+                auto_review_trace=auto_review_trace,
+                verification_report=review.verification_report,
+                verification_revision_count=review.verification_revision_count,
+            )
+
+        # 默认：大纲审核
+        return ReviewResponse(
+            meta=self._to_summary(task),
+            review_type="outline_review",
+            review_version=review.version,
+            **recovery_contract,
+            summary=review.summary,
+            risk_flags=review.risk_flags,
+            outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
+            outline_md_ref=outline_ref,
+            revision_count=review.revision_count,
+            review_history=self._review_history(task),
+            auto_review_trace=auto_review_trace,
+        )
+
+    def get_result(self, task_id: str) -> ResultResponse:
+        task = self.store.get(task_id)
+        if task.draft_result is None:
+            raise ValueError("当前任务还没有可查看的结果。")
+        return ResultResponse(
+            meta=self._to_summary(task),
+            result_summary=task.draft_result.summary,
+            result_markdown=self._result_markdown(task.draft_result),
+            result_md_ref=self._file_ref(task, "result.md"),
+            chapter_index=[
+                {
+                    "number": chapter.number,
+                    "title": chapter.title,
+                    "summary": chapter.summary,
+                    "md_ref": self._artifact_ref(task, f"chapter-{chapter.number:02d}.md"),
+                    "content": chapter.content,
+                }
+                for chapter in task.draft_result.chapters
+            ],
+            artifact_index=[
+                self._artifact_index_item(task, artifact)
+                for artifact in task.artifacts
+            ],
+            history_index=self._review_history(task),
+        )
+
+    def read_file_text(self, task_id: str, relative_path: str) -> str:
+        return self.store.read_text(task_id, relative_path)
+
+    def subscribe_task_events(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
+        self.store.get(task_id)
+        return self.store.subscribe(task_id)
+
+    def unsubscribe_task_events(self, task_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
+        self.store.unsubscribe(task_id, queue)
+
+    def build_sse_snapshot(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get(task_id)
+        latest_event = task.events[-1].model_dump(mode="json") if task.events else None
+        return {
+            "task_id": task.id,
+            "meta": self._to_summary(task).model_dump(mode="json"),
+            "latest_event": latest_event,
+        }
+
+    def _to_summary(self, task: TaskRecord) -> TaskSummary:
+        title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
+        summary = task.events[-1].message if task.events else ""
+        model_id = task.model_id or self.engine.settings.default_chat_model
+        return TaskSummary(
+            task_id=task.id,
+            title=title,
+            mode=task.mode,
+            creative_mode=task.creative_mode,
+            novel_size=task.novel_size,
+            chapter_word_min=task.chapter_word_min,
+            model_id=model_id,
+            default_model_id=model_id,
+            last_action_model_id=task.last_action_model_id,
+            last_action_kind=task.last_action_kind,
+            model_capabilities=self._model_capabilities(model_id),
+            status=task.status,
+            current_stage=task.current_stage,
+            current_unit=task.current_unit,
+            progress=task.progress,
+            updated_at=task.updated_at,
+            summary=summary,
+            error_message=task.error_message,
+            storage_state=task.storage_state,
+            entry_refs={
+                "meta_json": f"tasklog/{task.storage_state}/{task.id}/meta.json",
+                "events_tail_json": f"tasklog/{task.storage_state}/{task.id}/events.tail.json",
+                "result_json": f"tasklog/{task.storage_state}/{task.id}/result.json",
+            },
+        )
+
+    def _model_summary(self) -> dict[str, Any]:
+        models = self.model_catalog.list_models()
+        supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
+        default_model = self.model_catalog._effective_default_model()
+        return {
+            "default_model": default_model,
+            "supported_models": supported_models,
+        }
+
+    def _workspace_tabs(self, task: TaskRecord) -> list[str]:
+        tabs = ["request", "events"]
+        if task.supervisor_plan is not None:
+            tabs.append("supervisor")
+        if task.story_plan is not None:
+            tabs.append("outline")
+        review_statuses = {
+            TaskStatus.WAITING_OUTLINE_REVIEW,
+            TaskStatus.WAITING_CHAPTER_REVIEW,
+            TaskStatus.WAITING_VERIFICATION_REVIEW,
+            TaskStatus.CANCELLED,
+            TaskStatus.COMPLETED,
+        }
+        if task.pending_review is not None or task.status in review_statuses:
+            tabs.append("review")
+        if task.draft_result is not None:
+            tabs.append("result")
+        return tabs
+
+    def _novel_progress(self, task: TaskRecord) -> dict[str, Any]:
+        from app.storage.db_repository import get_novel_project
+
+        project = get_novel_project(task.id)
+        if project is None:
+            if task.story_plan is None:
+                return {}
+            planned_count = int(task.story_plan.planned_chapter_count or len(task.story_plan.chapter_plan))
+            completed_count = 0
+            next_chapter_number = 1
+            default_batch_size = 3
+        else:
+            planned_count = int(project.planned_chapter_count or 0)
+            completed_count = int(project.completed_chapter_count or 0)
+            next_chapter_number = int(project.next_chapter_number or (completed_count + 1))
+            default_batch_size = int(project.default_batch_size or 3)
+            current_generating_chapter_number = (
+                int(project.current_generating_chapter_number)
+                if project.current_generating_chapter_number
+                else None
+            )
+        if project is None:
+            current_generating_chapter_number = None
+        target_chapter_count = int(task.target_chapter_count or task.input.target_chapter_count or 0)
+        chapter_count_min = int(task.chapter_count_min or task.input.chapter_count_min)
+        chapter_count_max = int(task.chapter_count_max or task.input.chapter_count_max)
+        remaining = max(planned_count - completed_count, 0)
+        return {
+            "target_chapter_count": target_chapter_count,
+            "chapter_count_min": chapter_count_min,
+            "chapter_count_max": chapter_count_max,
+            "planned_chapter_count": planned_count,
+            "completed_chapter_count": completed_count,
+            "next_chapter_number": next_chapter_number,
+            "current_generating_chapter_number": current_generating_chapter_number if project is not None else None,
+            "remaining_chapter_count": remaining,
+            "default_batch_size": default_batch_size,
+        }
+
+    def _review_history(self, task: TaskRecord) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for event in task.events:
+            if event.event_type == "review.waiting":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "waiting",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "review.submitted":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "submitted",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.review.rejected":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "rejected",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif (
+                event.event_type == "context.history.updated"
+                and event.stage == "verification"
+                and (event.payload or {}).get("exchange_label") == "fix-issues"
+            ):
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "repairing",
+                        "comment": "已进入验证问题修复阶段。",
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.cancelled":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "rejected",
+                        "comment": event.message,
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+            elif event.event_type == "task.completed":
+                items.append(
+                    {
+                        "version": "v1",
+                        "action": "approved",
+                        "comment": "审核通过，已继续生成正文。",
+                        "created_at": event.created_at.isoformat(),
+                    }
+                )
+        return items
+
+    def _outline_markdown(self, story_plan: StoryPlan) -> str:
+        lines = [
+            f"# {story_plan.working_title}",
+            "",
+            story_plan.logline,
+            "",
+            "## 世界观",
+            "",
+        ]
+        lines.extend(f"- {item}" for item in story_plan.world_notes)
+        lines.extend(["", "## 人物", ""])
+        lines.extend(f"- {item}" for item in story_plan.character_notes)
+        lines.extend(["", "## 章节计划", ""])
+        for chapter in story_plan.chapter_plan:
+            lines.append(f"- 第{chapter.number}章 {chapter.title}：{chapter.goal}")
+        return "\n".join(lines) + "\n"
+
+    def _result_markdown(self, draft_result: DraftResult) -> str:
+        return f"# {draft_result.title}\n\n{draft_result.summary}\n\n{draft_result.body}\n"
+
+    def _file_ref(self, task: TaskRecord, filename: str) -> str:
+        return f"/api/tasks/{task.id}/files/{filename}"
+
+    def _artifact_ref(self, task: TaskRecord, filename: str) -> str:
+        return f"/api/tasks/{task.id}/files/artifacts/{filename}"
+
+    def _artifact_index_item(self, task: TaskRecord, artifact: ArtifactItem) -> dict[str, Any]:
+        md_ref = None
+        json_ref = None
+        if artifact.type == "story_plan":
+            md_ref = self._file_ref(task, "outline.md")
+            json_ref = self._file_ref(task, "outline.json")
+        elif artifact.type == "manuscript":
+            md_ref = self._file_ref(task, "result.md")
+            json_ref = self._file_ref(task, "result.json")
+        return {
+            "id": artifact.id,
+            "type": artifact.type,
+            "name": artifact.name,
+            "created_at": artifact.created_at.isoformat(),
+            "md_ref": md_ref,
+            "json_ref": json_ref,
+        }
+
+    def _historical_review_type(self, task: TaskRecord) -> str:
+        for event in reversed(task.events):
+            if event.event_type != "review.waiting":
+                continue
+            if event.stage == "waiting_verification_review":
+                return "verification_review"
+            if event.stage == "waiting_chapter_review":
+                return "chapter_pair_review"
+            if event.stage == "waiting_outline_review":
+                return "outline_review"
+        return "outline_review"
+
+    def _build_artifacts(self, story_plan: StoryPlan, draft_result: DraftResult) -> list[ArtifactItem]:
+        return [
+            ArtifactItem(
+                type="story_plan",
+                name=f"{story_plan.working_title}-大纲",
+                content=story_plan.model_dump_json(indent=2),
+            ),
+            ArtifactItem(
+                type="manuscript",
+                name=f"{draft_result.title}-正文",
+                content=draft_result.body,
+            ),
+        ]
+
+    def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
+        model_id = task.model_id or self.engine.settings.default_chat_model
+        return {
+            "prompt": task.input.prompt,
+            "model_id": model_id,
+            "default_model_id": model_id,
+            "last_action_model_id": task.last_action_model_id,
+            "last_action_kind": task.last_action_kind,
+            "creative_mode": task.creative_mode.value if task.creative_mode else "",
+            "novel_size": task.novel_size.value if task.novel_size else "",
+            "target_chapter_count": task.target_chapter_count or task.input.target_chapter_count,
+            "chapter_word_min": task.chapter_word_min or task.input.target_words,
+            "target_words": task.input.target_words,
+            "model_capabilities": self._model_capabilities(model_id),
+            "genre": task.input.genre,
+            "style": task.input.style,
+            "style_profile_id": task.input.style_profile_id,
+            "style_profile_name": str(task.normalized_spec.get("style_profile_name") or ""),
+            "target_words": task.input.target_words,
+            "audience": task.input.audience,
+            "banned": task.input.banned,
+            "title_hint": task.input.title_hint,
+        }
+
+    def _extract_interrupt_payload(self, result: dict[str, Any]) -> dict[str, Any]:
+        interrupts = result.get("__interrupt__")
+        if isinstance(interrupts, dict):
+            return interrupts
+        if not isinstance(interrupts, list) or not interrupts:
+            raise RuntimeError("工作流返回了空的中断结果，无法恢复审核状态。")
+        first_interrupt = interrupts[0]
+        if isinstance(first_interrupt, dict):
+            return first_interrupt
+        payload = getattr(first_interrupt, "value", None)
+        if isinstance(payload, dict):
+            return payload
+        raise RuntimeError("工作流中断结果结构不兼容，无法解析审核载荷。")
+
+    def _derive_supervisor_subtask_status(self, task: TaskRecord) -> dict[str, SubtaskStatus]:
+        status_map = {
+            "reference_analysis": SubtaskStatus.BLOCKED,
+            "outline_planning": SubtaskStatus.BLOCKED,
+            "chapter_writing": SubtaskStatus.BLOCKED,
+            "chapter_review": SubtaskStatus.BLOCKED,
+            "full_verification": SubtaskStatus.BLOCKED,
+            "result_assembly": SubtaskStatus.BLOCKED,
+        }
+
+        if task.status in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED}:
+            status_map["reference_analysis"] = SubtaskStatus.READY
+            return status_map
+
+        if task.status is TaskStatus.PLANNING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_CHAPTER_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.RUNNING
+            status_map["chapter_review"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.WAITING_VERIFICATION_REVIEW:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+            status_map["chapter_review"] = SubtaskStatus.COMPLETED
+            status_map["full_verification"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.ASSEMBLING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+            status_map["chapter_review"] = SubtaskStatus.COMPLETED
+            status_map["full_verification"] = SubtaskStatus.COMPLETED
+            status_map["result_assembly"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status is TaskStatus.COMPLETED:
+            return {key: SubtaskStatus.COMPLETED for key in status_map}
+
+        if task.status is TaskStatus.DRAFTING:
+            status_map["reference_analysis"] = SubtaskStatus.COMPLETED
+            status_map["outline_planning"] = SubtaskStatus.COMPLETED
+            if task.current_stage == "verification" or task.current_unit == "verification":
+                status_map["chapter_writing"] = SubtaskStatus.COMPLETED
+                status_map["chapter_review"] = SubtaskStatus.COMPLETED
+                status_map["full_verification"] = SubtaskStatus.RUNNING
+                return status_map
+
+            status_map["chapter_writing"] = SubtaskStatus.RUNNING
+            if isinstance(task.current_unit, str) and task.current_unit.startswith("chapter-pair-"):
+                status_map["chapter_review"] = SubtaskStatus.RUNNING
+            return status_map
+
+        if task.status in {TaskStatus.CANCELLED, TaskStatus.FAILED}:
+            derived = self._derive_supervisor_subtask_status_for_terminal(task)
+            return derived
+
+        return status_map
+
+    def _derive_supervisor_subtask_status_for_terminal(self, task: TaskRecord) -> dict[str, SubtaskStatus]:
+        status_map = self._derive_supervisor_subtask_status(
+            task.model_copy(update={"status": TaskStatus.DRAFTING}, deep=True)
+        )
+        if task.current_stage in {"planning", "waiting_outline_review"}:
+            status_map["outline_planning"] = SubtaskStatus.FAILED
+        elif task.current_stage in {"drafting", "waiting_chapter_review"}:
+            if isinstance(task.current_unit, str) and task.current_unit.startswith("chapter-pair-"):
+                status_map["chapter_review"] = SubtaskStatus.FAILED
+            else:
+                status_map["chapter_writing"] = SubtaskStatus.FAILED
+        elif task.current_stage in {"verification", "waiting_verification_review"}:
+            status_map["full_verification"] = SubtaskStatus.FAILED
+        elif task.current_stage == "completed":
+            status_map["result_assembly"] = SubtaskStatus.FAILED
+        return status_map
+
+    def _model_capabilities(self, model_id: str) -> dict[str, Any] | None:
+        profile = self.model_catalog.get_model_profile(model_id)
+        capabilities = profile.get("capabilities")
+        return capabilities if isinstance(capabilities, dict) else None
+
+    def _load_context_status(self, task_id: str) -> dict[str, Any]:
+        for relative_path in ("context/drafting/draft-context.json", "context/planning/outline-context.json"):
+            try:
+                snapshot = self.store.read_json(task_id, relative_path)
+            except FileNotFoundError:
+                continue
+            return self._context_status_from_snapshot(snapshot)
+        return {}
+
+    def _load_response_cache_status(self, task: TaskRecord) -> dict[str, Any]:
+        cache_event = next(
+            (event for event in reversed(task.events) if event.event_type == "cache.hit"),
+            None,
+        )
+        if cache_event is None:
+            return {}
+        payload = cache_event.payload if isinstance(cache_event.payload, dict) else {}
+        status: dict[str, Any] = {
+            "stage": cache_event.stage,
+            "status": "cached",
+            "summary": cache_event.message,
+            "cache_hit": True,
+            "cache_scope": "response_cache",
+        }
+        if payload.get("cache_key"):
+            status["cache_key"] = payload.get("cache_key")
+        if payload.get("model"):
+            status["model"] = payload.get("model")
+        if isinstance(payload.get("history_count"), int):
+            status["history_count"] = payload.get("history_count")
+        if payload.get("exchange_label"):
+            status["exchange_label"] = payload.get("exchange_label")
+        return status
+
+    def _load_message_history(
+        self,
+        task_id: str,
+        stage: str,
+        filename: str,
+    ) -> list[dict[str, str]]:
+        try:
+            payload = self.store.read_json(task_id, f"context/{stage}/{filename}.json")
+        except FileNotFoundError:
+            return []
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return []
+        normalized: list[dict[str, str]] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "user").strip() or "user"
+            content = str(item.get("content") or "").strip()
+            if not content:
+                continue
+            normalized.append({"role": role, "content": content})
+        return normalized
+
+    def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}
+        packet = snapshot.get("packet") if isinstance(snapshot.get("packet"), dict) else {}
+        compressed_references = snapshot.get("compressed_references")
+        compressed_items = compressed_references if isinstance(compressed_references, list) else []
+        original_chars = sum(
+            int(item.get("original_chars") or 0)
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        compressed_chars = sum(
+            int(item.get("compressed_chars") or 0)
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        compression_applied = any(
+            bool(item.get("was_compressed"))
+            for item in compressed_items
+            if isinstance(item, dict)
+        )
+        ratio = None
+        if original_chars > 0:
+            ratio = round(max(original_chars - compressed_chars, 0) / original_chars, 4)
+        max_input_tokens = budget.get("max_input_tokens")
+        input_tokens = packet.get("estimated_input_tokens")
+        window_usage_ratio = None
+        if isinstance(max_input_tokens, int) and max_input_tokens > 0 and isinstance(input_tokens, int):
+            window_usage_ratio = round(input_tokens / max_input_tokens, 4)
+        return {
+            "stage": snapshot.get("stage"),
+            "status": "cached" if snapshot.get("cache_hit") else "fresh",
+            "summary": "已完成上下文预算、压缩与装配。",
+            "input_tokens": input_tokens,
+            "current_tokens": input_tokens,
+            "max_input_tokens": max_input_tokens,
+            "window_usage_ratio": window_usage_ratio,
+            "compression_applied": compression_applied,
+            "compression_ratio": ratio,
+            "compression_summary": f"已压缩 {sum(1 for item in compressed_items if isinstance(item, dict) and item.get('was_compressed'))} 份素材",
+            "cache_hit": bool(snapshot.get("cache_hit")),
+            "cache_scope": "runtime_context",
+            "cache_key": snapshot.get("cache_key"),
+            "cached_segments": len(compressed_items),
+        }
+
