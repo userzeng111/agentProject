@@ -13,12 +13,37 @@ import {
   CircularProgress,
   Container,
   Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Paper,
+  Select,
+  Snackbar,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Typography,
 } from "@mui/material";
-import { NavigateNext as NavigateNextIcon, Refresh as RefreshIcon, Settings as SettingsIcon } from "@mui/icons-material";
-import { getRagSettings, rebuildRagLibrary } from "@/lib/api";
-import { RagSettingsStatus, RagSyncResult } from "@/lib/types";
+import {
+  Computer as ComputerIcon,
+  NavigateNext as NavigateNextIcon,
+  Refresh as RefreshIcon,
+  Settings as SettingsIcon,
+} from "@mui/icons-material";
+import {
+  getModelCatalog,
+  getProtocolSettings,
+  getRagSettings,
+  rebuildRagLibrary,
+  setModelProtocol,
+} from "@/lib/api";
+import { ModelOption, RagSettingsStatus, RagSyncResult } from "@/lib/types";
+import { isGatewayBackedModel } from "@/lib/model-options.mjs";
+import { normalizeModelOptions } from "@/lib/api";
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -38,6 +63,14 @@ export default function SettingsClient() {
   const [rebuilding, setRebuilding] = useState(false);
   const [error, setError] = useState("");
 
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
+  const [protocolMap, setProtocolMap] = useState<Record<string, string>>({});
+  const [savingModelId, setSavingModelId] = useState<string | null>(null);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState("");
+
   const loadStatus = async () => {
     try {
       setLoading(true);
@@ -52,9 +85,42 @@ export default function SettingsClient() {
     }
   };
 
+  const loadModels = async () => {
+    try {
+      setModelsLoading(true);
+      setModelsError("");
+      const catalog = await getModelCatalog();
+      const normalized = normalizeModelOptions(catalog.data ?? []);
+      const gatewayModels = normalized.filter((m) => isGatewayBackedModel(m));
+      setModels(gatewayModels);
+      const settings = await getProtocolSettings();
+      setProtocolMap(settings.overrides ?? {});
+    } catch (reason) {
+      setModelsError(reason instanceof Error ? reason.message : "读取模型列表失败");
+    } finally {
+      setModelsLoading(false);
+    }
+  };
+
   useEffect(() => {
     void loadStatus();
+    void loadModels();
   }, []);
+
+  const handleProtocolChange = async (modelId: string, protocol: string) => {
+    try {
+      setSavingModelId(modelId);
+      await setModelProtocol(modelId, protocol);
+      setProtocolMap((prev) => ({ ...prev, [modelId]: protocol }));
+      setSnackbarMessage(`已保存：${modelId} → ${protocol}`);
+      setSnackbarOpen(true);
+    } catch (reason) {
+      const msg = reason instanceof Error ? reason.message : "保存协议失败";
+      setModelsError(msg);
+    } finally {
+      setSavingModelId(null);
+    }
+  };
 
   const handleRebuild = async () => {
     // eslint-disable-next-line no-alert
@@ -207,7 +273,92 @@ export default function SettingsClient() {
             )}
           </CardContent>
         </Card>
+
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <ComputerIcon color="primary" />
+                <Typography variant="h6">模型协议配置</Typography>
+              </Stack>
+              <Typography variant="body2" color="text.secondary">
+                为 Gateway 后端模型指定请求协议（OpenAI 或 Anthropic）。仅列出 source 包含 gateway 的模型。
+              </Typography>
+
+              {modelsLoading ? (
+                <Stack direction="row" spacing={1.5} alignItems="center">
+                  <CircularProgress size={20} />
+                  <Typography>正在读取模型列表...</Typography>
+                </Stack>
+              ) : modelsError ? (
+                <Alert severity="error">{modelsError}</Alert>
+              ) : models.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  暂无可用模型
+                </Typography>
+              ) : (
+                <TableContainer component={Paper} variant="outlined">
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>显示名称</TableCell>
+                        <TableCell>模型 ID</TableCell>
+                        <TableCell>当前协议</TableCell>
+                        <TableCell>修改协议</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {models.map((model) => {
+                        const currentProtocol = protocolMap[model.id] || model.metadata?.protocol || "未配置";
+                        return (
+                          <TableRow key={model.id}>
+                            <TableCell>{model.display_name || model.id}</TableCell>
+                            <TableCell sx={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{model.id}</TableCell>
+                            <TableCell>
+                              <Chip
+                                size="small"
+                                label={currentProtocol}
+                                color={currentProtocol === "openai" ? "primary" : currentProtocol === "anthropic" ? "secondary" : "default"}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <FormControl size="small" sx={{ minWidth: 140 }} disabled={savingModelId === model.id}>
+                                <InputLabel id={`protocol-label-${model.id}`}>协议</InputLabel>
+                                <Select
+                                  labelId={`protocol-label-${model.id}`}
+                                  value={currentProtocol === "未配置" ? "" : currentProtocol}
+                                  label="协议"
+                                  onChange={(e) => handleProtocolChange(model.id, e.target.value)}
+                                  endAdornment={
+                                    savingModelId === model.id ? (
+                                      <CircularProgress size={16} sx={{ mr: 1 }} />
+                                    ) : null
+                                  }
+                                >
+                                  <MenuItem value="openai">OpenAI</MenuItem>
+                                  <MenuItem value="anthropic">Anthropic</MenuItem>
+                                </Select>
+                              </FormControl>
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </Stack>
+          </CardContent>
+        </Card>
       </Stack>
+
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={() => setSnackbarOpen(false)}
+        message={snackbarMessage}
+        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+      />
     </Container>
   );
 }

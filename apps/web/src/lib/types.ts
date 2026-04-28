@@ -115,6 +115,7 @@ export interface ModelMetadata {
   source?: string;
   compatibility?: string;
   profile_version?: string;
+  protocol?: string;
 }
 
 export interface StyleProfile {

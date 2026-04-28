@@ -362,6 +362,36 @@ _PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "K2.6": {
+        "display_name": "Kimi K2.6",
+        "provider": "moonshot",
+        "capabilities": {
+            "context_window": {
+                "max_input_tokens": 256000,
+                "max_output_tokens": 32768,
+                "max_total_tokens": 288768,
+                "recommended_prompt_budget": 180000,
+                "compression_trigger_tokens": 140000,
+            },
+            "cache": {
+                "runtime_response_cache": True,
+                "runtime_context_cache": True,
+                "provider_prompt_cache": "unknown",
+                "cache_key_strategy": "stage+model+context_hash",
+            },
+            "compression": {
+                "supported": True,
+                "may_compress": True,
+                "strategy": "reference_truncate+memory_trim",
+            },
+            "features": {
+                "json_mode": True,
+                "tool_calling": True,
+                "streaming": True,
+            },
+        },
+        "protocol": "anthropic",
+    },
 }
 
 
@@ -536,6 +566,9 @@ class ModelCatalogService:
         provider = profile.get("provider") or self.settings.llm_provider
         display_name = profile.get("display_name") or model_id
         compatibility = "verified" if source in {"gateway+registry", "registry", "default+registry"} else "unverified"
+        protocol = profile.get("protocol") or "openai"
+        if hasattr(self.settings, "effective_protocol_overrides"):
+            protocol = self.settings.effective_protocol_overrides.get(model_id, protocol)
         capabilities.setdefault("features", {})
         if isinstance(capabilities["features"], dict):
             capabilities["features"].setdefault("novel_task_supported", compatibility == "verified")
@@ -549,6 +582,7 @@ class ModelCatalogService:
             "metadata": {
                 "source": source,
                 "compatibility": compatibility,
+                "protocol": protocol,
                 "profile_version": "2026-03-31",
                 "last_refreshed_at": None,
             },

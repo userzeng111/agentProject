@@ -72,6 +72,29 @@ def build_router(
             logger.exception("更新默认模型失败")
             raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
 
+    @router.get("/settings/protocols")
+    def get_protocol_settings():
+        from app.settings.runtime_settings import get_model_protocol_overrides
+        return {
+            "default_protocol": "openai",
+            "overrides": get_model_protocol_overrides(),
+        }
+
+    @router.patch("/settings/protocols/{model_id}")
+    def update_model_protocol(model_id: str, payload: dict[str, str]):
+        from app.settings.runtime_settings import set_model_protocol_override
+        protocol = payload.get("protocol", "").strip()
+        if protocol not in {"openai", "anthropic"}:
+            raise HTTPException(status_code=400, detail="protocol 必须是 openai 或 anthropic")
+        set_model_protocol_override(model_id, protocol)
+        return {"model_id": model_id, "protocol": protocol}
+
+    @router.delete("/settings/protocols/{model_id}")
+    def delete_model_protocol(model_id: str):
+        from app.settings.runtime_settings import remove_model_protocol_override
+        remove_model_protocol_override(model_id)
+        return {"model_id": model_id}
+
     @router.get("/settings/rag")
     def get_rag_status():
         if rag_rebuild_service is None:

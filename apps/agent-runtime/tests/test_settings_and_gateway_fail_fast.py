@@ -170,7 +170,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
     def test_create_task_rejects_unverified_gateway_only_model_for_novel_workflow(self) -> None:
         class GatewayWithUnknownModel:
             def list_models(self):
-                return [{"id": "K2.6", "object": "model", "owned_by": "custom"}]
+                return [{"id": "unknown-model-xyz", "object": "model", "owned_by": "custom"}]
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
@@ -191,7 +191,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                         creative_mode=CreativeMode.STYLE_REMIX,
                         novel_size=NovelSize.LONG,
                         chapter_word_min=2200,
-                        model_id="K2.6",
+                        model_id="unknown-model-xyz",
                         style_profile_id="wozhenmeixiangchongshengya",
                     )
                 )

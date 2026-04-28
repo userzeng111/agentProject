@@ -56,3 +56,9 @@
 - 标题：前端Hooks错误、验证审核Agent显示与日志修复
   路径：`worklog/active/功能开发/20260427-02-前端Hooks错误与验证审核Agent显示与日志修复.md`
   摘要：修复React Hooks违规导致的渲染崩溃，增强验证审核Agent面板空状态提示，补充auto_review执行与前端错误日志。
+- 标题：首页模型列表与 K2.6 协议兼容修复
+  路径：`worklog/active/功能开发/20260428-01-首页模型列表与K2.6协议兼容修复.md`
+  摘要：首页模型列表与 AI 对话页面对齐，修复 K2.6 模型 400 错误并增加协议层兼容。
+- 标题：统一模型列表过滤逻辑
+  路径：`worklog/active/功能开发/20260428-01-统一模型列表过滤逻辑.md`
+  摘要：移除 selectNovelTaskModels 的 compatibility 限制，使首页/创建/审核/运行页与 AI 对话页模型列表一致。

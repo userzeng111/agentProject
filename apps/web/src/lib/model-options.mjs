@@ -4,7 +4,7 @@ export function isGatewayBackedModel(model) {
 }
 
 export function isNovelTaskModelSupported(model) {
-  return isGatewayBackedModel(model) && model?.metadata?.compatibility === "verified";
+  return isGatewayBackedModel(model);
 }
 
 export function selectNovelTaskModels(models) {

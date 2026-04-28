@@ -43,6 +43,12 @@ class ChatService:
                 return candidate
         raise HTTPException(status_code=400, detail="未指定模型且系统默认模型不可用。")
 
+    def _build_thinking_param(self, model_id: str) -> dict[str, Any] | None:
+        """为支持 extended thinking 的模型构造 thinking 参数（Anthropic 协议）。"""
+        if model_id == "K2.6":
+            return {"type": "enabled", "budget_tokens": 1024}
+        return None
+
     def _sse_payload(self, event_name: str, payload: dict) -> str:
         """构造 SSE 事件 payload。"""
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -61,9 +67,11 @@ class ChatService:
 
         async def _sse_stream():
             try:
+                thinking_param = self._build_thinking_param(resolved_model)
                 async for chunk in self.gateway_client.complete_stream(
                     messages=messages,
                     model=resolved_model,
+                    **({"thinking": thinking_param} if thinking_param else {}),
                 ):
                     data: dict[str, Any] = {
                         "content": chunk.content,
@@ -102,9 +110,11 @@ class ChatService:
                     # 首个 chunk：带 role
                     yield f"data: {json.dumps(_openai_chunk(chat_id, resolved_model, {'role': 'assistant', 'content': ''}), ensure_ascii=False)}\n\n"
 
+                    thinking_param = self._build_thinking_param(resolved_model)
                     async for chunk in self.gateway_client.complete_stream(
                         messages=messages,
                         model=resolved_model,
+                        **({"thinking": thinking_param} if thinking_param else {}),
                     ):
                         delta: dict[str, Any] = {}
                         if chunk.content:
@@ -128,9 +138,11 @@ class ChatService:
                 full_content = ""
                 full_reasoning = ""
                 usage_data = {}
+                thinking_param = self._build_thinking_param(resolved_model)
                 async for chunk in self.gateway_client.complete_stream(
                     messages=messages,
                     model=resolved_model,
+                    **({"thinking": thinking_param} if thinking_param else {}),
                 ):
                     full_content += chunk.content
                     full_reasoning += chunk.reasoning_content

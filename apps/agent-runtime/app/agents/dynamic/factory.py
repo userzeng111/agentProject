@@ -7,6 +7,7 @@ Agent 工厂
 
 from __future__ import annotations
 
+import re
 from app.observability import get_logger
 from typing import Any
 
@@ -68,7 +69,6 @@ class AgentFactory:
             })
         except KeyError:
             # 缺少变量时用空字符串替代
-            import re
             used_vars = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
             safe_vars = {k: variables.get(k, "") for k in used_vars}
             return template.format(**safe_vars)
@@ -92,6 +92,19 @@ class AgentFactory:
         try:
             # 渲染 prompt
             user_prompt = self.render_prompt(bp.user_prompt_template, variables)
+
+            # 当要求 JSON 输出时，强制追加 JSON 格式和评分要求
+            if bp.output_format == "json":
+                user_prompt += (
+                    "\n\n【强制输出要求】"
+                    "你必须且只能返回一个合法的 JSON 对象，不要输出 Markdown 代码围栏，不要输出任何额外解释。"
+                    "JSON 必须包含以下字段："
+                    ' "score": 0-100 之间的数值评分（必填，不得省略）；'
+                    ' "issues": 问题列表（数组，可选）；'
+                    ' "warnings": 警告列表（数组，可选）；'
+                    ' "highlights": 亮点列表（数组，可选）；'
+                    ' "reasoning": 评分理由（字符串，可选）。'
+                )
 
             # 构建消息
             messages = [
@@ -120,15 +133,35 @@ class AgentFactory:
             agent.status = DynamicAgentStatus.COMPLETED
             agent.completed_at = completed_at
 
-            # 兼容多种评分字段名：score / total_score / overall_score / weighted_score
+            # 兼容多种评分字段名：score / total_score / overall_score / weighted_score / final_score / synthesis_score
             score = 0.0
-            for score_key in ("score", "total_score", "overall_score", "weighted_score"):
+            for score_key in ("score", "total_score", "overall_score", "weighted_score", "final_score", "synthesis_score"):
                 if score_key in response and response[score_key] is not None:
                     try:
                         score = float(response[score_key])
                         break
                     except (ValueError, TypeError):
                         pass
+
+            # 评分缺失时记录警告并尝试从 reasoning 中 fallback 提取
+            if score == 0.0 and bp.output_format == "json":
+                reasoning_text = str(response.get("reasoning", ""))
+                # 尝试从 reasoning 中提取 "XX分" 或 "评分：XX" 之类的数值
+                m = re.search(r"(?:评分|得分|分数)[:：\s]*(\d+(?:\.\d+)?)", reasoning_text)
+                if m:
+                    try:
+                        score = float(m.group(1))
+                        logger.warning(
+                            "Agent %s 的 JSON 中缺少 score 字段，从 reasoning 中 fallback 提取到 %.1f",
+                            bp.agent_name, score,
+                        )
+                    except (ValueError, TypeError):
+                        pass
+                else:
+                    logger.warning(
+                        "Agent %s 返回的 JSON 中缺少 score 字段，response_keys=%s",
+                        bp.agent_name, list(response.keys()),
+                    )
 
             # 兼容多种问题/警告/亮点字段名
             issues = response.get("issues") or response.get("key_issues") or []
@@ -194,5 +227,8 @@ class AgentFactory:
             )
             agent.output = result
 
-            logger.error("Agent 执行失败: %s，错误: %s", bp.agent_name, e)
+            logger.error(
+                "Agent 执行失败: %s，错误: %s，output_format=%s，template_vars=%s",
+                bp.agent_name, e, bp.output_format, list(variables.keys()),
+            )
             return result

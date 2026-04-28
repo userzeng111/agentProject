@@ -115,13 +115,13 @@ class ModelCatalogServiceTests(unittest.TestCase):
             settings=self.settings,
             gateway_client=FakeGatewayClient(
                 [
-                    {"id": "K2.6", "object": "model", "owned_by": "custom"},
+                    {"id": "unknown-model-xyz", "object": "model", "owned_by": "custom"},
                 ]
             ),
         )
 
         payload = catalog.list_models_payload()
-        model = next(item for item in payload["data"] if item["id"] == "K2.6")
+        model = next(item for item in payload["data"] if item["id"] == "unknown-model-xyz")
 
         self.assertEqual(model["metadata"]["source"], "gateway")
         self.assertEqual(model["metadata"]["compatibility"], "unverified")

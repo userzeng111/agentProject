@@ -60,7 +60,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 "style": "保留原文风格，但有新东西",
                 "style_profile_id": "wozhenmeixiangchongshengya",
                 "title_hint": "文艺",
-                "model_id": "K2.6",
+                "model_id": "unknown-model-xyz",
             },
         )
 

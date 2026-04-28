@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +45,37 @@ class Settings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("DYNAMIC_AGENT_REVIEW"),
     )
+    # LLM 协议配置
+    default_protocol: str = Field(
+        default="openai",
+        validation_alias=AliasChoices("DEFAULT_PROTOCOL"),
+    )
+    model_protocol_overrides: dict[str, str] = Field(
+        default={},
+        validation_alias=AliasChoices("MODEL_PROTOCOL_OVERRIDES"),
+    )
+
+    @field_validator("model_protocol_overrides", mode="before")
+    @classmethod
+    def _parse_protocol_overrides(cls, v):
+        if v is None or v == "":
+            return {}
+        if isinstance(v, dict):
+            return v
+        import json
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+
+    @property
+    def effective_protocol_overrides(self) -> dict[str, str]:
+        from app.settings.runtime_settings import get_model_protocol_overrides
+        runtime_overrides = get_model_protocol_overrides()
+        env_overrides = self.model_protocol_overrides or {}
+        merged = dict(env_overrides)
+        merged.update(runtime_overrides)
+        return merged
 
     model_config = SettingsConfigDict(
         env_file=RUNTIME_ENV_FILE,

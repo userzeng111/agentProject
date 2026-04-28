@@ -72,7 +72,16 @@ class TaskServiceReviewMixin:
 
             batch = get_active_batch(task_id)
             if batch is None:
-                raise ValueError("当前任务缺少章节批次记录。")
+                # 兜底：若数据库中缺失批次记录（例如旧流程或未正常创建），根据 pending_review 自动重建
+                from app.storage.db_repository import create_batch
+                batch = create_batch(
+                    task_id,
+                    continue_request_id=task.current_unit or f"recovered-{task_id}",
+                    requested_count=len(chapter_numbers),
+                    effective_count=len(chapter_numbers),
+                    actual_start_chapter=min(chapter_numbers) if chapter_numbers else 1,
+                )
+                logger.warning("任务 %s 审核时缺失批次记录，已自动重建 batch_no=%s", task_id, batch.batch_no)
             project = get_novel_project(task_id)
             if project is None:
                 raise ValueError("当前任务缺少小说项目记录。")

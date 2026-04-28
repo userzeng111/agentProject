@@ -90,6 +90,17 @@ export function getModelCatalog(options?: { refresh?: boolean }) {
   return request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
 }
 
+export function getProtocolSettings() {
+  return request<{ default_protocol: string; overrides: Record<string, string> }>("/api/settings/protocols");
+}
+
+export function setModelProtocol(modelId: string, protocol: string) {
+  return request<{ model_id: string; protocol: string }>(`/api/settings/protocols/${encodeURIComponent(modelId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ protocol }),
+  });
+}
+
 export async function getStyleProfiles() {
   const response = await request<StyleProfileListResponse>("/api/style-profiles");
   return Array.isArray(response.items) ? response.items : [];

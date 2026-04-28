@@ -39,8 +39,8 @@ MASTER_BLUEPRINT_PROMPT = """请根据以下任务信息，动态规划所需的
    - 角色标签（英文，如"structure"）
    - 评估维度名称
    - 权重（所有分析型 Agent 权重之和为 1.0）
-   - 系统 prompt（定义该角色的职责和评分标准）
-   - 用户 prompt 模板（包含需要评估的内容占位符）
+   - 系统 prompt（定义该角色的职责和评分标准，**必须明确要求返回严格 JSON 格式，不得输出 Markdown 围栏或额外解释**）
+   - 用户 prompt 模板（包含需要评估的内容占位符，**必须在最后明确要求返回包含 score 字段的 JSON**）
 3. 如需综合决策，额外设计一个综合 Agent（is_synthesis: true，权重 1.0）
    - 综合 Agent 最多只能有 1 个，role 固定为 "synthesis"
 4. 分析 Agent 之间的依赖关系：
@@ -51,6 +51,11 @@ MASTER_BLUEPRINT_PROMPT = """请根据以下任务信息，动态规划所需的
    - role 必须唯一
    - role + dimension 的组合必须唯一
    - 子 Agent 仅作为主 Agent 派发的工具执行单元
+7. 用户 prompt 模板中**必须**使用以下可用变量占位符（按原样使用，不要发明新变量名）：
+   - {{current_chapters_text}}: 当前待审核的完整章节文本（chapter_pair_review 任务必须直接使用此变量，不得自行构造如"【第1章内容】"之类的占位符）
+   - {{sub_agents_json}}: 子 Agent 的审核结果（仅综合 Agent 可用）
+   - {{mode}}, {{genre}}, {{style}}, {{target_words}}: 任务基本信息
+   如果上下文中有章节内容，分析型 Agent 的模板中**必须包含 {{current_chapters_text}}**，确保子 Agent 能拿到实际文本进行审核。
 
 【输出要求】
 严格返回 JSON：

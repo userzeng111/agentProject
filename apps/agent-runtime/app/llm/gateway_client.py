@@ -50,23 +50,38 @@ class OpenAICompatibleGatewayClient:
             "Content-Type": "application/json",
         }
 
+    def _get_adapter(self, model: str | None = None):
+        """根据模型选择对应的协议适配器。"""
+        from app.llm.protocols import AnthropicAdapter, OpenAIAdapter
+        from app.settings.config import get_settings
+
+        resolved = model or self.model
+        try:
+            settings = get_settings()
+            overrides = getattr(settings, "effective_protocol_overrides", None) or settings.model_protocol_overrides
+            protocol = overrides.get(resolved, settings.default_protocol)
+        except Exception:
+            protocol = "openai"
+        if protocol == "anthropic":
+            return AnthropicAdapter()
+        return OpenAIAdapter()
+
     def list_models(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/models")
         self._ensure_success(response, "读取模型列表失败")
         payload = response.json()
         return payload.get("data", [])
 
-    def complete(self, messages: list[dict[str, str]], model: str | None = None) -> str:
+    def complete(self, messages: list[dict[str, str]], model: str | None = None, **kwargs: Any) -> str:
         resolved_model = model or self.model
-        payload = {
-            "model": resolved_model,
-            "messages": messages,
-        }
+        adapter = self._get_adapter(resolved_model)
+        payload = adapter.build_payload(messages=messages, model=resolved_model, stream=False, **kwargs)
+        endpoint = adapter.get_endpoint()
         start = time.perf_counter()
         last_error_info = ""
         for attempt in range(3):
             try:
-                response = self._request("POST", "/chat/completions", json=payload)
+                response = self._request("POST", endpoint, json=payload)
                 self._ensure_success(response, "调用聊天补全失败")
                 # 检测空响应
                 if not response.content or not response.content.strip():
@@ -80,7 +95,7 @@ class OpenAICompatibleGatewayClient:
                         continue
                     raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}")
                 body = response.json()
-                result = body["choices"][0]["message"]["content"]
+                result = adapter.parse_completion_response(body)
                 duration_ms = (time.perf_counter() - start) * 1000
                 record_llm_call(resolved_model, duration_ms, success=True)
                 logger.info("llm_complete model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
@@ -227,21 +242,20 @@ class OpenAICompatibleGatewayClient:
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
+        **kwargs: Any,
     ) -> AsyncGenerator[StreamChunk, None]:
-        """流式调用 /chat/completions，逐 chunk yield StreamChunk。"""
+        """流式调用聊天补全，逐 chunk yield StreamChunk。"""
         resolved_model = model or self.model
-        payload = {
-            "model": resolved_model,
-            "messages": messages,
-            "stream": True,
-        }
+        adapter = self._get_adapter(resolved_model)
+        payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
+        endpoint = adapter.get_endpoint()
         timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
         start = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=timeout_cfg, trust_env=False) as client:
                 async with client.stream(
                     "POST",
-                    f"{self.base_url}/chat/completions",
+                    f"{self.base_url}{endpoint}",
                     headers=self.headers,
                     json=payload,
                 ) as response:
@@ -264,24 +278,18 @@ class OpenAICompatibleGatewayClient:
                             chunk_data = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
-                        choices = chunk_data.get("choices") or []
-                        if not choices:
-                            # 最后一个 usage chunk 可能 choices 为空
-                            usage = chunk_data.get("usage")
-                            if usage:
-                                yield StreamChunk(usage=usage)
+                        parsed = adapter.parse_stream_chunk(chunk_data)
+                        if parsed is None:
                             continue
-                        choice = choices[0]
-                        delta = choice.get("delta") or {}
-                        content = delta.get("content") or ""
-                        reasoning = delta.get("reasoning_content") or ""
-                        finish_reason = choice.get("finish_reason")
-                        chunk_model = chunk_data.get("model", "")
+                        if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                            yield StreamChunk(usage=parsed["usage"])
+                            continue
                         yield StreamChunk(
-                            content=content,
-                            reasoning_content=reasoning,
-                            finish_reason=finish_reason,
-                            model=chunk_model,
+                            content=parsed.get("content", ""),
+                            reasoning_content=parsed.get("reasoning_content", ""),
+                            finish_reason=parsed.get("finish_reason"),
+                            model=chunk_data.get("model", ""),
+                            usage=parsed.get("usage"),
                         )
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000
@@ -293,14 +301,13 @@ class OpenAICompatibleGatewayClient:
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
+        **kwargs: Any,
     ) -> Generator[StreamChunk, None, None]:
-        """同步流式调用 /chat/completions，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
+        """同步流式调用聊天补全，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
         resolved_model = model or self.model
-        payload = {
-            "model": resolved_model,
-            "messages": messages,
-            "stream": True,
-        }
+        adapter = self._get_adapter(resolved_model)
+        payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
+        endpoint = adapter.get_endpoint()
         timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
         start = time.perf_counter()
 
@@ -310,7 +317,7 @@ class OpenAICompatibleGatewayClient:
                 with httpx.Client(timeout=timeout_cfg, trust_env=False) as client:
                     with client.stream(
                         "POST",
-                        f"{self.base_url}/chat/completions",
+                        f"{self.base_url}{endpoint}",
                         headers=self.headers,
                         json=payload,
                     ) as response:
@@ -344,23 +351,18 @@ class OpenAICompatibleGatewayClient:
                                 chunk_data = json.loads(data_str)
                             except json.JSONDecodeError:
                                 continue
-                            choices = chunk_data.get("choices") or []
-                            if not choices:
-                                usage = chunk_data.get("usage")
-                                if usage:
-                                    yield StreamChunk(usage=usage)
+                            parsed = adapter.parse_stream_chunk(chunk_data)
+                            if parsed is None:
                                 continue
-                            choice = choices[0]
-                            delta = choice.get("delta") or {}
-                            content = delta.get("content") or ""
-                            reasoning = delta.get("reasoning_content") or ""
-                            finish_reason = choice.get("finish_reason")
-                            chunk_model = chunk_data.get("model", "")
+                            if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                                yield StreamChunk(usage=parsed["usage"])
+                                continue
                             yield StreamChunk(
-                                content=content,
-                                reasoning_content=reasoning,
-                                finish_reason=finish_reason,
-                                model=chunk_model,
+                                content=parsed.get("content", ""),
+                                reasoning_content=parsed.get("reasoning_content", ""),
+                                finish_reason=parsed.get("finish_reason"),
+                                model=chunk_data.get("model", ""),
+                                usage=parsed.get("usage"),
                             )
                         return  # 成功完成，退出重试循环
             except httpx.HTTPError as exc:

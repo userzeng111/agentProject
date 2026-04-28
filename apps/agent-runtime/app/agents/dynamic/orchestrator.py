@@ -191,6 +191,12 @@ class TaskOrchestrator:
         # 上下文变量累积（综合 Agent 需要下层结果）
         accumulated_context = dict(context)
 
+        # 兜底：为章节内容提供多个常见变量名，避免 MasterAgent 生成的模板变量名与上下文不匹配
+        chapters_text = accumulated_context.get("current_chapters_text")
+        if chapters_text:
+            for alias in ("chapter_content", "chapters", "content", "text", "chapter_text", "chapter_pair"):
+                accumulated_context.setdefault(alias, chapters_text)
+
         for layer_idx, layer_agent_ids in enumerate(dag.execution_layers):
             logger.info(
                 "执行第 %d 层（%d 个 Agent）: %s",
@@ -299,9 +305,17 @@ class TaskOrchestrator:
         analysis_results = [r for r in results if r.is_success and r.execution_kind != "synthesis"]
         synthesis_results = [r for r in results if r.is_success and r.execution_kind == "synthesis"]
 
-        # 如果有综合 Agent 的评分，直接使用
+        # 如果有综合 Agent 的有效评分（>0），直接使用
         if synthesis_results:
-            return max(r.score for r in synthesis_results)
+            synth_score = max(r.score for r in synthesis_results)
+            if synth_score > 0:
+                return synth_score
+            # 综合 Agent 返回 0 分但子 Agent 有分数时，回退到加权平均
+            if analysis_results:
+                logger.warning(
+                    "综合 Agent 返回 0 分（子 Agent 有正常分数），回退到加权平均: %s",
+                    [(r.agent_name, r.score, r.weight) for r in analysis_results],
+                )
 
         # 否则使用加权平均
         if not analysis_results:
