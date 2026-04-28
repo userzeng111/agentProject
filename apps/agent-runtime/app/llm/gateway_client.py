@@ -63,20 +63,64 @@ class OpenAICompatibleGatewayClient:
             "messages": messages,
         }
         start = time.perf_counter()
-        try:
-            response = self._request("POST", "/chat/completions", json=payload)
-            self._ensure_success(response, "调用聊天补全失败")
-            body = response.json()
-            result = body["choices"][0]["message"]["content"]
-            duration_ms = (time.perf_counter() - start) * 1000
-            record_llm_call(resolved_model, duration_ms, success=True)
-            logger.info("llm_complete model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
-            return result
-        except Exception:
-            duration_ms = (time.perf_counter() - start) * 1000
-            record_llm_call(resolved_model, duration_ms, success=False)
-            logger.exception("llm_complete_failed model=%s messages=%d", resolved_model, len(messages))
-            raise
+        last_error_info = ""
+        for attempt in range(3):
+            try:
+                response = self._request("POST", "/chat/completions", json=payload)
+                self._ensure_success(response, "调用聊天补全失败")
+                # 检测空响应
+                if not response.content or not response.content.strip():
+                    last_error_info = f"响应状态{response.status_code}，内容为空"
+                    logger.warning(
+                        "llm_complete_retry model=%s attempt=%d status=%d content_length=%d",
+                        resolved_model, attempt + 1, response.status_code, len(response.content or b""),
+                    )
+                    if attempt < 2:
+                        sleep(1 * (attempt + 1))
+                        continue
+                    raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}")
+                body = response.json()
+                result = body["choices"][0]["message"]["content"]
+                duration_ms = (time.perf_counter() - start) * 1000
+                record_llm_call(resolved_model, duration_ms, success=True)
+                logger.info("llm_complete model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
+                return result
+            except json.JSONDecodeError as exc:
+                last_error_info = f"响应状态{response.status_code}，JSON解析失败"
+                logger.warning(
+                    "llm_complete_retry model=%s attempt=%d status=%d content_length=%d",
+                    resolved_model, attempt + 1, response.status_code, len(response.content or b""),
+                )
+                if attempt < 2:
+                    sleep(1 * (attempt + 1))
+                    continue
+                duration_ms = (time.perf_counter() - start) * 1000
+                record_llm_call(resolved_model, duration_ms, success=False)
+                logger.exception("llm_complete_failed model=%s messages=%d", resolved_model, len(messages))
+                raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}") from exc
+            except GatewayClientError:
+                # 由 _ensure_success 或上方空响应/5xx逻辑抛出的业务异常，继续外层重试
+                last_error_info = f"响应状态{response.status_code}，网关错误"
+                logger.warning(
+                    "llm_complete_retry model=%s attempt=%d status=%d content_length=%d",
+                    resolved_model, attempt + 1, response.status_code, len(response.content or b""),
+                )
+                if attempt < 2:
+                    sleep(1 * (attempt + 1))
+                    continue
+                duration_ms = (time.perf_counter() - start) * 1000
+                record_llm_call(resolved_model, duration_ms, success=False)
+                logger.exception("llm_complete_failed model=%s messages=%d", resolved_model, len(messages))
+                raise
+            except Exception:
+                duration_ms = (time.perf_counter() - start) * 1000
+                record_llm_call(resolved_model, duration_ms, success=False)
+                logger.exception("llm_complete_failed model=%s messages=%d", resolved_model, len(messages))
+                raise
+        # 理论上不可达，但兜底
+        duration_ms = (time.perf_counter() - start) * 1000
+        record_llm_call(resolved_model, duration_ms, success=False)
+        raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}")
 
     def complete_json(
         self,

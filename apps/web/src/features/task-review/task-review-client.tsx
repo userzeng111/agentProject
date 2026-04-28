@@ -180,7 +180,23 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
 
-  if (!trace || trace.length === 0) return null;
+  if (!trace || trace.length === 0) {
+    return (
+      <Card sx={{ border: "1px solid", borderColor: "divider" }}>
+        <CardContent>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <AutoAwesomeIcon fontSize="small" color="disabled" />
+            <Typography variant="subtitle1" fontWeight={600} color="text.secondary">
+              Agent 审核追踪
+            </Typography>
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            当前暂无 Agent 审核记录。若已开启自动审核，将在后台执行后显示；若未开启，可前往设置启用。
+          </Typography>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const traceRounds = splitTraceRounds(trace);
   const currentTraceRound = getCurrentTraceRound(trace);
@@ -330,7 +346,9 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
           const isExpanded = expanded === `agent-${index}`;
           const issues = agent.issues ?? [];
           const criticalIssues = issues.filter((i: VerificationIssue) => i.severity === "critical");
-          const warnings = issues.filter((i: VerificationIssue) => i.severity === "warning");
+          const warningsFromIssues = issues.filter((i: VerificationIssue) => i.severity === "warning");
+          const warningsFromField = agent.warnings ?? [];
+          const warnings = warningsFromIssues.length > 0 ? warningsFromIssues : warningsFromField;
           const executionKind = inferExecutionKind(agent);
 
           return (
@@ -494,6 +512,32 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                           </Box>
                         ))}
                       </Stack>
+                    </Box>
+                  )}
+
+                  {/* 原始输出 */}
+                  {agent.raw_response && Object.keys(agent.raw_response).length > 0 && (
+                    <Box sx={{ mt: 1 }}>
+                      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25 }}>
+                        原始输出
+                      </Typography>
+                      <Box
+                        sx={{
+                          p: 1.5,
+                          borderRadius: 1,
+                          bgcolor: "background.default",
+                          fontSize: 12,
+                          fontFamily: "monospace",
+                          color: "text.secondary",
+                          maxHeight: 240,
+                          overflowY: "auto",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {JSON.stringify(agent.raw_response, null, 2)}
+                      </Box>
                     </Box>
                   )}
 
@@ -1164,6 +1208,11 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     if (actionModelId && models.some((item) => item.id === actionModelId)) {
       return;
     }
+    const savedModelId = localStorage.getItem("novel-agent:action-model-id");
+    if (savedModelId && models.some((item) => item.id === savedModelId)) {
+      setActionModelId(savedModelId);
+      return;
+    }
     if (currentTaskModelId && models.some((item) => item.id === currentTaskModelId)) {
       setActionModelId(currentTaskModelId);
       return;
@@ -1175,6 +1224,11 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
 
   function handleActionModelChange(nextModelId: string) {
     setActionModelId(nextModelId);
+    if (nextModelId) {
+      localStorage.setItem("novel-agent:action-model-id", nextModelId);
+    } else {
+      localStorage.removeItem("novel-agent:action-model-id");
+    }
     setModelRefresh((current) => ({ ...current, invalidated: false, invalidatedModelLabel: undefined }));
   }
 

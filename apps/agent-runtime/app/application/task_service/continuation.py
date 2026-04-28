@@ -8,8 +8,10 @@ from typing import Any
 
 
 from app.domain.models import (
+    AutoReviewPolicy,
     ChapterDraft,
     ContinueDraftRequest,
+    ReviewDecision,
     ReviewPayload,
     TaskRecord,
     TaskStatus,
@@ -156,7 +158,54 @@ class TaskServiceContinuationMixin:
                     completed_count=completed_count,
                     total_chapters=int(project.planned_chapter_count or len(task.story_plan.chapter_plan)),
                 )
-                snapshot = self.store.set_waiting_chapter_review(task_id, review)
+                # 自动审核：若开启则在入库前生成 Agent 评分与建议
+                auto_review_trace: list[dict[str, Any]] | None = None
+                if getattr(self, "auto_review", False):
+                    try:
+                        from datetime import datetime, timezone
+                        from app.llm.auto_reviewer import AutoReviewManager
+                        from app.settings.config import get_settings
+
+                        gateway_client = getattr(self.engine, "gateway_client", None)
+                        policy = AutoReviewPolicy.model_validate(self.auto_review_policy or {})
+                        decision: ReviewDecision | None = None
+                        _settings = get_settings()
+                        if (
+                            getattr(_settings, "dynamic_agent_review", False)
+                            and gateway_client is not None
+                            and hasattr(gateway_client, "complete_stream_sync")
+                        ):
+                            from app.agents.dynamic.bridge import DynamicReviewBridge
+                            bridge = DynamicReviewBridge(
+                                gateway_client=gateway_client,
+                                default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
+                            )
+                            decision = bridge.review(review, policy)
+                        else:
+                            manager = AutoReviewManager(gateway_client=gateway_client)
+                            decision = manager.review(review, policy)
+
+                        if decision is not None:
+                            summary_entry = {
+                                "__summary__": True,
+                                "trace_round": 1,
+                                "review_type": "chapter_pair_review",
+                                "revision_count": 0,
+                                "batch_index": completed_count,
+                                "created_at": datetime.now(timezone.utc).isoformat(),
+                                "overall_score": decision.overall_score,
+                                "approved": decision.approved,
+                                "auto_escalated": decision.auto_escalated,
+                                "comment": decision.comment,
+                                "reasoning": decision.reasoning,
+                                "critical_issues": decision.critical_issues,
+                                "warnings": decision.warnings,
+                            }
+                            agent_items = [a.model_dump(mode="json") for a in decision.agent_trace]
+                            auto_review_trace = [summary_entry, *agent_items]
+                    except Exception as e:
+                        logger.warning("章节自动审核失败，继续进入人工审核: %s", e)
+                snapshot = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
                 return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
             except Exception as exc:
                 mark_batch_failed(task_id, batch.batch_no)

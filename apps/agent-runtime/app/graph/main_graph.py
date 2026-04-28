@@ -315,14 +315,14 @@ def build_graph(
             return True
         return revision_count >= max(policy.get_max_auto_revisions(review_type), 0)
 
-    def _interrupt_outline_review(state: WorkflowState):
-        return interrupt_outline_review(state)
+    def _interrupt_outline_review(state: WorkflowState, comment: str = ""):
+        return interrupt_outline_review(state, comment=comment)
 
-    def _interrupt_chapter_pair_review(state: WorkflowState):
-        return interrupt_chapter_pair_review(state)
+    def _interrupt_chapter_pair_review(state: WorkflowState, comment: str = ""):
+        return interrupt_chapter_pair_review(state, comment=comment)
 
-    def _interrupt_verification_review(state: WorkflowState):
-        return interrupt_verification_review(state)
+    def _interrupt_verification_review(state: WorkflowState, comment: str = ""):
+        return interrupt_verification_review(state, comment=comment)
 
     # ─────────────────────────────────────────────
     # 节点定义（闭包包装，注入依赖）

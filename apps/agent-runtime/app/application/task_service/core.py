@@ -151,7 +151,9 @@ class TaskServiceCoreMixin:
         self.model_catalog.ensure_novel_generation_model_supported(requested_model)
         task = self.store.create_task(payload)
         task.supervisor_plan = build_initial_supervisor_plan(payload)
-        if self._resolve_task_auto_review(task) and not task.auto_review_policy:
+        resolved_auto_review = self._resolve_task_auto_review(task)
+        task.auto_review = resolved_auto_review
+        if resolved_auto_review and not task.auto_review_policy:
             task.auto_review_policy = dict(self.auto_review_policy)
         task = self.store.save(task)
         return self._sync_supervisor_plan(task.id)
@@ -289,6 +291,10 @@ class TaskServiceCoreMixin:
             review = ReviewPayload.model_validate(self._extract_interrupt_payload(result))
             review_type = review.type
             auto_review_trace = values.get("auto_review_trace") or []
+            # auto_review 异常降级时，state 中可能带有 review_comment，透传给用户
+            review_comment = review_comment or values.get("review_comment", "")
+            if review_comment:
+                review.summary = review_comment
 
             if review_type == "outline_review":
                 if not story_plan_data:
@@ -323,7 +329,8 @@ class TaskServiceCoreMixin:
                 review.batch_index = batch_index
                 review.completed_count = len(completed)
                 review.total_chapters = len(chapter_plan)
-                record = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
+                resolved_story_plan = StoryPlan.model_validate(story_plan_data) if story_plan_data else None
+                record = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace, story_plan=resolved_story_plan)
                 record = self._safe_sync_supervisor_plan(task_id, fallback=record)
                 self._safe_emit_trace_summary(
                     task_id,
@@ -341,7 +348,8 @@ class TaskServiceCoreMixin:
             elif review_type == "verification_review":
                 verification_report = values.get("verification_report") or {}
                 review.verification_report = verification_report
-                record = self.store.set_waiting_verification_review(task_id, review, auto_review_trace)
+                resolved_story_plan = StoryPlan.model_validate(story_plan_data) if story_plan_data else None
+                record = self.store.set_waiting_verification_review(task_id, review, auto_review_trace, story_plan=resolved_story_plan)
                 record = self._safe_sync_supervisor_plan(task_id, fallback=record)
                 self._safe_emit_trace_summary(
                     task_id,
@@ -373,7 +381,11 @@ class TaskServiceCoreMixin:
             raise RuntimeError("工作流结束后未找到正文结果。")
         draft_result = DraftResult.model_validate(draft_result_data)
         artifacts = self._build_artifacts(story_plan, draft_result)
+        auto_review_trace = values.get("auto_review_trace") or []
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
+        if auto_review_trace:
+            record.auto_review_trace = auto_review_trace
+            record = self.store.save(record)
         record = self._safe_sync_supervisor_plan(task_id, fallback=record)
         self._safe_emit_trace_summary(
             task_id,
@@ -475,6 +487,13 @@ class TaskServiceCoreMixin:
                 task_id,
                 current.status.value,
                 message,
+            )
+            self.store.append_event(
+                task_id,
+                stage=current.current_stage or "unknown",
+                message=f"后台异常（未覆盖状态）：{message}",
+                event_type="task.error_recorded",
+                payload={"detail": message, "status_at_error": current.status.value},
             )
             return current
         if (

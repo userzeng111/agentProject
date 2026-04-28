@@ -871,6 +871,7 @@ class TaskServiceRecoveryMixin:
                 seed["outline_context_packet"] = snapshot.packet.model_dump(mode="json")
                 seed["outline_context_snapshot"] = snapshot.model_dump(mode="json")
             seed["outline_revision_count"] = review.revision_count
+            seed["auto_review_trace"] = [dict(item) for item in (task.auto_review_trace or [])]
             return seed, "plan_story"
 
         if review.type == "chapter_pair_review":
@@ -885,6 +886,7 @@ class TaskServiceRecoveryMixin:
                     "completed_chapters": completed_chapters,
                     "current_chapter_pair": chapter_pair,
                     "chapter_pair_revision_count": review.chapter_pair_revision_count,
+                    "auto_review_trace": [dict(item) for item in (task.auto_review_trace or [])],
                 }
             )
             references = _build_references(
@@ -955,6 +957,7 @@ class TaskServiceRecoveryMixin:
                     "completed_chapters": self._load_completed_chapters_for_resume(task.id, total),
                     "verification_report": review.verification_report or {},
                     "verification_revision_count": review.verification_revision_count,
+                    "auto_review_trace": [dict(item) for item in (task.auto_review_trace or [])],
                 }
             )
             return seed, "verify_full_story"

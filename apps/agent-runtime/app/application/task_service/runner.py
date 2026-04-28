@@ -182,6 +182,19 @@ class TaskServiceRunnerMixin:
                         summary=chapter_summary or "",
                         content=chapter_content,
                     )
+                # 同步更新已生成章节计数
+                if isinstance(chapter_number, int) and chapter_number > 0:
+                    from app.storage.db_repository import get_novel_project
+                    project = get_novel_project(task_id)
+                    current_completed = int(project.completed_chapter_count or 0) if project else 0
+                    new_completed = max(current_completed, chapter_number)
+                    update_project_status(
+                        task_id,
+                        status=TaskStatus.DRAFTING.value,
+                        completed_chapter_count=new_completed,
+                        next_chapter_number=new_completed + 1,
+                        current_generating_chapter_number=None,
+                    )
                 self._emit_trace_summary(
                     task_id,
                     kind="chapter",

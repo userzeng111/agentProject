@@ -153,6 +153,19 @@ export function recoverTask(taskId: string, payload?: RecoverTaskPayload) {
   });
 }
 
+export function deleteTask(taskId: string) {
+  return request<{ task_id: string; message: string }>(`/api/tasks/${taskId}`, {
+    method: "DELETE",
+  });
+}
+
+export function cancelTask(taskId: string, comment?: string) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/cancel`, {
+    method: "POST",
+    body: JSON.stringify({ comment: comment ?? "" }),
+  });
+}
+
 export function getDashboard() {
   return request<DashboardResponse>("/api/dashboard");
 }

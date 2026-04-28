@@ -92,9 +92,11 @@ class SubAgentOutput:
             role=self.role,
             status="failed" if self.error else "completed",
             score=self.score,  # 保留原始分数，不因失败而置空，避免前端均值计算被拉低
-            issues=self.issues + self.warnings,
+            issues=self.issues,
+            warnings=self.warnings,
             highlights=self.highlights,
             reasoning=self.reasoning,
+            raw_response=self.raw_response,
             error=self.error,
             started_at=self.started_at,
             completed_at=self.completed_at,
@@ -653,20 +655,24 @@ class AutoReviewManager(BaseAgent):
         执行自动审核，返回审核决策。
         """
         review_type = payload.type
+        logger.info("自动审核开始: review_type=%s, auditor_model=%s, synthesis_model=%s", review_type, policy.auditor_model, policy.synthesis_model)
 
         try:
             if review_type == "outline_review":
-                return self._review_outline_multi(payload, policy)
+                decision = self._review_outline_multi(payload, policy)
             elif review_type == "chapter_pair_review":
-                return self._review_chapter_pair_multi(payload, policy)
+                decision = self._review_chapter_pair_multi(payload, policy)
             elif review_type == "verification_review":
-                return self._review_verification_multi(payload, policy)
+                decision = self._review_verification_multi(payload, policy)
             else:
-                return self._fallback_decision(f"未知审核类型: {review_type}")
+                decision = self._fallback_decision(f"未知审核类型: {review_type}")
+            logger.info("自动审核结束: review_type=%s, score=%s, approved=%s, auto_escalated=%s, agent_trace_count=%s", review_type, decision.overall_score, decision.approved, decision.auto_escalated, len(decision.agent_trace))
+            return decision
         except GatewayClientError:
-            # gateway_client 未配置时的降级处理
+            logger.error("自动审核失败: gateway_client 未配置")
             return self._fallback_decision("自动审核服务未配置 gateway_client")
         except Exception as e:
+            logger.error("自动审核执行异常: %s", e, exc_info=True)
             return self._fallback_decision(f"自动审核执行异常: {e}")
 
     def _run_sub_agent(
@@ -677,17 +683,22 @@ class AutoReviewManager(BaseAgent):
     ) -> SubAgentOutput:
         """执行单个子 Agent"""
         started_at = _utc_now()
+        logger.info("子 Agent 开始: agent_id=%s, agent_name=%s, model=%s", spec.agent_id, spec.agent_name, model)
         try:
             result_json = self._call_llm(prompt_text, model)
             parsed = json.loads(result_json)
+            score = float(parsed.get("score", 0))
+            issues = parsed.get("issues") or []
+            warnings = parsed.get("warnings") or []
+            logger.info("子 Agent 结束: agent_id=%s, score=%s, issues=%s, warnings=%s", spec.agent_id, score, len(issues), len(warnings))
             return SubAgentOutput(
                 agent_id=spec.agent_id,
                 agent_name=spec.agent_name,
                 role=spec.role,
                 dimension=spec.dimension,
-                score=float(parsed.get("score", 0)),
-                issues=parsed.get("issues") or [],
-                warnings=parsed.get("warnings") or [],
+                score=score,
+                issues=issues,
+                warnings=warnings,
                 highlights=parsed.get("highlights") or [],
                 reasoning=parsed.get("reasoning") or "",
                 raw_response=parsed,
@@ -695,6 +706,7 @@ class AutoReviewManager(BaseAgent):
                 completed_at=_utc_now(),
             )
         except Exception as e:
+            logger.error("子 Agent 异常: agent_id=%s, error=%s", spec.agent_id, e, exc_info=True)
             return SubAgentOutput(
                 agent_id=spec.agent_id,
                 agent_name=spec.agent_name,
@@ -713,9 +725,11 @@ class AutoReviewManager(BaseAgent):
     ) -> list[SubAgentOutput]:
         """并行执行多个子 Agent（使用线程池）"""
         if not specs:
+            logger.warning("并行执行子 Agent: specs 为空")
             return []
 
         max_workers = min(len(specs), self.max_workers)
+        logger.info("并行执行子 Agent 开始: count=%s, max_workers=%s, model=%s", len(specs), max_workers, model)
         outputs: list[SubAgentOutput] = []
 
         def _worker(spec: SubAgentSpec) -> SubAgentOutput:
@@ -734,6 +748,7 @@ class AutoReviewManager(BaseAgent):
                     results.append(result)
                 except Exception as e:
                     spec = future_to_spec[future]
+                    logger.error("并行执行子 Agent 异常: agent_id=%s, error=%s", spec.agent_id, e)
                     results.append(
                         SubAgentOutput(
                             agent_id=spec.agent_id,
@@ -748,6 +763,8 @@ class AutoReviewManager(BaseAgent):
         spec_ids = [spec.agent_id for spec in specs]
         output_map = {r.agent_id: r for r in results}
         outputs = [output_map[sid] for sid in spec_ids if sid in output_map]
+        success_count = sum(1 for o in outputs if not o.error)
+        logger.info("并行执行子 Agent 结束: total=%s, success=%s, failed=%s", len(outputs), success_count, len(outputs) - success_count)
         return outputs
 
     def _review_outline_multi(
@@ -902,9 +919,13 @@ class AutoReviewManager(BaseAgent):
     ) -> ReviewDecision:
         """验证多 Agent 审核"""
         report = payload.verification_report or {}
+        report_score = report.get("overall_score", "N/A")
+        report_issues = len(report.get("issues") or [])
+        logger.info("验证审核开始: report_score=%s, report_issues=%s", report_score, report_issues)
         report_text = json.dumps(report, ensure_ascii=False, indent=2)[:4000]
 
         specs = self._get_sub_agents_for_group("verification")
+        logger.info("验证审核子 Agent 规格: count=%s, agents=%s", len(specs), [s.agent_id for s in specs])
 
         def build_prompt(spec: SubAgentSpec) -> str:
             return spec.prompt_template.format(verification_report=report_text)

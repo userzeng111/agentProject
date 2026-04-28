@@ -450,6 +450,8 @@ class TaskSummary(BaseModel):
     updated_at: datetime
     summary: str
     error_message: str | None = None
+    auto_review: bool = False
+    last_error_detail: str | None = None
     storage_state: str
     entry_refs: dict[str, str] | None = None
 
@@ -547,6 +549,7 @@ class ArchiveTaskDetailResponse(BaseModel):
     chapter_index: list[dict[str, Any]] = Field(default_factory=list)
     artifact_index: list[dict[str, Any]] = Field(default_factory=list)
     history_index: list[dict[str, Any]] = Field(default_factory=list)
+    story_plan: dict[str, Any] | None = None
 
 
 # ─────────────────────────────────────────────
@@ -634,8 +637,10 @@ class AgentResult(BaseModel):
     status: str = "pending"  # pending | running | completed | failed
     score: float | None = None  # 评分 0-100
     issues: list[dict[str, Any]] = Field(default_factory=list)  # 发现的问题列表
+    warnings: list[dict[str, Any]] = Field(default_factory=list)  # 警告列表
     highlights: list[str] = Field(default_factory=list)  # 亮点列表
     reasoning: str = ""  # 分析推理过程
+    raw_response: dict[str, Any] | None = None  # 原始 LLM 输出
     error: str | None = None  # 错误信息
     started_at: datetime | None = None
     completed_at: datetime | None = None

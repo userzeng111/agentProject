@@ -277,6 +277,8 @@ export interface WorkspaceMeta {
   updated_at?: string;
   summary?: string;
   error_message?: string | null;
+  auto_review?: boolean;
+  last_error_detail?: string;
   context_status?: ContextStatus;
 }
 
@@ -304,6 +306,8 @@ export interface WorkspaceEvent {
     // 思考链（model.thinking 事件）
     reasoning_chunk?: string;
     accumulated_length?: number;
+    model?: string;
+    finish_reason?: string | null;
   };
 }
 
@@ -452,6 +456,7 @@ export interface AgentTraceItem {
   auto_escalated?: boolean;
   comment?: string;
   warnings?: VerificationIssue[];
+  raw_response?: Record<string, unknown> | null;
   trace_round?: number;
   review_type?: string;
   revision_count?: number;
@@ -492,6 +497,21 @@ export interface ResultChapterItem {
   summary?: string;
   md_ref?: string | null;
   content?: string | null;
+}
+
+export interface ChapterPlan {
+  number: number;
+  title: string;
+  goal: string;
+}
+
+export interface StoryPlan {
+  working_title: string;
+  logline: string;
+  world_notes: string[];
+  character_notes: string[];
+  planned_chapter_count?: number | null;
+  chapter_plan: ChapterPlan[];
 }
 
 export interface ArtifactIndexItem {
@@ -603,6 +623,7 @@ export interface ArchiveDetailResponse {
   chapter_index: ResultChapterItem[];
   artifact_index: ArtifactIndexItem[];
   history_index?: ReviewHistoryItem[];
+  story_plan?: StoryPlan | null;
 }
 
 

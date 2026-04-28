@@ -5,8 +5,11 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
+from app.observability import get_logger
 
 from app.graph.state import WorkflowState, MAX_OUTLINE_REVISIONS
+
+logger = get_logger(__name__)
 from app.graph.utils.spec import build_normalized_spec
 from app.graph.utils.helpers import (
     _resolve_model_profile,
@@ -102,6 +105,7 @@ def review_outline(
 ) -> WorkflowState:
     # 自动审核模式
     if state.get("auto_review") and auto_review_executor_available:
+        logger.info("大纲审核节点: auto_review=%s, executor_available=%s", state.get("auto_review"), auto_review_executor_available)
         policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
         force_manual = False
         try:
@@ -140,6 +144,7 @@ def review_outline(
             ]
             trace = prev_trace + new_entry
         except Exception as e:
+            logger.error("大纲审核节点: auto_review 异常: %s", e, exc_info=True)
             decision = ReviewDecision(
                 approved=False,
                 comment=f"自动审核异常: {e}，请人工介入。",
@@ -155,7 +160,7 @@ def review_outline(
             revision_count=state.get("outline_revision_count", 0),
             review_type="outline_review",
         ):
-            review = interrupt_outline_review(state)
+            review = interrupt_outline_review(state, comment=decision.comment if force_manual else "")
             approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
             comment = review.get("comment", "") if isinstance(review, dict) else ""
             return {
@@ -199,12 +204,12 @@ def revise_outline(
     }
 
 
-def interrupt_outline_review(state: WorkflowState):
+def interrupt_outline_review(state: WorkflowState, comment: str = ""):
     return interrupt(
         {
             "type": "outline_review",
             "version": "v1",
-            "summary": "请确认大纲是否可以进入正文起草。",
+            "summary": comment or "请确认大纲是否可以进入正文起草。",
             "story_plan": state["story_plan"],
             "risk_flags": [
                 "demo 版本，大纲以稳定展示工作流为优先。",

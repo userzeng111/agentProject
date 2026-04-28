@@ -211,8 +211,16 @@ class TaskLogStore:
         )
         return self.save(task)
 
-    def set_waiting_chapter_review(self, task_id: str, review: ReviewPayload, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
+    def set_waiting_chapter_review(
+        self,
+        task_id: str,
+        review: ReviewPayload,
+        auto_review_trace: list[dict[str, Any]] | None = None,
+        story_plan: StoryPlan | None = None,
+    ) -> TaskRecord:
         task = self.get(task_id)
+        if story_plan is not None:
+            task.story_plan = story_plan
         task.pending_review = review
         task.status = TaskStatus.WAITING_CHAPTER_REVIEW
         task.current_stage = "waiting_chapter_review"
@@ -259,8 +267,16 @@ class TaskLogStore:
         )
         return self.save(task)
 
-    def set_waiting_verification_review(self, task_id: str, review: ReviewPayload, auto_review_trace: list[dict[str, Any]] | None = None) -> TaskRecord:
+    def set_waiting_verification_review(
+        self,
+        task_id: str,
+        review: ReviewPayload,
+        auto_review_trace: list[dict[str, Any]] | None = None,
+        story_plan: StoryPlan | None = None,
+    ) -> TaskRecord:
         task = self.get(task_id)
+        if story_plan is not None:
+            task.story_plan = story_plan
         task.pending_review = review
         task.status = TaskStatus.WAITING_VERIFICATION_REVIEW
         task.current_stage = "waiting_verification_review"
@@ -363,9 +379,6 @@ class TaskLogStore:
             TaskStatus.PLANNING,
             TaskStatus.DRAFTING,
             TaskStatus.ASSEMBLING,
-            TaskStatus.WAITING_OUTLINE_REVIEW,
-            TaskStatus.WAITING_CHAPTER_REVIEW,
-            TaskStatus.WAITING_VERIFICATION_REVIEW,
             TaskStatus.WAITING_MANUAL_ACTION,
         }
         task = self.get(task_id)

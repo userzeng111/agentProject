@@ -15,13 +15,14 @@ import {
   Pagination,
   Select,
   Skeleton,
+  Snackbar,
   Stack,
   Tab,
   Tabs,
   Typography,
 } from "@mui/material";
-import { Replay as ReplayIcon } from "@mui/icons-material";
-import { getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
+import { Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
+import { deleteTask, getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
@@ -44,6 +45,42 @@ const statusLabelMap: Record<TaskStatus, string> = {
   waiting_verification_review: "待验证审核",
 };
 
+const DELETABLE_STATUSES: TaskStatus[] = [
+  "created",
+  "sources_ingested",
+  "waiting_outline_review",
+  "ready_for_batch",
+  "waiting_chapter_review",
+  "waiting_verification_review",
+  "failed",
+  "cancelled",
+];
+
+function isDeletable(status: TaskStatus): boolean {
+  return DELETABLE_STATUSES.includes(status);
+}
+
+function getDeletePrompt(status: TaskStatus): string {
+  switch (status) {
+    case "waiting_chapter_review":
+    case "waiting_verification_review":
+      return "该任务已有章节生成，删除后将丢失所有已生成内容。确认删除？";
+    case "waiting_outline_review":
+      return "该任务大纲已生成，删除后将丢失大纲内容。确认删除？";
+    case "created":
+    case "sources_ingested":
+      return "该任务尚未开始编写，确认删除？";
+    case "failed":
+      return "该任务执行失败，确认删除？";
+    case "cancelled":
+      return "确认删除该已取消的任务？";
+    case "ready_for_batch":
+      return "该任务已有部分进度，删除后将丢失已生成内容。确认删除？";
+    default:
+      return "确认删除该任务？此操作不可恢复。";
+  }
+}
+
 function resolveTaskHref(task: TaskCardSummary) {
   if (task.storage_state === "archive") {
     return archiveDetailHref(task.task_id);
@@ -62,8 +99,9 @@ function resolveTaskHref(task: TaskCardSummary) {
 }
 
 // 紧凑任务卡片
-function TaskListItem({ task }: { task: TaskCardSummary }) {
+function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (taskId: string) => void }) {
   const isFailed = task.status === "failed";
+  const deletable = isDeletable(task.status);
   return (
     <Card
       variant="outlined"
@@ -108,6 +146,17 @@ function TaskListItem({ task }: { task: TaskCardSummary }) {
                 重新创建
               </Button>
             )}
+            {deletable && onDelete && (
+              <Button
+                size="small"
+                color="error"
+                startIcon={<DeleteIcon />}
+                onClick={() => onDelete(task.task_id)}
+                sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+              >
+                删除
+              </Button>
+            )}
           </Stack>
           <Typography
             variant="body2"
@@ -137,7 +186,7 @@ function TaskListItem({ task }: { task: TaskCardSummary }) {
 const PAGE_SIZE = 5;
 const LIST_MAX_HEIGHT = 480;
 
-function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
+function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; onDelete?: (taskId: string) => void }) {
   const [activeTab, setActiveTab] = useState(0);
   const [page, setPage] = useState(1);
 
@@ -190,7 +239,7 @@ function TaskTabPanel({ dashboard }: { dashboard: DashboardResponse }) {
         {pagedList.length ? (
           <Stack spacing={1.5}>
             {pagedList.map((task) => (
-              <TaskListItem key={task.task_id} task={task} />
+              <TaskListItem key={task.task_id} task={task} onDelete={onDelete} />
             ))}
           </Stack>
         ) : (
@@ -379,6 +428,13 @@ export default function Home() {
   });
   const [error, setError] = useState("");
   const [modelUpdating, setModelUpdating] = useState(false);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMsg, setSnackbarMsg] = useState("");
+
+  const showSnackbar = useCallback((msg: string) => {
+    setSnackbarMsg(msg);
+    setSnackbarOpen(true);
+  }, []);
 
   const fetchDashboard = () => {
     void getDashboard()
@@ -426,6 +482,24 @@ export default function Home() {
     fetchDashboard();
     fetchModels(false);
   }, [fetchModels]);
+
+  const handleDeleteTask = useCallback((taskId: string) => {
+    const task = dashboard?.continue_tasks.find((t) => t.task_id === taskId)
+      ?? dashboard?.running_tasks.find((t) => t.task_id === taskId)
+      ?? dashboard?.failed_tasks.find((t) => t.task_id === taskId)
+      ?? dashboard?.completed_tasks?.find((t) => t.task_id === taskId);
+    if (!task) return;
+    const prompt = getDeletePrompt(task.status);
+    if (!window.confirm(prompt)) return;
+    void deleteTask(taskId)
+      .then(() => {
+        showSnackbar("任务已删除");
+        fetchDashboard();
+      })
+      .catch((reason) => {
+        showSnackbar(reason instanceof Error ? reason.message : "删除失败");
+      });
+  }, [dashboard, showSnackbar, fetchDashboard]);
 
   const handleModelChange = (modelId: string) => {
     if (modelUpdating) return;
@@ -480,7 +554,7 @@ export default function Home() {
           <Grid container spacing={3}>
             {/* 主内容区 */}
             <Grid item xs={12} md={8}>
-              <TaskTabPanel dashboard={dashboard} />
+              <TaskTabPanel dashboard={dashboard} onDelete={handleDeleteTask} />
             </Grid>
 
             {/* 侧边栏 */}
@@ -498,6 +572,12 @@ export default function Home() {
           <HomeSkeleton />
         )}
       </Stack>
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={() => setSnackbarOpen(false)}
+        message={snackbarMsg}
+      />
     </Container>
   );
 }

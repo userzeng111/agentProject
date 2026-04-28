@@ -117,6 +117,19 @@ class TaskServiceQueriesMixin:
             raise ValueError("当前任务尚未归档。")
         if task.draft_result is None:
             raise ValueError("归档任务缺少正文结果。")
+        story_plan_payload: dict[str, Any] | None = None
+        if task.story_plan is not None:
+            story_plan_payload = {
+                "working_title": task.story_plan.working_title,
+                "logline": task.story_plan.logline,
+                "world_notes": task.story_plan.world_notes,
+                "character_notes": task.story_plan.character_notes,
+                "planned_chapter_count": task.story_plan.planned_chapter_count,
+                "chapter_plan": [
+                    {"number": ch.number, "title": ch.title, "goal": ch.goal}
+                    for ch in task.story_plan.chapter_plan
+                ],
+            }
         return ArchiveTaskDetailResponse(
             meta=self._to_summary(task),
             request_preview=self._request_preview(task),
@@ -137,6 +150,7 @@ class TaskServiceQueriesMixin:
             ],
             artifact_index=[self._artifact_index_item(task, artifact) for artifact in task.artifacts],
             history_index=self._review_history(task),
+            story_plan=story_plan_payload,
         )
 
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
@@ -148,7 +162,11 @@ class TaskServiceQueriesMixin:
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }:
             self._ensure_novel_project_seeded(task)
-        recent_events = task.events[-20:]
+        # 保留最近事件，同时确保所有 chapter.* 事件不被截断
+        chapter_events = [e for e in task.events if e.event_type.startswith("chapter.")]
+        other_events = [e for e in task.events if not e.event_type.startswith("chapter.")]
+        recent_other_events = other_events[-100:]
+        recent_events = chapter_events + recent_other_events
         recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         return WorkspaceResponse(
             meta=self._to_summary(task),
@@ -324,6 +342,13 @@ class TaskServiceQueriesMixin:
         title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
         summary = task.events[-1].message if task.events else ""
         model_id = task.model_id or self.engine.settings.default_chat_model
+        last_error_detail = task.error_message
+        for event in reversed(task.events):
+            if event.event_type == "task.error_recorded":
+                last_error_detail = event.payload.get("detail") if isinstance(event.payload, dict) else None
+                if not last_error_detail:
+                    last_error_detail = event.message
+                break
         return TaskSummary(
             task_id=task.id,
             title=title,
@@ -343,6 +368,8 @@ class TaskServiceQueriesMixin:
             updated_at=task.updated_at,
             summary=summary,
             error_message=task.error_message,
+            auto_review=task.auto_review if task.auto_review is not None else False,
+            last_error_detail=last_error_detail,
             storage_state=task.storage_state,
             entry_refs={
                 "meta_json": f"tasklog/{task.storage_state}/{task.id}/meta.json",

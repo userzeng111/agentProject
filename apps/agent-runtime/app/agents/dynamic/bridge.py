@@ -58,6 +58,7 @@ class DynamicReviewBridge:
         接口签名与 AutoReviewManager.review() 完全一致。
         """
         review_type = payload.type
+        logger.info("动态审核开始: review_type=%s, model=%s", review_type, policy.auditor_model or self._default_model)
         task_description = self._build_task_description(payload)
         task_context = self._build_task_context(payload, policy)
 
@@ -78,7 +79,9 @@ class DynamicReviewBridge:
                 model=model,
             )
 
-            return self._convert_to_review_decision(result, policy, review_type)
+            decision = self._convert_to_review_decision(result, policy, review_type)
+            logger.info("动态审核结束: review_type=%s, score=%s, approved=%s, agent_trace_count=%s", review_type, decision.overall_score, decision.approved, len(decision.agent_trace))
+            return decision
 
         except Exception as e:
             logger.error("动态审核桥接异常: %s", e, exc_info=True)
@@ -254,8 +257,10 @@ class DynamicReviewBridge:
                 status="completed" if r.is_success else "failed",
                 score=r.score,
                 issues=r.issues if all(isinstance(i, dict) for i in r.issues) else [],
+                warnings=r.warnings if all(isinstance(i, dict) for i in r.warnings) else [],
                 highlights=r.highlights,
                 reasoning=r.reasoning,
+                raw_response=r.raw_response,
                 error=r.error,
                 started_at=r.started_at,
                 completed_at=r.completed_at,

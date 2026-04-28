@@ -115,6 +115,8 @@ class BaseAgent:
                     "payload": {
                         "reasoning_chunk": chunk.reasoning_content,
                         "accumulated_length": len(full_reasoning),
+                        "model": chunk.model,
+                        "finish_reason": chunk.finish_reason,
                     },
                 })
             if chunk.content:
@@ -149,6 +151,8 @@ class BaseAgent:
                     "payload": {
                         "reasoning_chunk": chunk.reasoning_content,
                         "accumulated_length": len(full_reasoning),
+                        "model": chunk.model,
+                        "finish_reason": chunk.finish_reason,
                     },
                 })
             if chunk.content:

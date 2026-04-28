@@ -4,6 +4,9 @@ from typing import Any
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
 from app.graph.state import WorkflowState, MAX_VERIFICATION_REVISIONS
+from app.observability import get_logger
+
+logger = get_logger(__name__)
 
 
 def verify_full_story(
@@ -32,7 +35,9 @@ def review_verification(
     build_auto_review_summary: Any | None = None,
 ) -> WorkflowState:
     # 自动审核模式
-    if state.get("auto_review") and auto_review_executor_available:
+    auto_review_enabled = bool(state.get("auto_review"))
+    logger.info("验证审核节点: auto_review=%s, executor_available=%s", auto_review_enabled, auto_review_executor_available)
+    if auto_review_enabled and auto_review_executor_available:
         policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
         force_manual = False
         try:
@@ -48,6 +53,7 @@ def review_verification(
                 verification_report=state.get("verification_report", {}),
                 verification_revision_count=state.get("verification_revision_count", 0),
             )
+            logger.info("验证审核节点: 调用 execute_auto_review")
             decision = execute_auto_review(payload, policy)
             agent_items = [a.model_dump() for a in decision.agent_trace]
             prev_trace = list(state.get("auto_review_trace") or [])
@@ -61,7 +67,9 @@ def review_verification(
                 *agent_items,
             ]
             trace = prev_trace + new_entry
+            logger.info("验证审核节点: auto_review 完成, score=%s, approved=%s, trace_len=%s", decision.overall_score, decision.approved, len(trace))
         except Exception as e:
+            logger.error("验证审核节点: auto_review 异常: %s", e, exc_info=True)
             decision = ReviewDecision(
                 approved=False,
                 comment=f"自动审核异常: {e}，请人工介入。",
@@ -77,20 +85,23 @@ def review_verification(
             revision_count=state.get("verification_revision_count", 0),
             review_type="verification_review",
         ):
-            review = interrupt_verification_review(state)
+            review = interrupt_verification_review(state, comment=decision.comment if force_manual else "")
             approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
             comment = review.get("comment", "") if isinstance(review, dict) else ""
+            logger.info("验证审核节点: 中断人工审核, approved=%s", approved)
             return {
                 "approved": approved,
                 "review_comment": comment,
                 "auto_review_trace": trace,
             }
+        logger.info("验证审核节点: 直接通过, approved=%s", decision.approved)
         return {
             "approved": decision.approved,
             "review_comment": decision.comment,
             "auto_review_trace": trace,
         }
     # 人工审核模式
+    logger.info("验证审核节点: 进入人工审核模式")
     review = interrupt_verification_review(state)
     approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
     comment = review.get("comment", "") if isinstance(review, dict) else ""
@@ -122,13 +133,13 @@ def fix_verified_issues(
     }
 
 
-def interrupt_verification_review(state: WorkflowState):
+def interrupt_verification_review(state: WorkflowState, comment: str = ""):
     from langgraph.types import interrupt
     return interrupt(
         {
             "type": "verification_review",
             "version": "v1",
-            "summary": "请审核全文一致性验证报告。",
+            "summary": comment or "请审核全文一致性验证报告。",
             "story_plan": state.get("story_plan"),
             "verification_report": state.get("verification_report", {}),
             "verification_revision_count": state.get("verification_revision_count", 0),

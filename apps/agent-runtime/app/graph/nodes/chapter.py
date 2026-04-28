@@ -3,7 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
+from app.observability import get_logger
 from app.graph.state import WorkflowState, MAX_CHAPTER_PAIR_REVISIONS
+
+logger = get_logger(__name__)
 from app.graph.utils.spec import _chapter_batch_size
 from app.graph.utils.helpers import (
     _resolve_model_profile,
@@ -111,6 +114,7 @@ def review_chapter_pair(
 ) -> WorkflowState:
     # 自动审核模式
     if state.get("auto_review") and auto_review_executor_available:
+        logger.info("章节审核节点: auto_review=%s, executor_available=%s", state.get("auto_review"), auto_review_executor_available)
         policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
         force_manual = False
         try:
@@ -150,6 +154,7 @@ def review_chapter_pair(
             ]
             trace = prev_trace + new_entry
         except Exception as e:
+            logger.error("章节审核节点: auto_review 异常: %s", e, exc_info=True)
             decision = ReviewDecision(
                 approved=False,
                 comment=f"自动审核异常: {e}，请人工介入。",
@@ -165,7 +170,7 @@ def review_chapter_pair(
             revision_count=state.get("chapter_pair_revision_count", 0),
             review_type="chapter_pair_review",
         ):
-            review = interrupt_chapter_pair_review(state)
+            review = interrupt_chapter_pair_review(state, comment=decision.comment if force_manual else "")
             approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
             comment = review.get("comment", "") if isinstance(review, dict) else ""
             return {
@@ -225,13 +230,13 @@ def accumulate_chapters(state: WorkflowState) -> WorkflowState:
     }
 
 
-def interrupt_chapter_pair_review(state: WorkflowState):
+def interrupt_chapter_pair_review(state: WorkflowState, comment: str = ""):
     from langgraph.types import interrupt
     return interrupt(
         {
             "type": "chapter_pair_review",
             "version": "v1",
-            "summary": "请审核本批章节是否符合大纲要求。",
+            "summary": comment or "请审核本批章节是否符合大纲要求。",
             "story_plan": state.get("story_plan"),
             "batch_index": state.get("batch_index", 0),
             "chapter_pair": state.get("current_chapter_pair", []),

@@ -1,0 +1,138 @@
+import json
+import unittest
+from unittest.mock import MagicMock, patch
+
+from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+
+
+class MockResponse:
+    def __init__(self, status_code: int, content: bytes | None = None, text: str = "") -> None:
+        self.status_code = status_code
+        self.content = content or text.encode("utf-8")
+        self.text = text
+
+    def json(self):
+        return json.loads(self.text)
+
+
+class GatewayEmptyResponseRetryTests(unittest.TestCase):
+    def _make_client(self) -> OpenAICompatibleGatewayClient:
+        return OpenAICompatibleGatewayClient(
+            base_url="http://example.com", api_key="test-key", model="test-model"
+        )
+
+    def test_empty_response_retries_then_succeeds(self) -> None:
+        """第一次空响应，第二次成功，应返回结果且只调用2次。"""
+        client = self._make_client()
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockResponse(status_code=200, content=b"  ")
+            return MockResponse(
+                status_code=200,
+                text=json.dumps({"choices": [{"message": {"content": "成功结果"}}]}),
+            )
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=side_effect)
+            mock_client_cls.return_value = mock_client
+
+            result = client.complete([{"role": "user", "content": "test"}])
+            self.assertEqual(result, "成功结果")
+            self.assertEqual(call_count, 2)
+
+    def test_three_empty_responses_raises_gateway_error(self) -> None:
+        """连续3次空响应，应抛出 GatewayClientError。"""
+        client = self._make_client()
+
+        def side_effect(*args, **kwargs):
+            return MockResponse(status_code=200, content=b"")
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=side_effect)
+            mock_client_cls.return_value = mock_client
+
+            with self.assertRaises(GatewayClientError) as ctx:
+                client.complete([{"role": "user", "content": "test"}])
+            self.assertIn("已重试3次", str(ctx.exception))
+            self.assertIn("内容为空", str(ctx.exception))
+
+    def test_json_decode_error_retries_then_succeeds(self) -> None:
+        """第一次返回非法JSON，第二次成功，应返回结果。"""
+        client = self._make_client()
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockResponse(status_code=200, text="not json")
+            return MockResponse(
+                status_code=200,
+                text=json.dumps({"choices": [{"message": {"content": "成功结果"}}]}),
+            )
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=side_effect)
+            mock_client_cls.return_value = mock_client
+
+            result = client.complete([{"role": "user", "content": "test"}])
+            self.assertEqual(result, "成功结果")
+            self.assertEqual(call_count, 2)
+
+    def test_three_json_decode_errors_raises_gateway_error(self) -> None:
+        """连续3次非法JSON，应抛出 GatewayClientError。"""
+        client = self._make_client()
+
+        def side_effect(*args, **kwargs):
+            return MockResponse(status_code=200, text="invalid json")
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=side_effect)
+            mock_client_cls.return_value = mock_client
+
+            with self.assertRaises(GatewayClientError) as ctx:
+                client.complete([{"role": "user", "content": "test"}])
+            self.assertIn("已重试3次", str(ctx.exception))
+            self.assertIn("JSON解析失败", str(ctx.exception))
+
+    def test_500_error_retries_then_succeeds(self) -> None:
+        """_request 已处理 5xx 重试，但 complete 也应兜底。"""
+        client = self._make_client()
+        call_count = 0
+
+        def side_effect(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return MockResponse(status_code=500, text="server error")
+            return MockResponse(
+                status_code=200,
+                text=json.dumps({"choices": [{"message": {"content": "成功结果"}}]}),
+            )
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=side_effect)
+            mock_client_cls.return_value = mock_client
+
+            result = client.complete([{"role": "user", "content": "test"}])
+            self.assertEqual(result, "成功结果")
+            self.assertEqual(call_count, 2)

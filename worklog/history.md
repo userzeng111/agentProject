@@ -1,5 +1,13 @@
 # 历史问题索引
 
+- 标题：执行链路异常与自动审核全量测试
+  路径：`worklog/archive/功能开发/20260427-03-执行链路异常与自动审核全量测试.md`
+  摘要：修复上游 API 空响应崩溃、auto_review 未持久化、异常信息无法透传等问题，62 个测试全通。
+
+- 标题：审核节点异常日志增强
+  路径：`worklog/archive/agent架构/20260427-03-审核节点异常日志增强.md`
+  摘要：为 outline.py 和 chapter.py 的 auto_review except 块补充 logger 异常日志，确保降级到人工审核时可追踪。
+
 - 标题：agent-runtime 架构拆分与日志统一
   路径：`worklog/archive/架构重构/20260424-01-agent-runtime架构拆分与日志统一.md`
   摘要：完成工作流引擎抽象层、TaskService 解耦、API 层解耦与日志统一，142 测试全通，版本 0.1.3 → 0.1.4。

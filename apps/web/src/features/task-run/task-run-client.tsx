@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Alert,
@@ -27,10 +27,12 @@ import {
   ListItemText,
   MenuItem,
   Select,
+  Snackbar,
   Stack,
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import {
@@ -43,8 +45,10 @@ import {
   Psychology as ThinkIcon,
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
+  Delete as DeleteIcon,
+  Cancel as CancelIcon,
 } from "@mui/icons-material";
-import { continueTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
+import { cancelTask, continueTask, deleteTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
 import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import {
   derivePrimaryRecoveryAction,
@@ -97,6 +101,27 @@ const supervisorStatusMap: Record<
   completed: { label: "已完成", color: "success" },
   failed: { label: "失败", color: "error" },
 };
+
+function getDeletePrompt(status: TaskStatus): string {
+  switch (status) {
+    case "waiting_chapter_review":
+    case "waiting_verification_review":
+      return "该任务已有章节生成，删除后将丢失所有已生成内容。确认删除？";
+    case "waiting_outline_review":
+      return "该任务大纲已生成，删除后将丢失大纲内容。确认删除？";
+    case "created":
+    case "sources_ingested":
+      return "该任务尚未开始编写，确认删除？";
+    case "failed":
+      return "该任务执行失败，确认删除？";
+    case "cancelled":
+      return "确认删除该已取消的任务？";
+    case "ready_for_batch":
+      return "该任务已有部分进度，删除后将丢失已生成内容。确认删除？";
+    default:
+      return "确认删除该任务？此操作不可恢复。";
+  }
+}
 
 const WORKFLOW_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -383,9 +408,11 @@ interface ThinkingGroup {
   content: string;
   lastUpdatedAt: string;
   isActive: boolean;
+  model?: string;
+  finishReason?: string | null;
 }
 
-function buildThinkingGroups(events: WorkspaceEvent[]): ThinkingGroup[] {
+function buildThinkingGroups(events: WorkspaceEvent[], workspaceStatus?: TaskStatus): ThinkingGroup[] {
   const thinkingEvents = events.filter((event) => event.event_type === "model.thinking");
   if (!thinkingEvents.length) return [];
 
@@ -394,22 +421,31 @@ function buildThinkingGroups(events: WorkspaceEvent[]): ThinkingGroup[] {
     const key = event.unit_id || "default";
     const existing = groupMap.get(key);
     const chunk = event.payload?.reasoning_chunk || "";
-    const isLast = event === thinkingEvents[thinkingEvents.length - 1];
+    const model = event.payload?.model || existing?.model || "";
+    const finishReason = event.payload?.finish_reason ?? existing?.finishReason ?? null;
     groupMap.set(key, {
       unitId: key,
       stage: event.stage || "",
       content: (existing?.content || "") + chunk,
       lastUpdatedAt: event.created_at,
-      isActive: isLast,
+      isActive: false,
+      model,
+      finishReason,
     });
   }
 
-  // 只保留最后一个活跃的思考组（正在思考的）
   const groups = Array.from(groupMap.values());
-  const lastGroup = groups[groups.length - 1];
-  if (lastGroup) {
-    lastGroup.isActive = true;
+  const activeStatuses: TaskStatus[] = ["planning", "drafting", "assembling"];
+  const isTaskRunning = workspaceStatus ? activeStatuses.includes(workspaceStatus) : false;
+
+  if (isTaskRunning && groups.length > 0) {
+    // 按最后更新时间排序，取最新的作为活跃组
+    const latestGroup = groups.reduce((latest, group) =>
+      new Date(group.lastUpdatedAt) > new Date(latest.lastUpdatedAt) ? group : latest,
+    );
+    latestGroup.isActive = true;
   }
+
   return groups;
 }
 
@@ -425,6 +461,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [chapterDialogOpen, setChapterDialogOpen] = useState(false);
   const [selectedChapter, setSelectedChapter] = useState<{ number: number; title: string; summary: string; content: string } | null>(null);
   const [expandedThinking, setExpandedThinking] = useState<Record<string, boolean>>({});
+  const [seenThinkingKeys, setSeenThinkingKeys] = useState<Set<string>>(new Set());
   const [requestedChapterCount, setRequestedChapterCount] = useState(3);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({ loading: false, error: "" });
@@ -432,11 +469,54 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [recoveryDialogOpen, setRecoveryDialogOpen] = useState(false);
   const [selectedRecoveryAction, setSelectedRecoveryAction] = useState<RecoveryMode>("recover_to_stable");
   const [recoveryModelId, setRecoveryModelId] = useState("");
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMsg, setSnackbarMsg] = useState("");
+  const [summaryExpanded, setSummaryExpanded] = useState(true);
+  const [logTabExpanded, setLogTabExpanded] = useState(true);
+  const [tab1Expanded, setTab1Expanded] = useState(true);
+  const [tab2Expanded, setTab2Expanded] = useState(true);
+  const [tab3Expanded, setTab3Expanded] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
   const continueRequestIdRef = useRef<string | null>(null);
   const currentActionModelIdRef = useRef("");
   const currentTaskModelIdRef = useRef("");
   const currentModelOptionsRef = useRef<ModelOption[]>([]);
+
+  // 提前计算 thinkingGroups，确保相关 hook 位于条件 return 之前，避免 Hook 数量不一致
+  const thinkingGroups = useMemo(() => {
+    if (!workspace) return [];
+    return buildThinkingGroups(workspace.recent_events, workspace.meta.status);
+  }, [workspace?.recent_events, workspace?.meta.status]);
+
+  // 自动展开新到达的活跃思考组（用户未手动折叠过的）
+  useEffect(() => {
+    if (thinkingGroups.length === 0) return;
+    setExpandedThinking((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const group of thinkingGroups) {
+        const key = group.unitId;
+        if (!seenThinkingKeys.has(key)) {
+          if (!(key in next)) {
+            next[key] = group.isActive;
+            changed = true;
+          }
+        }
+      }
+      return changed ? next : prev;
+    });
+    setSeenThinkingKeys((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const group of thinkingGroups) {
+        if (!next.has(group.unitId)) {
+          next.add(group.unitId);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [thinkingGroups, seenThinkingKeys]);
 
   const refreshWorkspace = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -460,6 +540,36 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   useEffect(() => {
     void refreshWorkspace();
   }, [refreshWorkspace]);
+
+  const showSnackbar = useCallback((msg: string) => {
+    setSnackbarMsg(msg);
+    setSnackbarOpen(true);
+  }, []);
+
+  const handleCancelTask = useCallback(async () => {
+    if (!resolvedTaskId) return;
+    if (!window.confirm("确认取消该任务？取消后任务将停止运行。")) return;
+    try {
+      await cancelTask(resolvedTaskId);
+      showSnackbar("任务已取消");
+      void refreshWorkspace();
+    } catch (err) {
+      showSnackbar(err instanceof Error ? err.message : "取消任务失败");
+    }
+  }, [resolvedTaskId, showSnackbar, refreshWorkspace]);
+
+  const handleDeleteTask = useCallback(async () => {
+    if (!resolvedTaskId || !workspace) return;
+    const prompt = getDeletePrompt(workspace.meta.status);
+    if (!window.confirm(prompt)) return;
+    try {
+      await deleteTask(resolvedTaskId);
+      showSnackbar("任务已删除");
+      window.location.href = "/";
+    } catch (err) {
+      showSnackbar(err instanceof Error ? err.message : "删除任务失败");
+    }
+  }, [resolvedTaskId, workspace, showSnackbar]);
 
   useEffect(() => {
     const nextDefault = workspace?.novel_progress?.default_batch_size;
@@ -527,7 +637,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   }, [loadModels]);
 
   useEffect(() => {
-    setActionModelId("");
     setModelRefresh({ loading: false, error: "" });
     setRecoveryDialogOpen(false);
     setSelectedRecoveryAction("recover_to_stable");
@@ -549,6 +658,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     if (actionModelId && selectableModels.some((item) => item.id === actionModelId)) {
       return;
     }
+    const savedModelId = localStorage.getItem("novel-agent:action-model-id");
+    if (savedModelId && selectableModels.some((item) => item.id === savedModelId)) {
+      setActionModelId(savedModelId);
+      return;
+    }
     if (currentTaskModelId && selectableModels.some((item) => item.id === currentTaskModelId)) {
       setActionModelId(currentTaskModelId);
       return;
@@ -560,6 +674,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   function handleActionModelChange(nextModelId: string) {
     setActionModelId(nextModelId);
+    if (nextModelId) {
+      localStorage.setItem("novel-agent:action-model-id", nextModelId);
+    } else {
+      localStorage.removeItem("novel-agent:action-model-id");
+    }
     setModelRefresh((current) => ({ ...current, invalidated: false, invalidatedModelLabel: undefined }));
   }
 
@@ -649,6 +768,29 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       eventSourceRef.current = null;
     };
   }, [resolvedTaskId, refreshWorkspace]);
+
+  // 全局前端错误捕获：窗口级错误与未处理 Promise 拒绝
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      const msg = `[前端错误] ${event.message} @ ${event.filename}:${event.lineno}`;
+      console.error(msg, event.error);
+      setSnackbarMsg(msg);
+      setSnackbarOpen(true);
+    };
+    const handleRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason instanceof Error ? event.reason.message : String(event.reason);
+      const msg = `[前端未处理Promise] ${reason}`;
+      console.error(msg, event.reason);
+      setSnackbarMsg(msg);
+      setSnackbarOpen(true);
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleRejection);
+    };
+  }, []);
 
   async function handleRun() {
     if (!hasValidActionModel) {
@@ -775,7 +917,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const systemStages = buildSystemStages(workspace.recent_events);
   const chapterProgress = buildChapterProgress(workspace.recent_events);
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
-  const thinkingGroups = buildThinkingGroups(workspace.recent_events);
   const currentStep = getStepIndex(workspace.meta.status);
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
@@ -888,6 +1029,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               当前任务需要人工处理
             </Typography>
             <Typography variant="body2">{workspace.meta.error_message}</Typography>
+            {workspace.meta.last_error_detail ? (
+              <Typography color="error" variant="body2">
+                后台异常详情：{workspace.meta.last_error_detail}
+              </Typography>
+            ) : null}
             {recoveryReason ? (
               <Stack direction="row" spacing={1} alignItems="center">
                 <Typography variant="caption" color="text.secondary">
@@ -913,7 +1059,14 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)" }}>
                 请求摘要
               </Typography>
-              <Stack direction="row" spacing={1}>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <IconButton
+                  size="small"
+                  onClick={() => setSummaryExpanded((prev) => !prev)}
+                  sx={{ transform: summaryExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
                 {["created", "sources_ingested"].includes(workspace.meta.status) && (
                   <Button variant="contained" disabled={running || !hasValidActionModel} onClick={handleRun} size="small">
                     {running ? "启动中..." : "开始执行"}
@@ -947,8 +1100,32 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 <Button variant="outlined" onClick={() => void refreshWorkspace()} size="small">
                   刷新
                 </Button>
+                {["planning", "drafting", "assembling", "waiting_manual_action"].includes(workspace.meta.status) && (
+                  <Button
+                    variant="outlined"
+                    color="warning"
+                    size="small"
+                    startIcon={<CancelIcon />}
+                    onClick={handleCancelTask}
+                  >
+                    取消任务
+                  </Button>
+                )}
+                {workspace.meta.status !== "completed" && !["planning", "drafting", "assembling", "waiting_manual_action"].includes(workspace.meta.status) && (
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    startIcon={<DeleteIcon />}
+                    onClick={handleDeleteTask}
+                  >
+                    删除任务
+                  </Button>
+                )}
               </Stack>
             </Stack>
+            <Collapse in={summaryExpanded}>
+              <Stack spacing={2}>
             <Typography>{workspace.request_preview?.prompt || workspace.meta.summary || "暂无请求摘要"}</Typography>
             {primaryRecoveryAction ? (
               <Box
@@ -1054,6 +1231,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               {workspace.available_tabs?.map((tab) => (
                 <Chip key={tab} label={tab} size="small" variant="outlined" />
               ))}
+              <Chip
+                label={`自动审核：${workspace.meta.auto_review ? "开启" : "关闭"}`}
+                size="small"
+                variant="outlined"
+              />
             </Stack>
             {workspace.active_trace_summary && (
               <Typography variant="body2" color="text.secondary">
@@ -1140,6 +1322,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Stack>
             </Box>
           </Stack>
+          </Collapse>
+          </Stack>
         </CardContent>
       </Card>
 
@@ -1163,17 +1347,64 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       {/* Tab 区域 */}
       <Card>
         <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
-          <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
-            <Tab label={`实时日志 (${systemStages.length})`} />
-            <Tab label={`章节进度 (${chapterProgress.length})`} />
-            <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
-            <Tab label="任务详情" />
-          </Tabs>
+          <Stack direction="row" justifyContent="space-between" alignItems="center">
+            <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
+              <Tab label={`实时日志 (${systemStages.length})`} />
+              <Tab label={`章节进度 (${chapterProgress.length})`} />
+              <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
+              <Tab label="任务详情" />
+            </Tabs>
+            {activeTab === 0 && (
+              <Tooltip title={logTabExpanded ? "收起日志" : "展开日志"}>
+                <IconButton
+                  size="small"
+                  onClick={() => setLogTabExpanded((prev) => !prev)}
+                  sx={{ mr: 1, transform: logTabExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+            {activeTab === 1 && (
+              <Tooltip title={tab1Expanded ? "收起章节进度" : "展开章节进度"}>
+                <IconButton
+                  size="small"
+                  onClick={() => setTab1Expanded((prev) => !prev)}
+                  sx={{ mr: 1, transform: tab1Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+            {activeTab === 2 && (
+              <Tooltip title={tab2Expanded ? "收起 Supervisor" : "展开 Supervisor"}>
+                <IconButton
+                  size="small"
+                  onClick={() => setTab2Expanded((prev) => !prev)}
+                  sx={{ mr: 1, transform: tab2Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+            {activeTab === 3 && (
+              <Tooltip title={tab3Expanded ? "收起任务详情" : "展开任务详情"}>
+                <IconButton
+                  size="small"
+                  onClick={() => setTab3Expanded((prev) => !prev)}
+                  sx={{ mr: 1, transform: tab3Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Stack>
         </Box>
         <CardContent>
           {/* Tab 0: 实时日志 */}
           {activeTab === 0 && (
-            <Stack spacing={3}>
+            <Collapse in={logTabExpanded}>
+              <Stack spacing={3}>
               {/* 思考链区域 */}
               {thinkingGroups.length > 0 && (
                 <Box>
@@ -1215,9 +1446,17 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                             {isRunning ? "正在思考..." : `思考过程 · ${group.stage} · ${group.unitId}`}
                           </Typography>
                           {isRunning && <CircularProgress size={14} />}
+                          {group.model && (
+                            <Typography variant="caption" color="text.secondary">
+                              {group.model}
+                            </Typography>
+                          )}
                           <Typography variant="caption" color="text.secondary">
                             {group.content.length} 字
                           </Typography>
+                          {group.finishReason && (
+                            <Chip size="small" variant="outlined" label={`完成: ${group.finishReason}`} />
+                          )}
                           {isOpen ? <CollapseIcon sx={{ fontSize: 16 }} /> : <ExpandIcon sx={{ fontSize: 16 }} />}
                         </Box>
                         <Collapse in={isOpen}>
@@ -1225,7 +1464,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                             sx={{
                               px: 2,
                               py: 1.5,
-                              maxHeight: 300,
+                              maxHeight: 600,
                               overflowY: "auto",
                               fontSize: "0.82rem",
                               color: "text.secondary",
@@ -1311,199 +1550,206 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 </List>
               </Box>
             </Stack>
+          </Collapse>
           )}
 
           {/* Tab 1: 章节进度 */}
           {activeTab === 1 && (
-            <List dense>
-              {chapterProgress.length ? (
-                chapterProgress.map((chapter) => (
-                  <div key={chapter.number}>
-                    <ListItem disableGutters alignItems="flex-start">
-                      <ListItemButton
-                        onClick={() => void handleChapterClick(chapter.number, chapter.title)}
-                        sx={{ py: 1 }}
-                      >
-                        <ListItemText
-                          primary={
-                            <Stack direction="row" spacing={1} alignItems="center">
-                              <Typography>{`第 ${chapter.number} 章 · ${chapter.title}`}</Typography>
-                              <Chip
-                                label={chapter.status}
-                                size="small"
-                                color={chapter.status === "已完成" ? "success" : "default"}
-                              />
-                            </Stack>
-                          }
-                          secondary={
-                            [
-                              formatEventTime(chapter.updatedAt),
-                              chapter.summary || "",
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")
-                          }
-                          secondaryTypographyProps={{ sx: { whiteSpace: "pre-line" } }}
-                        />
-                      </ListItemButton>
-                    </ListItem>
-                    <LinearProgress
-                      variant="determinate"
-                      value={chapter.progress}
-                      sx={{ mb: 1.5, height: 8, borderRadius: 999 }}
-                    />
-                    <Divider component="li" />
-                  </div>
-                ))
-              ) : (
-                <ListItem disableGutters>
-                  <ListItemText primary="当前还没有章节级进度事件" />
-                </ListItem>
-              )}
-            </List>
+            <Collapse in={tab1Expanded}>
+              <List dense>
+                {chapterProgress.length ? (
+                  chapterProgress.map((chapter) => (
+                    <div key={chapter.number}>
+                      <ListItem disableGutters alignItems="flex-start">
+                        <ListItemButton
+                          onClick={() => void handleChapterClick(chapter.number, chapter.title)}
+                          sx={{ py: 1 }}
+                        >
+                          <ListItemText
+                            primary={
+                              <Stack direction="row" spacing={1} alignItems="center">
+                                <Typography>{`第 ${chapter.number} 章 · ${chapter.title}`}</Typography>
+                                <Chip
+                                  label={chapter.status}
+                                  size="small"
+                                  color={chapter.status === "已完成" ? "success" : "default"}
+                                />
+                              </Stack>
+                            }
+                            secondary={
+                              [
+                                formatEventTime(chapter.updatedAt),
+                                chapter.summary || "",
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")
+                            }
+                            secondaryTypographyProps={{ sx: { whiteSpace: "pre-line" } }}
+                          />
+                        </ListItemButton>
+                      </ListItem>
+                      <LinearProgress
+                        variant="determinate"
+                        value={chapter.progress}
+                        sx={{ mb: 1.5, height: 8, borderRadius: 999 }}
+                      />
+                      <Divider component="li" />
+                    </div>
+                  ))
+                ) : (
+                  <ListItem disableGutters>
+                    <ListItemText primary="当前还没有章节级进度事件" />
+                  </ListItem>
+                )}
+              </List>
+            </Collapse>
           )}
 
           {/* Tab 2: Supervisor */}
           {activeTab === 2 && (
-            <Stack spacing={2}>
-              {!workspace.supervisor_plan ? (
-                <Alert severity="info">当前任务还没有可展示的 Supervisor 规划。</Alert>
-              ) : (
-                <>
-                  <Box>
-                    <Typography variant="h6" sx={{ mb: 1 }}>
-                      规划版本：{workspace.supervisor_plan.planner_version}
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      子任务：{workspace.supervisor_plan.subtasks.length} 个
-                      {" · "}
-                      依赖边：{workspace.supervisor_plan.dependencies.length} 条
-                      {" · "}
-                      Agent 运行记录：{workspace.agent_runs?.length ?? 0} 条
-                    </Typography>
-                  </Box>
-
-                  <List dense>
-                    {workspace.supervisor_plan.subtasks.map((subtask) => {
-                      const status = resolveSupervisorStatus(subtask);
-                      const incoming = countIncomingDependencies(workspace, subtask.id);
-                      const outgoing = countOutgoingDependencies(workspace, subtask.id);
-                      return (
-                        <div key={subtask.id}>
-                          <ListItem disableGutters alignItems="flex-start">
-                            <ListItemText
-                              primary={
-                                <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
-                                  <Typography>{subtask.title}</Typography>
-                                  <Chip size="small" color={status.color} label={status.label} />
-                                  <Chip size="small" variant="outlined" label={subtask.kind} />
-                                </Stack>
-                              }
-                              secondary={
-                                [
-                                  `依赖上游 ${incoming} 个`,
-                                  `下游 ${outgoing} 个`,
-                                  subtask.assigned_agent ? `指派: ${subtask.assigned_agent}` : "",
-                                ]
-                                  .filter(Boolean)
-                                  .join(" · ")
-                              }
-                            />
-                          </ListItem>
-                          <Divider component="li" />
-                        </div>
-                      );
-                    })}
-                  </List>
-
-                  {workspace.agent_runs?.length ? (
+            <Collapse in={tab2Expanded}>
+              <Stack spacing={2}>
+                {!workspace.supervisor_plan ? (
+                  <Alert severity="info">当前任务还没有可展示的 Supervisor 规划。</Alert>
+                ) : (
+                  <>
                     <Box>
-                      <Typography variant="subtitle1" sx={{ mb: 1 }}>
-                        Agent 运行记录
+                      <Typography variant="h6" sx={{ mb: 1 }}>
+                        规划版本：{workspace.supervisor_plan.planner_version}
                       </Typography>
-                      <List dense>
-                        {workspace.agent_runs.map((run) => (
-                          <div key={run.id}>
-                            <ListItem disableGutters>
+                      <Typography variant="body2" color="text.secondary">
+                        子任务：{workspace.supervisor_plan.subtasks.length} 个
+                        {" · "}
+                        依赖边：{workspace.supervisor_plan.dependencies.length} 条
+                        {" · "}
+                        Agent 运行记录：{workspace.agent_runs?.length ?? 0} 条
+                      </Typography>
+                    </Box>
+
+                    <List dense>
+                      {workspace.supervisor_plan.subtasks.map((subtask) => {
+                        const status = resolveSupervisorStatus(subtask);
+                        const incoming = countIncomingDependencies(workspace, subtask.id);
+                        const outgoing = countOutgoingDependencies(workspace, subtask.id);
+                        return (
+                          <div key={subtask.id}>
+                            <ListItem disableGutters alignItems="flex-start">
                               <ListItemText
-                                primary={`${run.agent_name} · ${run.role}`}
-                                secondary={`状态：${run.status} · 子任务：${run.subtask_id}`}
+                                primary={
+                                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                                    <Typography>{subtask.title}</Typography>
+                                    <Chip size="small" color={status.color} label={status.label} />
+                                    <Chip size="small" variant="outlined" label={subtask.kind} />
+                                  </Stack>
+                                }
+                                secondary={
+                                  [
+                                    `依赖上游 ${incoming} 个`,
+                                    `下游 ${outgoing} 个`,
+                                    subtask.assigned_agent ? `指派: ${subtask.assigned_agent}` : "",
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")
+                                }
                               />
                             </ListItem>
                             <Divider component="li" />
                           </div>
-                        ))}
-                      </List>
-                    </Box>
-                  ) : null}
-                </>
-              )}
-            </Stack>
+                        );
+                      })}
+                    </List>
+
+                    {workspace.agent_runs?.length ? (
+                      <Box>
+                        <Typography variant="subtitle1" sx={{ mb: 1 }}>
+                          Agent 运行记录
+                        </Typography>
+                        <List dense>
+                          {workspace.agent_runs.map((run) => (
+                            <div key={run.id}>
+                              <ListItem disableGutters>
+                                <ListItemText
+                                  primary={`${run.agent_name} · ${run.role}`}
+                                  secondary={`状态：${run.status} · 子任务：${run.subtask_id}`}
+                                />
+                              </ListItem>
+                              <Divider component="li" />
+                            </div>
+                          ))}
+                        </List>
+                      </Box>
+                    ) : null}
+                  </>
+                )}
+              </Stack>
+            </Collapse>
           )}
 
           {/* Tab 3: 任务详情 */}
           {activeTab === 3 && (
-            <Stack spacing={2}>
-              <Stack direction="row" spacing={2}>
+            <Collapse in={tab3Expanded}>
+              <Stack spacing={2}>
+                <Stack direction="row" spacing={2}>
+                  <Typography variant="body2" color="text.secondary">
+                    Task ID：{workspace.meta.task_id}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    任务默认模型：
+                    {workspace.request_preview?.default_model_id ||
+                      workspace.meta.default_model_id ||
+                      workspace.request_preview?.model_id ||
+                      workspace.meta.model_id ||
+                      "默认模型"}
+                    {workspace.request_preview?.last_action_model_id
+                      ? ` · 最近一次动作模型：${workspace.request_preview.last_action_model_id}${formatActionKindLabel(workspace.request_preview.last_action_kind) ? `（${formatActionKindLabel(workspace.request_preview.last_action_kind)}）` : ""}`
+                      : ""}
+                  </Typography>
+                </Stack>
                 <Typography variant="body2" color="text.secondary">
-                  Task ID：{workspace.meta.task_id}
+                  {formatContextWindowLabel(modelCapabilities)}
+                  {" · "}
+                  {formatContextCacheLabel(modelCapabilities, contextStatus)}
+                  {" · "}
+                  {formatResponseCacheLabel(modelCapabilities, responseCacheStatus)}
+                  {" · "}
+                  {formatCompressionLabel(modelCapabilities, contextStatus)}
+                </Typography>
+                {typeof (workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min) === "number" && (
+                  <Typography variant="body2" color="text.secondary">
+                    单章字数下限：
+                    {workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min}
+                    {" · "}读者：{workspace.request_preview?.audience || "未指定"}
+                  </Typography>
+                )}
+                {workspace.meta.current_unit && (
+                  <Typography variant="body2" color="text.secondary">
+                    当前单元：{workspace.meta.current_unit}
+                  </Typography>
+                )}
+                {workspace.meta.updated_at && (
+                  <Typography variant="body2" color="text.secondary">
+                    最近更新：{new Date(workspace.meta.updated_at).toLocaleString()}
+                  </Typography>
+                )}
+                <Typography variant="body2" color="text.secondary">
+                  上下文缓存键：{contextStatus?.cache_key || "未上报"}
+                  {" · "}
+                  上下文缓存范围：{contextStatus?.cache_scope || "未上报"}
+                  {" · "}
+                  缓存片段：{typeof contextStatus?.cached_segments === "number" ? contextStatus.cached_segments : "未上报"}
                 </Typography>
                 <Typography variant="body2" color="text.secondary">
-                  任务默认模型：
-                  {workspace.request_preview?.default_model_id ||
-                    workspace.meta.default_model_id ||
-                    workspace.request_preview?.model_id ||
-                    workspace.meta.model_id ||
-                    "默认模型"}
-                  {workspace.request_preview?.last_action_model_id
-                    ? ` · 最近一次动作模型：${workspace.request_preview.last_action_model_id}${formatActionKindLabel(workspace.request_preview.last_action_kind) ? `（${formatActionKindLabel(workspace.request_preview.last_action_kind)}）` : ""}`
-                    : ""}
+                  响应缓存键：{responseCacheStatus?.cache_key || "未上报"}
+                  {" · "}
+                  响应缓存范围：{responseCacheStatus?.cache_scope || "未上报"}
+                  {" · "}
+                  历史消息：{typeof responseCacheStatus?.history_count === "number" ? responseCacheStatus.history_count : "未上报"}
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {workspace.meta.summary || "暂无摘要"}
                 </Typography>
               </Stack>
-              <Typography variant="body2" color="text.secondary">
-                {formatContextWindowLabel(modelCapabilities)}
-                {" · "}
-                {formatContextCacheLabel(modelCapabilities, contextStatus)}
-                {" · "}
-                {formatResponseCacheLabel(modelCapabilities, responseCacheStatus)}
-                {" · "}
-                {formatCompressionLabel(modelCapabilities, contextStatus)}
-              </Typography>
-              {typeof (workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min) === "number" && (
-                <Typography variant="body2" color="text.secondary">
-                  单章字数下限：
-                  {workspace.request_preview?.chapter_word_min ?? workspace.meta.chapter_word_min}
-                  {" · "}读者：{workspace.request_preview?.audience || "未指定"}
-                </Typography>
-              )}
-              {workspace.meta.current_unit && (
-                <Typography variant="body2" color="text.secondary">
-                  当前单元：{workspace.meta.current_unit}
-                </Typography>
-              )}
-              {workspace.meta.updated_at && (
-                <Typography variant="body2" color="text.secondary">
-                  最近更新：{new Date(workspace.meta.updated_at).toLocaleString()}
-                </Typography>
-              )}
-              <Typography variant="body2" color="text.secondary">
-                上下文缓存键：{contextStatus?.cache_key || "未上报"}
-                {" · "}
-                上下文缓存范围：{contextStatus?.cache_scope || "未上报"}
-                {" · "}
-                缓存片段：{typeof contextStatus?.cached_segments === "number" ? contextStatus.cached_segments : "未上报"}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                响应缓存键：{responseCacheStatus?.cache_key || "未上报"}
-                {" · "}
-                响应缓存范围：{responseCacheStatus?.cache_scope || "未上报"}
-                {" · "}
-                历史消息：{typeof responseCacheStatus?.history_count === "number" ? responseCacheStatus.history_count : "未上报"}
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {workspace.meta.summary || "暂无摘要"}
-              </Typography>
-            </Stack>
+            </Collapse>
           )}
         </CardContent>
       </Card>
@@ -1569,6 +1815,12 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           </>
         )}
       </Dialog>
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={() => setSnackbarOpen(false)}
+        message={snackbarMsg}
+      />
     </Stack>
     </Container>
   );
