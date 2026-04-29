@@ -615,3 +615,11 @@ class ModelCatalogService:
                 "novel_task_supported": False,
             },
         }
+
+
+def get_model_max_output_tokens(model_id: str | None) -> int | None:
+    """从静态注册表查询模型的最大输出 token 数。"""
+    profile = _PROFILE_REGISTRY.get((model_id or "").strip(), {})
+    capabilities = profile.get("capabilities") or {}
+    context_window = capabilities.get("context_window") or {}
+    return context_window.get("max_output_tokens")

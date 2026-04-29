@@ -167,7 +167,11 @@ class TaskServiceContinuationMixin:
                         from app.settings.config import get_settings
 
                         gateway_client = getattr(self.engine, "gateway_client", None)
-                        policy = AutoReviewPolicy.model_validate(self.auto_review_policy or {})
+                        policy_dict = dict(self.auto_review_policy or {})
+                        if action_model_id:
+                            policy_dict.setdefault("auditor_model", action_model_id)
+                            policy_dict.setdefault("synthesis_model", action_model_id)
+                        policy = AutoReviewPolicy.model_validate(policy_dict)
                         decision: ReviewDecision | None = None
                         _settings = get_settings()
                         if (

@@ -204,10 +204,17 @@ class StoryEngine(BaseAgent):
             ]
         )
         if settings.openai_api_key:
+            timeout_cfg = {
+                "connect": settings.llm_timeout_connect,
+                "read": settings.llm_timeout_read,
+                "write": settings.llm_timeout_write,
+                "pool": settings.llm_timeout_pool,
+            }
             self.gateway_client = OpenAICompatibleGatewayClient(
                 base_url=settings.openai_base_url,
                 api_key=settings.openai_api_key,
                 model=settings.default_chat_model,
+                timeout=timeout_cfg,
             )
         self._runtime_default_model: str | None = None
 

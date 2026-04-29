@@ -32,6 +32,7 @@ from app.llm.story_engine import (
     StoryEngine,
 )
 from app.rag.service import RagService
+from app.storage.db_repository import get_novel_project, update_project_status
 from app.storage.task_store import TaskLogStore
 
 logger = get_logger(__name__)
@@ -402,6 +403,11 @@ class TaskServiceCoreMixin:
         reference_text = "\n\n".join(source.content for source in task.sources)
         resolved_auto_review = self._resolve_task_auto_review(task)
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
+        # 自动审核模型默认跟随用户选择的创作模型
+        auto_review_policy = dict(task.auto_review_policy or self.auto_review_policy)
+        if resolved_model_id:
+            auto_review_policy.setdefault("auditor_model", resolved_model_id)
+            auto_review_policy.setdefault("synthesis_model", resolved_model_id)
         return {
             "task_id": task.id,
             "input_payload": {
@@ -422,7 +428,7 @@ class TaskServiceCoreMixin:
             "reference_text": reference_text,
             "source_assets": [source.model_dump(mode="json") for source in task.sources],
             "auto_review": resolved_auto_review,
-            "auto_review_policy": task.auto_review_policy or dict(self.auto_review_policy),
+            "auto_review_policy": auto_review_policy,
         }
 
     def _resolve_task_auto_review(self, task: TaskRecord) -> bool:
@@ -512,6 +518,13 @@ class TaskServiceCoreMixin:
                     "reason": "recoverable_runtime_error",
                 },
             )
+            project = get_novel_project(task_id)
+            if project is not None:
+                update_project_status(
+                    task_id,
+                    status=TaskStatus.WAITING_MANUAL_ACTION.value,
+                    blocked_from_status=project.status,
+                )
             return self._safe_sync_supervisor_plan(task_id, fallback=record)
         record = self.store.set_failed(task_id, message)
         return self._safe_sync_supervisor_plan(task_id, fallback=record)

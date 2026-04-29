@@ -41,7 +41,13 @@ class StreamChunk:
 
 
 class OpenAICompatibleGatewayClient:
-    def __init__(self, base_url: str, api_key: str, model: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: httpx.Timeout | dict[str, float] | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -49,6 +55,17 @@ class OpenAICompatibleGatewayClient:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
+        if timeout is None:
+            self._timeout = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
+        elif isinstance(timeout, httpx.Timeout):
+            self._timeout = timeout
+        else:
+            self._timeout = httpx.Timeout(
+                connect=timeout.get("connect", 30.0),
+                read=timeout.get("read", 240.0),
+                write=timeout.get("write", 60.0),
+                pool=timeout.get("pool", 60.0),
+            )
 
     def _get_adapter(self, model: str | None = None):
         """根据模型选择对应的协议适配器。"""
@@ -66,6 +83,21 @@ class OpenAICompatibleGatewayClient:
             return AnthropicAdapter()
         return OpenAIAdapter()
 
+    @staticmethod
+    def _resolve_max_tokens(model: str) -> int:
+        """根据模型 catalog 返回该模型支持的最大输出 token 数。"""
+        from app.llm.model_catalog import get_model_max_output_tokens
+        max_tokens = get_model_max_output_tokens(model)
+        if max_tokens is not None:
+            return int(max_tokens)
+        return 4096
+
+    def _inject_max_tokens(self, model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """若 kwargs 未显式指定 max_tokens，则从 model catalog 自动注入。"""
+        if "max_tokens" not in kwargs:
+            kwargs = {**kwargs, "max_tokens": self._resolve_max_tokens(model)}
+        return kwargs
+
     def list_models(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/models")
         self._ensure_success(response, "读取模型列表失败")
@@ -74,6 +106,7 @@ class OpenAICompatibleGatewayClient:
 
     def complete(self, messages: list[dict[str, str]], model: str | None = None, **kwargs: Any) -> str:
         resolved_model = model or self.model
+        kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=False, **kwargs)
         endpoint = adapter.get_endpoint()
@@ -215,7 +248,7 @@ class OpenAICompatibleGatewayClient:
         for attempt in range(3):
             try:
                 with httpx.Client(
-                    timeout=httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0),
+                    timeout=self._timeout,
                     trust_env=False,
                 ) as client:
                     response = client.request(
@@ -246,13 +279,13 @@ class OpenAICompatibleGatewayClient:
     ) -> AsyncGenerator[StreamChunk, None]:
         """流式调用聊天补全，逐 chunk yield StreamChunk。"""
         resolved_model = model or self.model
+        kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
         endpoint = adapter.get_endpoint()
-        timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=timeout_cfg, trust_env=False) as client:
+            async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
                 async with client.stream(
                     "POST",
                     f"{self.base_url}{endpoint}",
@@ -305,16 +338,16 @@ class OpenAICompatibleGatewayClient:
     ) -> Generator[StreamChunk, None, None]:
         """同步流式调用聊天补全，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
         resolved_model = model or self.model
+        kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
         endpoint = adapter.get_endpoint()
-        timeout_cfg = httpx.Timeout(connect=30.0, read=240.0, write=60.0, pool=60.0)
         start = time.perf_counter()
 
         last_stream_error: Exception | None = None
         for attempt in range(3):
             try:
-                with httpx.Client(timeout=timeout_cfg, trust_env=False) as client:
+                with httpx.Client(timeout=self._timeout, trust_env=False) as client:
                     with client.stream(
                         "POST",
                         f"{self.base_url}{endpoint}",

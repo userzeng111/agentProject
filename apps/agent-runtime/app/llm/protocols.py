@@ -160,12 +160,17 @@ class AnthropicAdapter(ProtocolAdapter):
         payload: dict[str, Any] = {
             "model": model,
             "messages": filtered_messages,
-            "max_tokens": 4096,
             "stream": stream,
         }
         if system_content is not None:
             payload["system"] = system_content
+        # 仅在 kwargs 未显式提供 max_tokens 时才使用默认值 4096
+        if "max_tokens" not in kwargs:
+            payload["max_tokens"] = 4096
         payload.update(kwargs)
+        # 若调用方显式传入 max_tokens=None，则不在 payload 中发送该字段
+        if payload.get("max_tokens") is None:
+            payload.pop("max_tokens", None)
         return payload
 
     def parse_completion_response(self, response_json: dict[str, Any]) -> str:

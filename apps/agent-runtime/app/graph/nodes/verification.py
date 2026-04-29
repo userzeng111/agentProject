@@ -79,6 +79,19 @@ def review_verification(
             )
             trace = list(state.get("auto_review_trace") or [])
             force_manual = True
+        # auto_review 达到修订上限时自动强制通过，避免中断到人工审核
+        if not decision.approved and policy.allow_self_revisions and not force_manual:
+            max_revisions = max(policy.get_max_auto_revisions("verification_review"), 0)
+            if state.get("verification_revision_count", 0) >= max_revisions:
+                logger.warning(
+                    "验证审核节点: auto_review 达到修订上限 %d，自动强制通过",
+                    max_revisions,
+                )
+                return {
+                    "approved": True,
+                    "review_comment": decision.comment or "自动审核达到修订上限，强制通过。",
+                    "auto_review_trace": trace,
+                }
         if force_manual or should_interrupt_manual_review(
             approved=decision.approved,
             policy=policy,

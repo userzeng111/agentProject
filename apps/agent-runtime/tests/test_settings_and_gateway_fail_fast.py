@@ -37,6 +37,30 @@ class StubRawGatewayClient(OpenAICompatibleGatewayClient):
         return self.raw_response
 
 
+class TimeoutCaptureGatewayClient(OpenAICompatibleGatewayClient):
+    """用于捕获实际传入 httpx 的超时对象的 GatewayClient 子类。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.captured_timeout = None
+
+    def _request(self, method, path, json=None):
+        # 通过直接创建 Client 来捕获 timeout 对象
+        import httpx
+        client = httpx.Client(timeout=self._timeout, trust_env=False)
+        self.captured_timeout = client.timeout
+        client.close()
+        # 返回一个伪造的 Response 避免后续逻辑报错
+        class FakeResponse:
+            status_code = 200
+            content = b'{"choices":[{"message":{"content":"{}"}}]}'
+            text = content.decode()
+            def json(self):
+                import json
+                return json.loads(self.content)
+        return FakeResponse()
+
+
 class SettingsAndGatewayFailFastTests(unittest.TestCase):
     def test_complete_json_extracts_json_from_fenced_response_with_extra_text(self) -> None:
         client = StubRawGatewayClient(
@@ -195,6 +219,65 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                         style_profile_id="wozhenmeixiangchongshengya",
                     )
                 )
+
+
+    def test_gateway_client_default_timeout(self):
+        client = TimeoutCaptureGatewayClient(
+            base_url="http://example.com", api_key="test-key", model="test-model"
+        )
+        client._request("GET", "/models")
+        self.assertEqual(client.captured_timeout.connect, 30.0)
+        self.assertEqual(client.captured_timeout.read, 240.0)
+        self.assertEqual(client.captured_timeout.write, 60.0)
+        self.assertEqual(client.captured_timeout.pool, 60.0)
+
+    def test_gateway_client_custom_dict_timeout(self):
+        client = TimeoutCaptureGatewayClient(
+            base_url="http://example.com",
+            api_key="test-key",
+            model="test-model",
+            timeout={"connect": 5.0, "read": 600.0, "write": 10.0, "pool": 15.0},
+        )
+        client._request("GET", "/models")
+        self.assertEqual(client.captured_timeout.connect, 5.0)
+        self.assertEqual(client.captured_timeout.read, 600.0)
+        self.assertEqual(client.captured_timeout.write, 10.0)
+        self.assertEqual(client.captured_timeout.pool, 15.0)
+
+    def test_gateway_client_custom_httpx_timeout(self):
+        import httpx
+        custom = httpx.Timeout(connect=1.0, read=2.0, write=3.0, pool=4.0)
+        client = TimeoutCaptureGatewayClient(
+            base_url="http://example.com",
+            api_key="test-key",
+            model="test-model",
+            timeout=custom,
+        )
+        client._request("GET", "/models")
+        self.assertEqual(client.captured_timeout.connect, 1.0)
+        self.assertEqual(client.captured_timeout.read, 2.0)
+        self.assertEqual(client.captured_timeout.write, 3.0)
+        self.assertEqual(client.captured_timeout.pool, 4.0)
+
+    def test_story_engine_passes_timeout_from_settings(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="glm-5.1",
+                LLM_API_KEY="test-key",
+                LLM_TIMEOUT_CONNECT="10.0",
+                LLM_TIMEOUT_READ="500.0",
+                LLM_TIMEOUT_WRITE="20.0",
+                LLM_TIMEOUT_POOL="25.0",
+            )
+            engine = StoryEngine(settings)
+            self.assertIsNotNone(engine.gateway_client)
+            # 直接检查 StoryEngine 创建的 gateway_client 的超时属性
+            self.assertEqual(engine.gateway_client._timeout.connect, 10.0)
+            self.assertEqual(engine.gateway_client._timeout.read, 500.0)
+            self.assertEqual(engine.gateway_client._timeout.write, 20.0)
+            self.assertEqual(engine.gateway_client._timeout.pool, 25.0)
 
 
 if __name__ == "__main__":

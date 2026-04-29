@@ -216,7 +216,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         self.assertEqual(result["__interrupt__"][0].value["revision_count"], 0)
         self.assertEqual(engine.revision_comments, [])
 
-    def test_auto_review_reject_after_one_self_revision_interrupts_for_manual_review(self) -> None:
+    def test_auto_review_reject_after_one_self_revision_auto_passes(self) -> None:
         engine = FakeEngine()
         decisions = [
             ReviewDecision(
@@ -254,9 +254,8 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             config={"configurable": {"thread_id": "task-auto-review-2"}},
         )
 
-        self.assertIn("__interrupt__", result)
-        self.assertEqual(result["__interrupt__"][0].value["type"], "outline_review")
-        self.assertEqual(result["__interrupt__"][0].value["revision_count"], 1)
+        # 达到 max_auto_revisions=1 后自动强制通过，不再中断到人工审核
+        self.assertNotIn("__interrupt__", result)
         self.assertEqual(engine.revision_comments, ["先自动修订一次。"])
 
     def test_outline_stage_can_override_global_auto_revision_limit(self) -> None:
@@ -298,9 +297,8 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             config={"configurable": {"thread_id": "task-auto-review-3"}},
         )
 
-        self.assertIn("__interrupt__", result)
-        self.assertEqual(result["__interrupt__"][0].value["type"], "outline_review")
-        self.assertEqual(result["__interrupt__"][0].value["revision_count"], 1)
+        # outline_max_auto_revisions=1 达到上限后自动强制通过，不再中断
+        self.assertNotIn("__interrupt__", result)
         self.assertEqual(engine.revision_comments, ["先自动修订一次。"])
 
     def test_short_story_chapter_word_min_is_preserved(self) -> None:

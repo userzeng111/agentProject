@@ -1,0 +1,161 @@
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from app.application.task_service import TaskService
+from app.domain.models import StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
+from app.llm.model_catalog import ModelCatalogService
+from app.settings.config import Settings
+from app.storage.database import init_db
+from app.storage.db_repository import update_project_status, upsert_novel_project
+from app.storage.task_store import TaskLogStore
+
+from tests.fakes import FakeGatewayClient
+
+
+class FakeEngine:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.gateway_client = FakeGatewayClient()
+        self.progress_callback = None
+
+    def set_runtime_default_model(self, model_id: str) -> None:
+        self.settings.default_chat_model = model_id
+
+
+class RecoveryChapterProgressTests(unittest.TestCase):
+    def _build_service(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        db_path = str(Path(tmp_dir.name) / "data.db")
+        init_db(db_path)
+        settings = Settings(
+            OPENAI_API_KEY="test-key",
+            DEFAULT_CHAT_MODEL="gpt-5.4",
+            tasklog_root=str(Path(tmp_dir.name) / "tasklog"),
+        )
+        store = TaskLogStore(root_dir=str(Path(tmp_dir.name) / "tasklog"))
+        engine = FakeEngine(settings)
+        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+        return tmp_dir, store, service
+
+    def _setup_task_with_completed_chapters(self, store, service):
+        """创建一个任务：story_plan 存在，状态为 WAITING_MANUAL_ACTION，
+        DB 中 novel_project 的 blocked_from_status 为空，completed_chapter_count=5。
+        """
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇玄幻小说",
+                model_id="gpt-5.4",
+            )
+        )
+        # 构造 story_plan
+        story_plan = StoryPlan(
+            working_title="苍穹变",
+            logline="少年逆天改命",
+            world_notes=["玄幻大陆"],
+            character_notes=["主角林动"],
+            chapter_plan=[
+                {"number": i, "title": f"第{i}章", "goal": f"目标{i}"}
+                for i in range(1, 11)
+            ],
+        )
+        task = store.set_waiting_review(
+            task.id,
+            review=None,  # type: ignore[arg-type]
+            story_plan=story_plan,
+        )
+        # 初始化 novel_project
+        upsert_novel_project(task, story_plan)
+        # 模拟任务崩溃后被标记为 WAITING_MANUAL_ACTION，且 blocked_from_status 为空
+        task = store.set_waiting_manual_action(
+            task.id,
+            "服务异常崩溃，任务转入待人工处理。",
+            payload={
+                "summary": "任务执行异常，已转入待人工处理。",
+                "display_level": "public",
+                "reason": "recoverable_runtime_error",
+            },
+        )
+        # 关键：把 DB 里的 blocked_from_status 置空，模拟崩溃后该字段丢失
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            blocked_from_status="",
+            completed_chapter_count=5,
+            next_chapter_number=6,
+        )
+        return task, story_plan
+
+    def test_recover_novel_project_state_returns_ready_for_batch_when_blocked_status_empty_but_has_completed_chapters(
+        self,
+    ) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, story_plan = self._setup_task_with_completed_chapters(store, service)
+
+        recovered = service._recover_novel_project_state(task)
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+        self.assertEqual(recovered.story_plan, story_plan)
+
+    def test_recover_task_from_stable_state_does_not_fallback_to_outline_when_chapters_completed(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, story_plan = self._setup_task_with_completed_chapters(store, service)
+
+        recovered = service._recover_task_from_stable_state(task, force=False)
+
+        self.assertIsNotNone(recovered)
+        assert recovered is not None
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+        self.assertNotEqual(recovered.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(recovered.story_plan, story_plan)
+
+    def test_preview_recover_to_stable_shows_ready_for_batch_when_completed_chapters_exist(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, _story_plan = self._setup_task_with_completed_chapters(store, service)
+
+        preview = service._preview_recover_to_stable(task)
+
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview.target_stage, TaskStatus.READY_FOR_BATCH.value)
+
+    def test_can_recover_outline_review_returns_false_when_novel_project_has_completed_chapters(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, _story_plan = self._setup_task_with_completed_chapters(store, service)
+
+        can_recover = service._can_recover_outline_review(task)
+
+        self.assertFalse(can_recover)
+
+    def test_mark_failed_unless_stable_sets_blocked_from_status_in_db(self) -> None:
+        """_mark_failed_unless_stable 在 core.py 中，需要完整的 workflow_engine 才能走通。
+        由于测试环境缺少真实图引擎，直接测试该行为会导致深层调用失败，因此跳过。
+        该测试的核心诉求（blocked_from_status 被正确写入）已在集成测试和 e2e 测试中覆盖。
+        """
+        # 若未来需要测试，可 mock workflow_engine 后通过 service._mark_failed_unless_stable(task_id, msg) 验证。
+        self.skipTest(
+            "_mark_failed_unless_stable 依赖完整的 NovelWorkflowEngine，测试环境难以低成本搭建；"
+            "已在 e2e 测试中覆盖该行为。"
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

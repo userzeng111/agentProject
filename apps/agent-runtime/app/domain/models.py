@@ -586,9 +586,9 @@ class AutoReviewPolicy(BaseModel):
     auto_escalate_on_low_score: bool = True  # 低于阈值时升级人工
     outline_auto_escalate_on_critical: bool | None = None
     chapter_auto_escalate_on_critical: bool | None = None
-    # Agent 模型选择
-    auditor_model: str = "MiniMax-M2.7-highspeed"
-    synthesis_model: str = "MiniMax-M2.7-highspeed"
+    # Agent 模型选择（空字符串表示跟随任务创作模型，由调用方注入）
+    auditor_model: str = ""
+    synthesis_model: str = ""
     # 多 Agent 并行
     parallel_sub_agents: bool = True  # 子 Agent 是否并行执行
     max_sub_agents: int = 3  # 最大并行子 Agent 数

@@ -54,6 +54,23 @@ class Settings(BaseSettings):
         default={},
         validation_alias=AliasChoices("MODEL_PROTOCOL_OVERRIDES"),
     )
+    # LLM HTTP 超时配置（秒）
+    llm_timeout_connect: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices("LLM_TIMEOUT_CONNECT"),
+    )
+    llm_timeout_read: float = Field(
+        default=240.0,
+        validation_alias=AliasChoices("LLM_TIMEOUT_READ"),
+    )
+    llm_timeout_write: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("LLM_TIMEOUT_WRITE"),
+    )
+    llm_timeout_pool: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices("LLM_TIMEOUT_POOL"),
+    )
 
     @field_validator("model_protocol_overrides", mode="before")
     @classmethod

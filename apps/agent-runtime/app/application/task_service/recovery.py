@@ -287,6 +287,9 @@ class TaskServiceRecoveryMixin:
                     )
                 elif blocked_status in _STAGE_LABELS:
                     target_stage = blocked_status
+                if not target_stage and project is not None and int(project.completed_chapter_count or 0) > 0 and task.story_plan is not None:
+                    target_stage = TaskStatus.READY_FOR_BATCH.value
+                    target_stage_label = "恢复到可继续创作（已有完成章节）"
             if not target_stage:
                 if self._can_recover_verification_review(task):
                     target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
@@ -526,6 +529,23 @@ class TaskServiceRecoveryMixin:
                 )
                 return snapshot
 
+        if (
+            task.status is TaskStatus.WAITING_MANUAL_ACTION
+            and task.story_plan is not None
+            and project is not None
+            and int(project.completed_chapter_count or 0) > 0
+        ):
+            snapshot = self.store.set_ready_for_batch(task.id, task.story_plan)
+            update_project_status(
+                task.id,
+                status=TaskStatus.READY_FOR_BATCH.value,
+                active_batch_no=None,
+                active_continue_request_id="",
+                blocked_from_status="",
+                current_generating_chapter_number=None,
+            )
+            return snapshot
+
         return None
 
     def _retry_task_from_original_input(self, task: TaskRecord, action_model_id: str | None = None) -> TaskRecord | None:
@@ -559,6 +579,11 @@ class TaskServiceRecoveryMixin:
         if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
             return task.pending_review is None or task.story_plan is None
         if task.status is TaskStatus.WAITING_MANUAL_ACTION:
+            if self._has_novel_project(task.id):
+                from app.storage.db_repository import get_novel_project
+                project = get_novel_project(task.id)
+                if project is not None and int(project.completed_chapter_count or 0) > 0:
+                    return False
             return task.pending_review is None and self._load_story_plan_from_history(task.id) is not None
         return (
             task.status is TaskStatus.PLANNING
