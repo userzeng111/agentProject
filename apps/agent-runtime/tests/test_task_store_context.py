@@ -56,6 +56,27 @@ class TaskStoreContextTests(unittest.TestCase):
             self.assertEqual(len(payload["messages"]), 3)
             self.assertEqual(payload["messages"][1]["content"], "a1")
 
+    def test_read_text_rejects_cross_task_tasklog_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            first = store.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="第一个任务",
+                    model_id="gpt-5.4",
+                )
+            )
+            second = store.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="第二个任务",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            with self.assertRaises(FileNotFoundError):
+                store.read_text(second.id, f"tasklog/runs/{first.id}/request.md")
+
 
 if __name__ == "__main__":
     unittest.main()

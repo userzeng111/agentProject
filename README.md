@@ -6,7 +6,8 @@
 
 - Python 3.11+
 - Node.js 18+
-- pnpm（前端包管理）
+- uv（后端依赖安装）
+- npm（前端包管理）
 
 ## 快速启动
 
@@ -20,9 +21,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # 安装依赖
-pip install -r requirements.txt
-# 或
-pip install -e .
+uv sync --locked --dev
 
 # 配置环境变量（复制示例文件并填写 API Key）
 cp .env.example .env
@@ -45,7 +44,7 @@ curl http://127.0.0.1:8000/api/health
 cd apps/web
 
 # 安装依赖
-npm install
+npm ci
 
 # 配置前端 API 地址（如需修改）
 # 当前默认会连接 http://127.0.0.1:8000
@@ -64,8 +63,9 @@ npm run build
 ```
 
 说明：
-- 当前仓库执行 `npm run lint` 时会进入 Next.js ESLint 初始化交互，不适合作为现成校验命令。
-- 需要做前端基础校验时，优先使用 `npm run build`。
+- 前端 lint 使用非交互式 ESLint CLI：`npm run lint`。
+- 前端构建校验：`npm run build`。
+- 前端单元测试使用 Node.js 内置测试运行器：`npm test`。
 - 当前前端开发态与构建态产物目录已隔离：
   - `npm run dev` 使用 `apps/web/.next-dev`
   - `npm run build` / `npm run start` 使用 `apps/web/.next`
@@ -141,7 +141,7 @@ apps/
 │   │   ├── storage/      # 任务持久化
 │   │   └── settings/     # 配置
 │   ├── tests/            # 后端测试
-│   └── .env              # 环境变量（需自行创建）
+│   └── .env.example      # 环境变量示例
 │
 └── web/                  # Next.js 前端
     └── src/

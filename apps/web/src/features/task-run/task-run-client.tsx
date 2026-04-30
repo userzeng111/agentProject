@@ -486,7 +486,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const thinkingGroups = useMemo(() => {
     if (!workspace) return [];
     return buildThinkingGroups(workspace.recent_events, workspace.meta.status);
-  }, [workspace?.recent_events, workspace?.meta.status]);
+  }, [workspace]);
 
   // 自动展开新到达的活跃思考组（用户未手动折叠过的）
   useEffect(() => {
@@ -1348,7 +1348,14 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       <Card>
         <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
-            <Tabs value={activeTab} onChange={(_, v) => setActiveTab(v)}>
+            <Tabs
+              value={activeTab}
+              onChange={(_, v) => setActiveTab(v)}
+              variant="scrollable"
+              scrollButtons
+              allowScrollButtonsMobile
+              aria-label="任务运行详情标签页"
+            >
               <Tab label={`实时日志 (${systemStages.length})`} />
               <Tab label={`章节进度 (${chapterProgress.length})`} />
               <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />

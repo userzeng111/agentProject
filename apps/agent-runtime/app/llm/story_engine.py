@@ -14,7 +14,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import ValidationError
 
 from app.domain.models import ChapterDraft, ChapterPlan, DraftResult, StoryPlan, TaskMode
-from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+from app.llm.gateway_client import (
+    GatewayClientError,
+    OpenAICompatibleGatewayClient,
+    StreamInterruptedAfterStartError,
+)
 from app.settings.config import Settings
 
 logger = get_logger(__name__)
@@ -266,6 +270,27 @@ class StoryEngine(BaseAgent):
         candidate = (model or "").strip()
         return candidate or self._runtime_default_model or self.settings.default_chat_model
 
+    @staticmethod
+    def _positive_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    def _outline_generation_max_tokens(self, spec: dict[str, Any]) -> int:
+        chapter_count = self._positive_int(spec.get("target_chapter_count"), 0)
+        if chapter_count <= 0:
+            chapter_count = self._positive_int(spec.get("chapter_count_max"), 80)
+        return min(12000, max(4096, chapter_count * 96 + 2048))
+
+    def _chapter_generation_max_tokens(self, spec: dict[str, Any], *, chapter_count: int = 1) -> int:
+        chapter_word_min = self._positive_int(spec.get("chapter_word_min"), self._positive_int(spec.get("target_words"), 1800))
+        chapter_word_max = self._positive_int(spec.get("chapter_word_max"), int(chapter_word_min * 1.3))
+        target_words = max(chapter_word_min, chapter_word_max)
+        effective_chapters = max(int(chapter_count or 1), 1)
+        return min(16000, max(4096, effective_chapters * (target_words * 2 + 2048)))
+
     def set_runtime_default_model(self, model_id: str) -> None:
         """设置运行时默认模型覆盖。"""
         self._runtime_default_model = model_id
@@ -315,6 +340,7 @@ class StoryEngine(BaseAgent):
                 stage="planning",
                 exchange_label="outline-revision",
                 exchange_callback=active_exchange_callback,
+                max_tokens=self._outline_generation_max_tokens(spec),
             )
 
         # 首次生成
@@ -341,6 +367,7 @@ class StoryEngine(BaseAgent):
             stage="planning",
             exchange_label="outline",
             exchange_callback=active_exchange_callback,
+            max_tokens=self._outline_generation_max_tokens(spec),
         )
 
     @staticmethod
@@ -369,6 +396,7 @@ class StoryEngine(BaseAgent):
         summary = story_plan["logline"]
         chapter_plan = story_plan["chapter_plan"]
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
+        chapter_max_tokens = self._chapter_generation_max_tokens(spec)
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
@@ -425,6 +453,7 @@ class StoryEngine(BaseAgent):
                 exchange_label=f"chapter-{item['number']:02d}",
                 exchange_callback=active_exchange_callback,
                 progress_callback=active_progress_callback,
+                max_tokens=chapter_max_tokens,
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(chapter_payload))
             chapters.append(chapter_draft)
@@ -479,6 +508,7 @@ class StoryEngine(BaseAgent):
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
+        chapter_max_tokens = self._chapter_generation_max_tokens(spec)
         batch_size = int(requested_batch_size or 0)
         if batch_size <= 0:
             batch_size = self._chapter_batch_size(
@@ -549,6 +579,7 @@ class StoryEngine(BaseAgent):
                 exchange_label=f"chapter-{plan['number']:02d}",
                 exchange_callback=active_exchange_callback,
                 progress_callback=active_progress_callback,
+                max_tokens=chapter_max_tokens,
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(payload))
 
@@ -592,6 +623,7 @@ class StoryEngine(BaseAgent):
         title = story_plan.get("working_title", "")
         summary = story_plan.get("logline", "")
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
+        chapter_max_tokens = self._chapter_generation_max_tokens(spec, chapter_count=max(len(current_pair), 1))
         completed_summaries = [f"{ch['title']}:{ch['summary']}" for ch in completed_chapters]
         completed_text = "；".join(completed_summaries) if completed_summaries else "无"
 
@@ -621,6 +653,7 @@ class StoryEngine(BaseAgent):
             exchange_label="chapter-pair-revision",
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
+            max_tokens=chapter_max_tokens,
         )
         items = payload if isinstance(payload, list) else [payload]
         return [ChapterDraft.model_validate(self._normalize_chapter_payload(item)) for item in items]
@@ -649,7 +682,7 @@ class StoryEngine(BaseAgent):
             "full-text-verifier",
             title=title,
             chapter_plan=" / ".join(f"第{ch['number']}章 {ch['title']}" for ch in chapter_plan),
-            full_text=full_text[:8000],  # 截断避免超长
+            full_text=full_text,
         )
 
         self._require_gateway_client()
@@ -762,6 +795,7 @@ class StoryEngine(BaseAgent):
         stage: str,
         exchange_label: str,
         exchange_callback: Callable[[dict[str, Any]], None] | None,
+        max_tokens: int | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         cache_key = self._response_cache_key(model=model, request_messages=request_messages)
         cached_payload = self.response_cache.get(cache_key)
@@ -782,7 +816,10 @@ class StoryEngine(BaseAgent):
 
         if self.gateway_client is None:
             raise GatewayClientError("当前没有可用的模型网关。")
-        payload = self.gateway_client.complete_json(request_messages, model=model)
+        request_kwargs: dict[str, Any] = {}
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        payload = self.gateway_client.complete_json(request_messages, model=model, **request_kwargs)
         self.response_cache.set(cache_key, payload)
         conversation_history = self._append_assistant_message(request_messages, payload)
         self._emit_exchange(
@@ -806,6 +843,7 @@ class StoryEngine(BaseAgent):
         exchange_label: str,
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         """流式调用 LLM，实时发射思考链事件，最终解析 JSON。
 
@@ -845,7 +883,11 @@ class StoryEngine(BaseAgent):
                 progress_callback=active_progress,
                 stage=stage,
                 unit_id=exchange_label,
+                max_tokens=max_tokens,
             )
+        except StreamInterruptedAfterStartError:
+            logger.warning("流式响应已开始后中断，不执行非流式重放。")
+            raise
         except (GatewayClientError, Exception) as exc:
             # fallback 到非流式
             logger.warning("流式调用失败，fallback 到非流式: %s", exc)
@@ -855,6 +897,7 @@ class StoryEngine(BaseAgent):
                 stage=stage,
                 exchange_label=exchange_label,
                 exchange_callback=exchange_callback,
+                max_tokens=max_tokens,
             )
 
         # 解析 JSON
@@ -882,6 +925,7 @@ class StoryEngine(BaseAgent):
         stage: str,
         exchange_label: str,
         exchange_callback: Callable[[dict[str, Any]], None] | None,
+        max_tokens: int | None = None,
     ) -> StoryPlan:
         attempt_messages = request_messages
         for attempt in range(2):
@@ -893,6 +937,7 @@ class StoryEngine(BaseAgent):
                     exchange_label=exchange_label if attempt == 0 else f"{exchange_label}-retry",
                     exchange_callback=exchange_callback,
                     progress_callback=None,
+                    max_tokens=max_tokens,
                 )
                 return StoryPlan.model_validate(payload)
             except (GatewayClientError, ValidationError):
@@ -947,7 +992,7 @@ class StoryEngine(BaseAgent):
 
     def _reference_excerpt(self, text: str) -> str:
         cleaned = " ".join(text.strip().split())
-        return cleaned[:80] if cleaned else "无"
+        return cleaned if cleaned else "无"
 
     def _context_reference(self, reference_text: str, context_packet: dict[str, Any] | None) -> str:
         if isinstance(context_packet, dict):

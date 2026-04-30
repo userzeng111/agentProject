@@ -38,11 +38,12 @@ class FakeGatewayClient:
         self.responses = list(responses) if responses else []
         self.calls: list[dict[str, Any]] = []
 
-    def complete_json(self, messages, model=None):
+    def complete_json(self, messages, model=None, **kwargs):
         self.calls.append(
             {
                 "messages": [dict(item) for item in messages],
                 "model": model,
+                "kwargs": dict(kwargs),
             }
         )
         return self.responses[len(self.calls) - 1]

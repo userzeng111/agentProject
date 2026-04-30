@@ -16,6 +16,7 @@ import {
   TaskRecord,
   WorkspaceResponse,
 } from "@/lib/types";
+import { createChatSseParser, getStreamChatErrorMessage } from "@/lib/stream-chat-events.mjs";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -330,12 +331,25 @@ export async function streamChat(
   onError: (message: string) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/chat/stream`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ messages, model, stream: true, rag_enabled: ragEnabled }),
-    signal,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages, model, stream: true, rag_enabled: ragEnabled }),
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      console.log("streamChat 用户主动取消");
+      onDone(null);
+      return;
+    }
+    const msg = getStreamChatErrorMessage(err);
+    console.error("streamChat 网络请求异常:", msg);
+    onError(msg);
+    return;
+  }
 
   if (!response.ok) {
     let errorMessage = "流式请求失败";
@@ -358,54 +372,27 @@ export async function streamChat(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  const parser = createChatSseParser({
+    onChunk,
+    onError: (message: string) => {
+      console.error("streamChat 收到错误事件:", message);
+      onError(message);
+    },
+  });
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("event:")) {
-          const eventType = trimmed.slice(6).trim();
-          if (eventType === "chat.error") {
-            // 下一个 data: 行包含错误信息，继续读取下一行
-            continue;
-          }
-          continue;
-        }
-        if (trimmed.startsWith("data:")) {
-          const jsonStr = trimmed.slice(5).trim();
-          try {
-            const data = JSON.parse(jsonStr);
-            if (data.error) {
-              const errorMsg = typeof data.error === "string" ? data.error : JSON.stringify(data.error);
-              console.error("streamChat 收到错误事件:", errorMsg);
-              onError(errorMsg);
-              return;
-            }
-            if (data.content !== undefined || data.reasoning_content !== undefined) {
-              onChunk(data);
-            }
-            if (data.finish_reason) {
-              onChunk(data);
-            }
-            if (data.usage) {
-              onChunk(data);
-            }
-          } catch {
-            // 忽略解析失败的行
-          }
-        }
+      const shouldContinue = parser.push(decoder.decode(value, { stream: true }));
+      if (!shouldContinue) {
+        return;
       }
     }
 
+    if (!parser.flush()) {
+      return;
+    }
     onDone({ model: model ?? "" });
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {

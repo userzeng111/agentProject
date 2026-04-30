@@ -94,6 +94,7 @@ export function AppHeader() {
                   key={link.href}
                   component={Link}
                   href={link.href}
+                  aria-label={isMobile ? link.label : undefined}
                   startIcon={isMobile ? link.icon : undefined}
                   sx={{
                     color: isActive ? "primary.main" : "text.secondary",

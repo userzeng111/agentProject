@@ -2,6 +2,8 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
+import httpx
+
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 
 
@@ -136,3 +138,32 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             result = client.complete([{"role": "user", "content": "test"}])
             self.assertEqual(result, "成功结果")
             self.assertEqual(call_count, 2)
+
+    def test_network_failure_raises_gateway_error_not_unbound_local_error(self) -> None:
+        """网络层失败时 complete 应保留 GatewayClientError，而不是读取未赋值 response。"""
+        client = self._make_client()
+
+        with patch.object(
+            client,
+            "_request",
+            side_effect=GatewayClientError("网关请求失败：连接失败"),
+        ):
+            with self.assertRaises(GatewayClientError) as ctx:
+                client.complete([{"role": "user", "content": "test"}])
+
+        self.assertIn("网关请求失败", str(ctx.exception))
+
+    def test_request_network_failure_raises_gateway_error(self) -> None:
+        client = self._make_client()
+
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.__enter__ = MagicMock(return_value=mock_client)
+            mock_client.__exit__ = MagicMock(return_value=False)
+            mock_client.request = MagicMock(side_effect=httpx.ConnectError("连接失败"))
+            mock_client_cls.return_value = mock_client
+
+            with self.assertRaises(GatewayClientError) as ctx:
+                client._request("POST", "/chat/completions", json={})
+
+        self.assertIn("网关请求失败", str(ctx.exception))

@@ -289,7 +289,17 @@ class TaskServiceRecoveryMixin:
                     target_stage = blocked_status
                 if not target_stage and project is not None and int(project.completed_chapter_count or 0) > 0 and task.story_plan is not None:
                     target_stage = TaskStatus.READY_FOR_BATCH.value
-                    target_stage_label = "恢复到可继续创作（已有完成章节）"
+                    next_chapter = int(project.next_chapter_number or (int(project.completed_chapter_count or 0) + 1))
+                    target_chapter_number = next_chapter if next_chapter > 0 else None
+            if not target_stage:
+                history_resume = self._history_ready_resume_state(task)
+                if history_resume is not None:
+                    story_plan, completed_chapters = history_resume
+                    completed_count = len(completed_chapters)
+                    total_chapters = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan))
+                    target_stage = TaskStatus.READY_FOR_BATCH.value
+                    if completed_count < total_chapters:
+                        target_chapter_number = completed_count + 1
             if not target_stage:
                 if self._can_recover_verification_review(task):
                     target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
@@ -325,6 +335,8 @@ class TaskServiceRecoveryMixin:
                 target_stage_label = (
                     f"恢复到第 {target_chapter_numbers[0]}-{target_chapter_numbers[-1]} 章待审核"
                 )
+        elif target_stage == TaskStatus.READY_FOR_BATCH.value and target_chapter_number is not None:
+            target_stage_label = f"恢复到可继续创作（下一章：第 {target_chapter_number} 章）"
 
         return RecoveryPreview(
             target_stage=target_stage,
@@ -410,6 +422,9 @@ class TaskServiceRecoveryMixin:
         novel_recovered = self._recover_novel_project_state(task)
         if novel_recovered is not None:
             return novel_recovered
+        history_recovered = self._recover_ready_for_batch_from_history(task)
+        if history_recovered is not None:
+            return history_recovered
         if self._can_recover_outline_review(task):
             return self._recover_outline_review(task)
         if self._can_recover_chapter_review(task, force=force):
@@ -417,6 +432,97 @@ class TaskServiceRecoveryMixin:
         if self._can_recover_verification_review(task, force=force):
             return self._recover_verification_review(task)
         return None
+
+    def _history_ready_resume_state(self, task: TaskRecord) -> tuple[StoryPlan, list[dict[str, Any]]] | None:
+        story_plan = task.story_plan or self._load_story_plan_from_history(task.id)
+        if story_plan is None:
+            return None
+        completed_chapters = self._load_completed_chapters_until_gap(
+            task.id,
+            max_chapters=int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0),
+        )
+        if not completed_chapters:
+            return None
+        return story_plan, completed_chapters
+
+    def _recover_ready_for_batch_from_history(self, task: TaskRecord) -> TaskRecord | None:
+        if task.status is not TaskStatus.WAITING_MANUAL_ACTION or task.pending_review is not None:
+            return None
+        history_resume = self._history_ready_resume_state(task)
+        if history_resume is None:
+            return None
+
+        story_plan, completed_chapters = history_resume
+        completed_count = len(completed_chapters)
+        next_chapter_number = completed_count + 1
+
+        from app.storage.db_repository import (
+            seed_outline_chapters,
+            update_project_status,
+            upsert_novel_project,
+            upsert_outline_chapter_draft,
+        )
+
+        current_task = self.store.get(task.id)
+        current_task.story_plan = story_plan
+        self.store.save(current_task)
+        upsert_novel_project(current_task, story_plan)
+        seed_outline_chapters(task.id, story_plan)
+
+        for chapter in completed_chapters:
+            chapter_number = int(chapter.get("number") or 0)
+            if chapter_number <= 0:
+                continue
+            title = str(chapter.get("title") or f"第{chapter_number}章")
+            summary = str(chapter.get("summary") or "")
+            content = str(chapter.get("content") or "")
+            self._write_chapter_file(
+                task.id,
+                chapter_number=chapter_number,
+                title=title,
+                summary=summary,
+                content=content,
+            )
+            upsert_outline_chapter_draft(
+                task.id,
+                chapter_number=chapter_number,
+                title=title,
+                summary=summary,
+                batch_no=0,
+                md_ref=f"tasklog/runs/{task.id}/chapters/{chapter_number:02d}.md",
+                json_ref=f"tasklog/runs/{task.id}/chapters/{chapter_number:02d}.json",
+                content=content,
+            )
+
+        snapshot = self.store.set_ready_for_batch(
+            task.id,
+            story_plan,
+            message=f"已从历史大纲和 {completed_count} 章章节快照恢复，可从第 {next_chapter_number} 章继续创作。",
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.READY_FOR_BATCH.value,
+            completed_chapter_count=completed_count,
+            next_chapter_number=next_chapter_number,
+            active_batch_no=None,
+            active_continue_request_id="",
+            blocked_from_status="",
+            current_generating_chapter_number=None,
+        )
+        self.store.append_event(
+            task.id,
+            stage="ready_for_batch",
+            message=f"已从历史快照重建大纲和前 {completed_count} 章，可继续生成第 {next_chapter_number} 章。",
+            event_type="task.recovered",
+            payload={
+                "summary": f"任务已恢复到可继续创作，下一章为第 {next_chapter_number} 章。",
+                "display_level": "public",
+                "source": "outline_and_chapter_history",
+                "completed_chapter_count": completed_count,
+                "next_chapter_number": next_chapter_number,
+            },
+        )
+        return self.store.save(self.store.get(snapshot.id))
 
     def _recover_novel_project_state(self, task: TaskRecord) -> TaskRecord | None:
         from app.storage.db_repository import (
@@ -808,6 +914,21 @@ class TaskServiceRecoveryMixin:
             items.append(payload.model_dump(mode="json"))
         return items
 
+    def _load_completed_chapters_until_gap(self, task_id: str, max_chapters: int = 0) -> list[dict[str, Any]]:
+        upper_bound = max(int(max_chapters or 0), 0)
+        if upper_bound <= 0:
+            upper_bound = 1000
+        items: list[dict[str, Any]] = []
+        for number in range(1, upper_bound + 1):
+            payload = self._load_chapter_draft_from_history(task_id, number)
+            if payload is None:
+                break
+            chapter_number = int(payload.get("number") or number)
+            if chapter_number != number:
+                break
+            items.append(payload)
+        return items
+
     def _load_chapter_draft_from_history(self, task_id: str, chapter_number: int) -> dict[str, Any] | None:
         relative_path = f"context/drafting/chapter-{chapter_number:02d}-history.json"
         try:
@@ -921,14 +1042,25 @@ class TaskServiceRecoveryMixin:
                 }
             )
             if self.rag_service is not None:
+                chapter_batch_size = max(len(chapter_pair), 1)
+                try:
+                    chapter_result = self.rag_service.search_for_story_chapter(
+                        spec=seed.get("normalized_spec") or {},
+                        story_plan=seed.get("story_plan"),
+                        batch_index=review.batch_index or 0,
+                        batch_size=chapter_batch_size,
+                        completed_chapters=completed_chapters,
+                    )
+                except TypeError:
+                    chapter_result = self.rag_service.search_for_story_chapter(
+                        spec=seed.get("normalized_spec") or {},
+                        story_plan=seed.get("story_plan"),
+                        batch_index=review.batch_index or 0,
+                        completed_chapters=completed_chapters,
+                    )
                 references.extend(
                     self.rag_service.build_reference_materials(
-                        self.rag_service.search_for_story_chapter(
-                            spec=seed.get("normalized_spec") or {},
-                            story_plan=seed.get("story_plan"),
-                            batch_index=review.batch_index or 0,
-                            completed_chapters=completed_chapters,
-                        ),
+                        chapter_result,
                         prefix="章节RAG",
                     )
                 )
@@ -1010,4 +1142,3 @@ class TaskServiceRecoveryMixin:
             return
         seed_values, as_node = seeded
         self.workflow_engine.update_state(self._config(task.id), seed_values, as_node=as_node)
-

@@ -6,7 +6,8 @@
     "dev": "npx next dev",
     "build": "npx next build",
     "start": "npx next start",
-    "lint": "npx next lint"
+    "test": "node --test",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@emotion/cache": "^11.14.0",

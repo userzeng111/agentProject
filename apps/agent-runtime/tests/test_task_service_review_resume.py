@@ -32,6 +32,34 @@ class FakeEngine:
         self.settings.default_chat_model = model_id
 
 
+class RecordingRagService:
+    def __init__(self) -> None:
+        self.chapter_calls = []
+
+    def search_for_story_chapter(
+        self,
+        *,
+        spec,
+        story_plan,
+        batch_index,
+        batch_size=2,
+        completed_chapters,
+    ):
+        self.chapter_calls.append(
+            {
+                "spec": spec,
+                "story_plan": story_plan,
+                "batch_index": batch_index,
+                "batch_size": batch_size,
+                "completed_chapters": completed_chapters,
+            }
+        )
+        return object()
+
+    def build_reference_materials(self, result, *, prefix, start_priority=40):
+        return []
+
+
 class TaskServiceReviewResumeTests(unittest.TestCase):
     def _build_service(self):
         tmp_dir = tempfile.TemporaryDirectory()
@@ -156,6 +184,73 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         response = service.get_review(task.id)
         self.assertEqual(response.review_type, "chapter_pair_review")
         self.assertIsNotNone(response.outline_markdown)
+
+    def test_resume_seed_passes_actual_chapter_pair_size_to_rag_search(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        rag_service = RecordingRagService()
+        service.rag_service = rag_service
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇悬疑",
+                model_id="gpt-5.4",
+                target_words=6000,
+            )
+        )
+        task = store.get(task.id)
+        task.normalized_spec = {
+            "mode": "long_story",
+            "prompt": "写一篇长篇悬疑",
+            "genre": "",
+            "style": "",
+            "requested_target_words": 6000,
+            "target_words": 6000,
+            "audience": "",
+            "banned": "",
+            "title_hint": "",
+            "model_id": "gpt-5.4",
+        }
+        task.story_plan = StoryPlan(
+            working_title="雾中楼",
+            logline="主角调查旧楼失踪案。",
+            world_notes=[],
+            character_notes=[],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": number, "title": f"第{number}章", "goal": f"线索{number}"}
+                for number in range(1, 5)
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=1,
+            chapter_pair=[
+                {
+                    "number": 2,
+                    "title": "第二章",
+                    "summary": "调查展开",
+                    "content": "第二章正文",
+                },
+                {
+                    "number": 3,
+                    "title": "第三章",
+                    "summary": "发现矛盾",
+                    "content": "第三章正文",
+                },
+            ],
+            completed_count=1,
+            total_chapters=4,
+        )
+        store.save(task)
+
+        seed = service._resume_seed_state(store.get(task.id))
+
+        self.assertIsNotNone(seed)
+        self.assertEqual(rag_service.chapter_calls[0]["batch_size"], 2)
 
     def test_recover_task_marks_unrecoverable_task_waiting_manual_action(self) -> None:
         tmp_dir, store, service = self._build_service()

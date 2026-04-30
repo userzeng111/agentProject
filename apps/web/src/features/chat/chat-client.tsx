@@ -41,6 +41,7 @@ import { getModelCatalog, getRagSettings, streamChat } from "@/lib/api";
 import type { ChatStreamChunk, ChatMessage, ModelOption } from "@/lib/types";
 import {
   isGatewayBackedModel,
+  resolveChatSelectValue,
   resolveConversationModel,
   resolveDefaultChatModelId,
 } from "./model-selection.mjs";
@@ -415,6 +416,7 @@ export function ChatClient() {
   }, []);
 
   const selectableModels = models.filter((item) => isGatewayBackedModel(item));
+  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels, defaultModelId);
 
   const handleModelChange = useCallback(
     (modelId: string) => {
@@ -588,7 +590,7 @@ export function ChatClient() {
             select
             size="small"
             label="聊天模型"
-            value={currentModel || defaultModelId}
+            value={chatSelectValue}
             onChange={(event) => handleModelChange(event.target.value)}
             sx={{ minWidth: { xs: 160, sm: 220 } }}
             helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}

@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from app.application.task_service.core import TaskServiceCoreMixin
 from app.domain.models import (

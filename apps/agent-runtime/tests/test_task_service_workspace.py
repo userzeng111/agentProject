@@ -19,8 +19,8 @@ class FakeGatewayClient:
             {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
         ]
 
-    def complete_json(self, messages, model=None):
-        self.calls.append({"messages": [dict(item) for item in messages], "model": model})
+    def complete_json(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
         return {
             "working_title": "缓存命中测试标题",
             "logline": "缓存命中测试梗概",

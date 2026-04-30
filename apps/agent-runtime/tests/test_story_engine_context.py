@@ -8,11 +8,73 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from app.llm.gateway_client import GatewayClientError, StreamChunk
 from app.llm.story_engine import StoryEngine
 from app.settings.config import Settings
 
 
 from tests.fakes import FakeGatewayClient
+
+
+class StreamGatewayBase:
+    def _strip_markdown_fences(self, raw: str) -> str:
+        return raw.strip()
+
+    def _extract_first_json_value(self, text: str):
+        return None
+
+
+class StreamStartedThenFailsGateway(StreamGatewayBase):
+    def __init__(self) -> None:
+        self.stream_calls: list[dict] = []
+        self.complete_json_calls = 0
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.stream_calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        yield StreamChunk(reasoning_content="正在思考")
+        raise GatewayClientError("同步流式调用失败，状态码 504")
+
+    def complete_json(self, messages, model=None, **kwargs):
+        self.complete_json_calls += 1
+        return {
+            "number": 1,
+            "title": "不应回退",
+            "summary": "不应回退",
+            "content": "不应回退",
+        }
+
+
+class StreamFailsBeforeChunkGateway(StreamGatewayBase):
+    def __init__(self) -> None:
+        self.stream_calls: list[dict] = []
+        self.complete_json_calls = 0
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.stream_calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if False:
+            yield StreamChunk()
+        raise GatewayClientError("同步流式调用启动失败，状态码 504")
+
+    def complete_json(self, messages, model=None, **kwargs):
+        self.complete_json_calls += 1
+        return {
+            "number": 1,
+            "title": "启动前回退",
+            "summary": "启动前回退成功",
+            "content": "正文",
+        }
+
+
+class StreamSuccessGateway(StreamGatewayBase):
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.stream_calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.stream_calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        import json
+
+        yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False))
 
 
 class StoryEngineContextTests(unittest.TestCase):
@@ -128,6 +190,194 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("力量升级驱动", rendered_prompt)
             self.assertIn("2600 到 3380", rendered_prompt)
             self.assertNotIn("保留冷静克制的中文叙事风格", rendered_prompt)
+
+    def test_generate_chapter_pair_does_not_fallback_after_stream_started_then_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamStartedThenFailsGateway()
+            engine.gateway_client = gateway
+
+            with self.assertRaises(GatewayClientError):
+                engine.generate_chapter_pair(
+                    spec={
+                        "mode": "long_story",
+                        "creative_mode": "original",
+                        "novel_size": "long",
+                        "prompt": "玄幻大陆废材逆袭",
+                        "genre": "玄幻",
+                        "style": "热血逆袭",
+                        "chapter_word_min": 2600,
+                        "chapter_word_max": 3380,
+                        "model_id": "K2.6",
+                    },
+                    story_plan={
+                        "working_title": "玄脉逆天",
+                        "logline": "废材少年重开玄脉。",
+                        "chapter_plan": [
+                            {"number": 1, "title": "第一章", "goal": "开篇"},
+                        ],
+                    },
+                    batch_index=0,
+                    completed_chapters=[],
+                    reference_text="",
+                    model="K2.6",
+                )
+
+            self.assertEqual(gateway.complete_json_calls, 0)
+
+    def test_generate_chapter_pair_fallbacks_when_stream_fails_before_any_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamFailsBeforeChunkGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "玄幻大陆废材逆袭",
+                    "genre": "玄幻",
+                    "style": "热血逆袭",
+                    "chapter_word_min": 2600,
+                    "chapter_word_max": 3380,
+                    "model_id": "K2.6",
+                },
+                story_plan={
+                    "working_title": "玄脉逆天",
+                    "logline": "废材少年重开玄脉。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "开篇"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="K2.6",
+            )
+
+            self.assertEqual(drafts[0].title, "启动前回退")
+            self.assertEqual(gateway.complete_json_calls, 1)
+
+    def test_generate_chapter_pair_uses_stage_max_tokens_below_k26_catalog_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角重开玄脉。",
+                    "content": "第一章正文",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "玄幻大陆废材逆袭",
+                    "genre": "玄幻",
+                    "style": "热血逆袭",
+                    "chapter_word_min": 2600,
+                    "chapter_word_max": 3380,
+                    "model_id": "K2.6",
+                },
+                story_plan={
+                    "working_title": "玄脉逆天",
+                    "logline": "废材少年重开玄脉。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "开篇"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="K2.6",
+            )
+
+            max_tokens = gateway.stream_calls[0]["kwargs"].get("max_tokens")
+            self.assertIsNotNone(max_tokens)
+            self.assertLess(max_tokens, 32768)
+            self.assertGreaterEqual(max_tokens, 4096)
+
+    def test_context_references_text_is_not_truncated_to_eighty_chars(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            long_reference = "参考资料" + ("甲" * 120) + "尾部关键设定"
+
+            reference_excerpt = engine._context_reference(  # noqa: SLF001
+                "备用参考",
+                {"references_text": long_reference},
+            )
+
+            self.assertIn("尾部关键设定", reference_excerpt)
+            self.assertGreater(len(reference_excerpt), 80)
+
+    def test_verify_full_story_sends_complete_text_without_silent_eight_thousand_char_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "overall_score": 100,
+                        "issues": [],
+                        "summary": "验证通过",
+                    }
+                ]
+            )
+            engine.gateway_client = fake_gateway
+            tail_marker = "第九千字后的关键伏笔"
+
+            engine.verify_full_story(
+                completed_chapters=[
+                    {
+                        "number": 1,
+                        "title": "第一章",
+                        "content": ("甲" * 8500) + tail_marker,
+                    }
+                ],
+                story_plan={
+                    "working_title": "长文本验证",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "gpt-5.4"},
+                model="gpt-5.4",
+            )
+
+            rendered_prompt = fake_gateway.calls[0]["messages"][-1]["content"]
+            self.assertIn(tail_marker, rendered_prompt)
 
     def test_generate_draft_reuses_previous_turns_as_message_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

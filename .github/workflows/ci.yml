@@ -20,26 +20,26 @@ jobs:
       - name: Install dependencies
         run: |
           cd apps/agent-runtime
-          uv pip install -e ".[dev]" --system
+          uv sync --locked --dev
       - name: Run pytest
-        run: pytest apps/agent-runtime/tests/ -v
+        run: uv run --project apps/agent-runtime pytest apps/agent-runtime/tests/ -v
 
-  test-embedding:
+  test-web:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.10
-        uses: actions/setup-python@v5
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          python-version: "3.10"
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
       - name: Install dependencies
-        run: |
-          cd embeddingProject
-          uv pip install -e ".[dev]" --system
-      - name: Run pytest
-        run: pytest embeddingProject/tests/ -v
+        run: npm --prefix apps/web ci
+      - name: Build web
+        run: npm --prefix apps/web run build
+      - name: Run web tests
+        run: npm --prefix apps/web test
 
   lint:
     runs-on: ubuntu-latest
@@ -51,7 +51,9 @@ jobs:
           python-version: "3.11"
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Install ruff
-        run: uv pip install ruff --system
+      - name: Install dependencies
+        run: |
+          cd apps/agent-runtime
+          uv sync --locked --dev
       - name: Run ruff check
-        run: ruff check embeddingProject/ apps/agent-runtime/
+        run: uv run --project apps/agent-runtime ruff check apps/agent-runtime/

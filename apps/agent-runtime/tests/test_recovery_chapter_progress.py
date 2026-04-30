@@ -9,11 +9,11 @@ import unittest
 from pathlib import Path
 
 from app.application.task_service import TaskService
-from app.domain.models import StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
+from app.domain.models import ChapterDraft, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import init_db
-from app.storage.db_repository import update_project_status, upsert_novel_project
+from app.storage.db_repository import get_novel_project, update_project_status, upsert_novel_project
 from app.storage.task_store import TaskLogStore
 
 from tests.fakes import FakeGatewayClient
@@ -144,6 +144,81 @@ class RecoveryChapterProgressTests(unittest.TestCase):
         can_recover = service._can_recover_outline_review(task)
 
         self.assertFalse(can_recover)
+
+    def test_recover_to_stable_rebuilds_ready_for_batch_from_history_when_task_state_is_empty(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="玄幻大陆废材逆袭",
+                model_id="K2.6",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="玄脉逆天",
+            logline="废材少年重开玄脉踏上逆袭之路。",
+            world_notes=["玄幻大陆以玄脉定天赋。"],
+            character_notes=["主角曾被认定为废材。"],
+            chapter_plan=[
+                {"number": number, "title": f"第{number}章", "goal": f"推进第{number}章"}
+                for number in range(1, 6)
+            ],
+        )
+        store.write_context_snapshot(
+            task.id,
+            stage="planning",
+            snapshot_name="outline-revision-history",
+            payload={
+                "messages": [
+                    {"role": "assistant", "content": story_plan.model_dump_json()},
+                ],
+            },
+        )
+        for number in range(1, 4):
+            chapter = ChapterDraft(
+                number=number,
+                title=f"第{number}章",
+                summary=f"第{number}章摘要",
+                content=f"第{number}章正文",
+            )
+            store.write_context_snapshot(
+                task.id,
+                stage="drafting",
+                snapshot_name=f"chapter-{number:02d}-history",
+                payload={
+                    "messages": [
+                        {"role": "assistant", "content": chapter.model_dump_json()},
+                    ],
+                },
+            )
+        task = store.set_waiting_manual_action(
+            task.id,
+            "运行失败：调用聊天补全失败，状态码 504。",
+            payload={
+                "summary": "运行失败，等待人工恢复。",
+                "display_level": "public",
+                "reason": "recoverable_runtime_error",
+            },
+        )
+
+        preview = service._preview_recover_to_stable(task)
+        self.assertIsNotNone(preview)
+        assert preview is not None
+        self.assertEqual(preview.target_stage, TaskStatus.READY_FOR_BATCH.value)
+        self.assertEqual(preview.target_chapter_number, 4)
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+        self.assertEqual(recovered.story_plan, story_plan)
+        self.assertEqual(len(service.get_current_chapters(task.id)), 3)
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.completed_chapter_count, 3)
+        self.assertEqual(project.next_chapter_number, 4)
 
     def test_mark_failed_unless_stable_sets_blocked_from_status_in_db(self) -> None:
         """_mark_failed_unless_stable 在 core.py 中，需要完整的 workflow_engine 才能走通。

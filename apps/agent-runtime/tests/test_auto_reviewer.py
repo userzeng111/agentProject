@@ -10,14 +10,14 @@ class FakeGatewayClient:
         self.responses = list(responses)
         self.calls: list[tuple[list[dict[str, str]], str | None]] = []
 
-    def complete_json(self, messages, model=None):
+    def complete_json(self, messages, model=None, **kwargs):
         self.calls.append((messages, model))
         response = self.responses.pop(0)
         if isinstance(response, Exception):
             raise response
         return response
 
-    def complete_stream_sync(self, messages, model=None):
+    def complete_stream_sync(self, messages, model=None, **kwargs):
         """模拟流式调用：将 complete_json 的结果包装成单个 StreamChunk 返回。"""
         try:
             result = self.complete_json(messages, model)

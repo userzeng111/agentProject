@@ -71,9 +71,12 @@ class TaskLogStore:
         task.updated_at = utc_now()
         with self._lock:
             self._tasks[task.id] = task
+        before_storage_state = task.storage_state
         self._write_task_files(task)
         self._sync_to_db(task)
         self._archive_completed_task(task)
+        if task.storage_state != before_storage_state:
+            self._sync_to_db(task)
         self._write_index()
         return task
 
@@ -875,10 +878,17 @@ class TaskLogStore:
 
         task_dir = self._task_dir(task).resolve()
         if candidate.parts and candidate.parts[0] == "tasklog":
+            parts = candidate.parts
+            if len(parts) < 4 or parts[2] != task.id:
+                raise FileNotFoundError("禁止读取其他任务的文件。")
             absolute = (self.root_dir.parent / candidate).resolve()
         else:
             absolute = (task_dir / candidate).resolve()
 
+        try:
+            absolute.relative_to(task_dir)
+        except ValueError as exc:
+            raise FileNotFoundError("禁止越界读取任务文件。") from exc
         if not str(absolute).startswith(str(self.root_dir.resolve())):
             raise FileNotFoundError("禁止越界读取任务文件。")
         if not absolute.exists() or not absolute.is_file():

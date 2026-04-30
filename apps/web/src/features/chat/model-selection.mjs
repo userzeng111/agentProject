@@ -20,3 +20,15 @@ export function resolveConversationModel(savedModel, models, defaultModelId = ""
       : "";
   return savedGatewayModel || defaultModelId || "";
 }
+
+export function resolveChatSelectValue(currentModel, models, defaultModelId = "") {
+  const availableModels = (models || []).filter((item) => isGatewayBackedModel(item));
+  const current = currentModel || defaultModelId || "";
+  if (current && availableModels.some((item) => item.id === current)) {
+    return current;
+  }
+  if (defaultModelId && availableModels.some((item) => item.id === defaultModelId)) {
+    return defaultModelId;
+  }
+  return availableModels[0]?.id ?? "";
+}

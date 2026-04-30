@@ -39,6 +39,8 @@ class TaskServiceRunnerMixin:
         if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED, TaskStatus.PLANNING}:
             raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
         try:
+            if self._is_stop_requested(task_id):
+                return self.store.get(task_id)
             self.store.mark_stage(
                 task_id,
                 status=TaskStatus.PLANNING,
@@ -74,6 +76,8 @@ class TaskServiceRunnerMixin:
             finally:
                 reset_progress_callback(progress_token)
                 reset_exchange_callback(exchange_token)
+            if self._is_stop_requested(task_id):
+                return self.store.get(task_id)
             return self._sync_result(task_id, result)
         except Exception as exc:
             self._mark_failed_unless_stable(task_id, f"运行失败：{exc}")
@@ -96,6 +100,8 @@ class TaskServiceRunnerMixin:
         if task.pending_review is None or task.status not in valid_statuses:
             raise ValueError("当前任务没有待恢复的审核节点。")
         try:
+            if self._is_stop_requested(task_id):
+                return self.store.get(task_id)
             if approved:
                 self.store.mark_stage(
                     task_id,
@@ -137,6 +143,8 @@ class TaskServiceRunnerMixin:
             finally:
                 reset_progress_callback(progress_token)
                 reset_exchange_callback(exchange_token)
+            if self._is_stop_requested(task_id):
+                return self.store.get(task_id)
             return self._sync_result(task_id, result, review_comment=comment)
         except Exception as exc:
             self._mark_failed_unless_stable(task_id, f"恢复执行失败：{exc}")
@@ -148,6 +156,8 @@ class TaskServiceRunnerMixin:
         def callback(event: dict[str, Any]) -> None:
             from app.storage.db_repository import update_project_status
 
+            if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
+                return
             stage = str(event.get("stage") or "drafting")
             event_type = str(event.get("event_type") or "task.updated")
             unit_id = event.get("unit_id")
@@ -222,6 +232,8 @@ class TaskServiceRunnerMixin:
 
     def _build_exchange_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:
+            if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
+                return
             stage = str(event.get("stage") or "unknown")
             exchange_label = str(event.get("exchange_label") or "exchange")
             history = event.get("conversation_history")
@@ -271,4 +283,3 @@ class TaskServiceRunnerMixin:
         span = 35
         offset = chapter_number - 1 if event_type == "chapter.started" else chapter_number
         return min(90, max(task.progress, base_progress + int(offset / total * span)))
-

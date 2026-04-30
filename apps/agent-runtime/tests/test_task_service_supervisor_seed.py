@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,6 +168,94 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
 
             assert record.supervisor_plan is not None
             self.assertTrue(all(item.status.value == "completed" for item in record.supervisor_plan.subtasks))
+
+    def test_sync_result_rebuilds_completed_result_from_chapter_files_when_checkpoint_is_stale(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.LONG_STORY,
+                    prompt="写一个九章校园重生故事",
+                    model_id="gpt-5.4",
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="九章旧校园",
+                logline="主角重回校园补完遗憾。",
+                world_notes=["旧校园"],
+                character_notes=["重生主角"],
+                planned_chapter_count=9,
+                chapter_plan=[
+                    {"number": number, "title": f"第{number}章", "goal": f"推进{number}"}
+                    for number in range(1, 10)
+                ],
+            )
+            for number in range(1, 10):
+                service._write_chapter_file(
+                    task.id,
+                    chapter_number=number,
+                    title=f"第{number}章",
+                    summary=f"第{number}章摘要",
+                    content=f"第{number}章正文",
+                )
+
+            stale_chapters = [
+                {"number": number, "title": f"第{number}章", "summary": f"第{number}章摘要", "content": f"旧第{number}章正文"}
+                for number in range(1, 5)
+            ]
+            service.graph = SimpleNamespace(
+                get_state=lambda config: SimpleNamespace(
+                    values={
+                        "normalized_spec": {
+                            "mode": "long_story",
+                            "prompt": "写一个九章校园重生故事",
+                            "genre": "",
+                            "style": "",
+                            "chapter_word_min": 1800,
+                            "chapter_word_max": 2340,
+                            "model_id": "gpt-5.4",
+                        },
+                        "story_plan": story_plan.model_dump(mode="json"),
+                        "draft_result": DraftResult(
+                            title="九章旧校园",
+                            summary="旧结果只有四章。",
+                            body="旧正文",
+                            chapters=stale_chapters,
+                        ).model_dump(mode="json"),
+                    }
+                )
+            )
+
+            record = service._sync_result(task.id, {})
+
+            self.assertEqual(record.status, TaskStatus.COMPLETED)
+            self.assertIsNotNone(record.draft_result)
+            assert record.draft_result is not None
+            self.assertEqual(len(record.draft_result.chapters), 9)
+            self.assertEqual(record.draft_result.chapters[-1].number, 9)
+            self.assertEqual(record.draft_result.chapters[-1].content, "第9章正文")
+
+            result_path = Path(tmp_dir) / "tasklog" / "archive" / task.id / "result.json"
+            result_payload = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(result_payload["chapters"]), 9)
+            artifacts_index = json.loads(
+                (Path(tmp_dir) / "tasklog" / "archive" / task.id / "artifacts" / "index.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                [item["id"] for item in artifacts_index if item["type"] == "chapter"],
+                [f"chapter-{number:02d}" for number in range(1, 10)],
+            )
 
     def test_run_task_sync_keeps_waiting_review_when_followup_sync_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

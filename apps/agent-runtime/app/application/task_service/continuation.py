@@ -119,6 +119,8 @@ class TaskServiceContinuationMixin:
                     requested_batch_size=effective_count,
                     draft_seeds=draft_seed_map,
                 )
+                if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
+                    return self.store.get(task_id)
                 chapter_drafts = [ChapterDraft.model_validate(item) for item in chapter_pair]
                 for chapter in chapter_drafts:
                     self._write_chapter_file(
@@ -212,6 +214,8 @@ class TaskServiceContinuationMixin:
                 snapshot = self.store.set_waiting_chapter_review(task_id, review, auto_review_trace)
                 return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
             except Exception as exc:
+                if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
+                    return self.store.get(task_id)
                 mark_batch_failed(task_id, batch.batch_no)
                 update_project_status(
                     task_id,
@@ -329,4 +333,3 @@ class TaskServiceContinuationMixin:
     def _load_chapter_file_payload(self, task_id: str, chapter_number: int) -> dict[str, Any]:
         path = self._chapter_storage_path(task_id, chapter_number)
         return json.loads(path.read_text(encoding="utf-8"))
-

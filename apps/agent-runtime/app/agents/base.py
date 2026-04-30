@@ -19,7 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from app.agents.loader import SkillLoader
-from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+from app.llm.gateway_client import (
+    GatewayClientError,
+    OpenAICompatibleGatewayClient,
+    StreamInterruptedAfterStartError,
+)
 
 logger = get_logger(__name__)
 
@@ -95,6 +99,7 @@ class BaseAgent:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         stage: str = "",
         unit_id: str = "",
+        max_tokens: int | None = None,
     ) -> str:
         """
         流式调用 LLM，返回完整文本内容。
@@ -104,23 +109,37 @@ class BaseAgent:
         gc = self._require_gateway_client()
         full_content = ""
         full_reasoning = ""
-        for chunk in gc.complete_stream_sync(messages, model=model):
-            if chunk.reasoning_content and progress_callback:
-                full_reasoning += chunk.reasoning_content
-                progress_callback({
-                    "event_type": "model.thinking",
-                    "stage": stage,
-                    "unit_id": unit_id,
-                    "message": "模型思考中...",
-                    "payload": {
-                        "reasoning_chunk": chunk.reasoning_content,
-                        "accumulated_length": len(full_reasoning),
-                        "model": chunk.model,
-                        "finish_reason": chunk.finish_reason,
-                    },
-                })
-            if chunk.content:
-                full_content += chunk.content
+        saw_stream_output = False
+        request_kwargs: dict[str, Any] = {}
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        try:
+            for chunk in gc.complete_stream_sync(messages, model=model, **request_kwargs):
+                if chunk.reasoning_content:
+                    saw_stream_output = True
+                    if progress_callback:
+                        full_reasoning += chunk.reasoning_content
+                        progress_callback({
+                            "event_type": "model.thinking",
+                            "stage": stage,
+                            "unit_id": unit_id,
+                            "message": "模型思考中...",
+                            "payload": {
+                                "reasoning_chunk": chunk.reasoning_content,
+                                "accumulated_length": len(full_reasoning),
+                                "model": chunk.model,
+                                "finish_reason": chunk.finish_reason,
+                            },
+                        })
+                if chunk.content:
+                    saw_stream_output = True
+                    full_content += chunk.content
+        except Exception as exc:
+            if saw_stream_output:
+                raise StreamInterruptedAfterStartError(
+                    "流式响应已开始后中断，已保留最近稳定阶段，请从恢复入口继续。"
+                ) from exc
+            raise
         return full_content
 
     async def _call_llm_stream_async(
@@ -131,6 +150,7 @@ class BaseAgent:
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         stage: str = "",
         unit_id: str = "",
+        max_tokens: int | None = None,
     ) -> str:
         """
         异步流式调用 LLM，返回完整文本内容。
@@ -140,23 +160,37 @@ class BaseAgent:
         gc = self._require_gateway_client()
         full_content = ""
         full_reasoning = ""
-        async for chunk in gc.complete_stream(messages, model=model):
-            if chunk.reasoning_content and progress_callback:
-                full_reasoning += chunk.reasoning_content
-                progress_callback({
-                    "event_type": "model.thinking",
-                    "stage": stage,
-                    "unit_id": unit_id,
-                    "message": "模型思考中...",
-                    "payload": {
-                        "reasoning_chunk": chunk.reasoning_content,
-                        "accumulated_length": len(full_reasoning),
-                        "model": chunk.model,
-                        "finish_reason": chunk.finish_reason,
-                    },
-                })
-            if chunk.content:
-                full_content += chunk.content
+        saw_stream_output = False
+        request_kwargs: dict[str, Any] = {}
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
+        try:
+            async for chunk in gc.complete_stream(messages, model=model, **request_kwargs):
+                if chunk.reasoning_content:
+                    saw_stream_output = True
+                    if progress_callback:
+                        full_reasoning += chunk.reasoning_content
+                        progress_callback({
+                            "event_type": "model.thinking",
+                            "stage": stage,
+                            "unit_id": unit_id,
+                            "message": "模型思考中...",
+                            "payload": {
+                                "reasoning_chunk": chunk.reasoning_content,
+                                "accumulated_length": len(full_reasoning),
+                                "model": chunk.model,
+                                "finish_reason": chunk.finish_reason,
+                            },
+                        })
+                if chunk.content:
+                    saw_stream_output = True
+                    full_content += chunk.content
+        except Exception as exc:
+            if saw_stream_output:
+                raise StreamInterruptedAfterStartError(
+                    "流式响应已开始后中断，已保留最近稳定阶段，请从恢复入口继续。"
+                ) from exc
+            raise
         return full_content
 
     # ── JSON 解析 ──────────────────────────────

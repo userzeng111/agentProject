@@ -5,18 +5,17 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
-from app.observability import get_logger
-
 from app.graph.state import WorkflowState, MAX_OUTLINE_REVISIONS
-
-logger = get_logger(__name__)
-from app.graph.utils.spec import build_normalized_spec
 from app.graph.utils.helpers import (
     _resolve_model_profile,
     _build_references,
     _outline_instruction,
     _normalize_story_plan,
 )
+from app.graph.utils.spec import build_normalized_spec
+from app.observability import get_logger
+
+logger = get_logger(__name__)
 
 
 def normalize_request(

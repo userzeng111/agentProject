@@ -52,6 +52,24 @@ class RagServiceTests(unittest.TestCase):
         self.assertEqual(result.selected_contexts, [])
         self.assertIn("index.faiss", result.error or "")
 
+    def test_select_hits_skips_oversized_first_hit_and_keeps_later_short_hits(self) -> None:
+        backend = StubSearchBackend(
+            hits=[
+                RagHit(doc_id="long", content="甲" * 100, score=0.99),
+                RagHit(doc_id="short-1", content="乙" * 10, score=0.80),
+                RagHit(doc_id="short-2", content="丙" * 10, score=0.70),
+            ]
+        )
+        service = RagService(
+            RagConfig(enabled=True, top_k=3, max_context_chars=25),
+            search_backend=backend,
+        )
+
+        result = service.search("苹果是什么")
+
+        self.assertEqual(result.selected_contexts, ["乙" * 10, "丙" * 10])
+        self.assertEqual([hit.doc_id for hit in result.selected_hits], ["short-1", "short-2"])
+
 
 if __name__ == "__main__":
     unittest.main()

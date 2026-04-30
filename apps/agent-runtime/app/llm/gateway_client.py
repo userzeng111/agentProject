@@ -19,6 +19,10 @@ class GatewayClientError(Exception):
     pass
 
 
+class StreamInterruptedAfterStartError(GatewayClientError):
+    """流式响应已经开始输出后中断，不能安全重放同一个请求。"""
+
+
 class StreamChunk:
     """流式响应的单个 chunk。"""
 
@@ -113,6 +117,7 @@ class OpenAICompatibleGatewayClient:
         start = time.perf_counter()
         last_error_info = ""
         for attempt in range(3):
+            response: httpx.Response | None = None
             try:
                 response = self._request("POST", endpoint, json=payload)
                 self._ensure_success(response, "调用聊天补全失败")
@@ -146,12 +151,19 @@ class OpenAICompatibleGatewayClient:
                 record_llm_call(resolved_model, duration_ms, success=False)
                 logger.exception("llm_complete_failed model=%s messages=%d", resolved_model, len(messages))
                 raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}") from exc
-            except GatewayClientError:
+            except GatewayClientError as exc:
                 # 由 _ensure_success 或上方空响应/5xx逻辑抛出的业务异常，继续外层重试
-                last_error_info = f"响应状态{response.status_code}，网关错误"
+                if response is None:
+                    last_error_info = str(exc)
+                    status = 0
+                    content_length = 0
+                else:
+                    last_error_info = f"响应状态{response.status_code}，网关错误"
+                    status = response.status_code
+                    content_length = len(response.content or b"")
                 logger.warning(
                     "llm_complete_retry model=%s attempt=%d status=%d content_length=%d",
-                    resolved_model, attempt + 1, response.status_code, len(response.content or b""),
+                    resolved_model, attempt + 1, status, content_length,
                 )
                 if attempt < 2:
                     sleep(1 * (attempt + 1))
@@ -174,8 +186,9 @@ class OpenAICompatibleGatewayClient:
         self,
         messages: list[dict[str, str]],
         model: str | None = None,
+        **kwargs: Any,
     ) -> Any:
-        raw = self.complete(messages=messages, model=model)
+        raw = self.complete(messages=messages, model=model, **kwargs)
         cleaned = self._strip_markdown_fences(raw)
 
         try:

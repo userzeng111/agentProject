@@ -37,7 +37,7 @@ class EmbeddingProjectSearchBackend:
     def __init__(self, config: RagConfig) -> None:
         self.config = config
         self._embedder = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def search(self, query: str, top_k: int) -> list[RagHit]:
         if not self.config.faiss_index_path.exists():
@@ -52,13 +52,14 @@ class EmbeddingProjectSearchBackend:
             table_name="documents",
         )
         try:
-            result = search_documents(
-                embedder=self._get_embedder(),
-                faiss_store=faiss_store,
-                sqlite_store=sqlite_store,
-                query=query,
-                top_k=top_k,
-            )
+            with self._lock:
+                result = search_documents(
+                    embedder=self._get_embedder(),
+                    faiss_store=faiss_store,
+                    sqlite_store=sqlite_store,
+                    query=query,
+                    top_k=top_k,
+                )
         finally:
             sqlite_store.connection.close()
 
@@ -255,7 +256,7 @@ class RagService:
         for hit in hits:
             length = len(hit.content)
             if total_chars + length > max_context_chars:
-                break
+                continue
             selected.append(hit)
             total_chars += length
         return selected

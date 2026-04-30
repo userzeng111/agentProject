@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -105,7 +103,7 @@ class TestE2EEnhancedValidation(unittest.TestCase):
 
             # 4. 事件日志验证：自动审核全通过，没有 review.waiting（因为没有进入人工审核中断）
             event_types = [e.event_type for e in result.events]
-            # 自动审核直接通过，不会有 review.waiting 事件
+            self.assertNotIn("review.waiting", event_types)
 
     def test_manual_review_flow_shows_auto_review_false(self) -> None:
         """关闭自动审核时，工作台应展示 auto_review=false。"""

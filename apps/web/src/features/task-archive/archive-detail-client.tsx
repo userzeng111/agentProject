@@ -25,7 +25,7 @@ import {
   Typography,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
-import { fetchTextRef, getApiBase, getArchiveDetail } from "@/lib/api";
+import { fetchTextRef, getArchiveDetail } from "@/lib/api";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse, ResultChapterItem, StoryPlan, WorkspaceEvent } from "@/lib/types";

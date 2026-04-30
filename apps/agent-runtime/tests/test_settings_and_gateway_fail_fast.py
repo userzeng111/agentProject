@@ -24,7 +24,7 @@ class FailingGatewayClient:
     def list_models(self):
         return [{"id": "glm-5.1", "object": "model", "owned_by": "custom"}]
 
-    def complete_json(self, messages, model=None):
+    def complete_json(self, messages, model=None, **kwargs):
         raise GatewayClientError("模拟网关请求失败")
 
 
@@ -33,7 +33,7 @@ class StubRawGatewayClient(OpenAICompatibleGatewayClient):
         super().__init__(base_url="http://example.com", api_key="test-key", model="test-model")
         self.raw_response = raw_response
 
-    def complete(self, messages, model=None):
+    def complete(self, messages, model=None, **kwargs):
         return self.raw_response
 
 

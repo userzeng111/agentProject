@@ -17,7 +17,7 @@ class FakeGatewayClient:
     def list_models(self):
         return [{"id": "test-model", "object": "model", "owned_by": "test"}]
 
-    def complete_json(self, messages, model=None):
+    def complete_json(self, messages, model=None, **kwargs):
         return {"result": "fake"}
 
 

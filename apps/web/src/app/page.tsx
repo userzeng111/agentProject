@@ -436,7 +436,7 @@ export default function Home() {
     setSnackbarOpen(true);
   }, []);
 
-  const fetchDashboard = () => {
+  const fetchDashboard = useCallback(() => {
     void getDashboard()
       .then((response) => {
         setDashboard(response);
@@ -445,7 +445,7 @@ export default function Home() {
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : "读取首页聚合数据失败");
       });
-  };
+  }, []);
 
   const fetchModels = useCallback((refresh = false) => {
     setModelRefresh((current) => ({
@@ -481,7 +481,7 @@ export default function Home() {
   useEffect(() => {
     fetchDashboard();
     fetchModels(false);
-  }, [fetchModels]);
+  }, [fetchDashboard, fetchModels]);
 
   const handleDeleteTask = useCallback((taskId: string) => {
     const task = dashboard?.continue_tasks.find((t) => t.task_id === taskId)

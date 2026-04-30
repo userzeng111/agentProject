@@ -25,6 +25,7 @@ from app.domain.models import (
 from app.graph.main_graph import (
     build_default_callbacks,
 )
+from app.workflow.callbacks import WorkflowCallbacks
 from app.workflow.engine import NovelWorkflowEngine
 from app.graph.supervisor_graph import build_initial_supervisor_plan
 from app.llm.model_catalog import ModelCatalogService
@@ -91,6 +92,7 @@ class TaskServiceCoreMixin:
             auto_review=auto_review,
             auto_review_policy=self.auto_review_policy,
         )
+        callbacks = self._guard_workflow_callbacks_for_stop(callbacks)
         self.workflow_engine = NovelWorkflowEngine(
             callbacks=callbacks,
             checkpoint_db_path=checkpoint_db_path,
@@ -99,6 +101,7 @@ class TaskServiceCoreMixin:
         self._run_lock = threading.Lock()
         self._chapter_file_locks: dict[str, threading.Lock] = {}
         self._active_threads: dict[str, threading.Thread] = {}
+        self._stop_requested: set[str] = set()
 
         # 初始化 SQLite 业务数据库
         from app.storage.database import init_db
@@ -193,12 +196,12 @@ class TaskServiceCoreMixin:
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
-        # 检查任务是否在活跃运行中，如果是则先移除并等待后台线程结束
+        # 检查任务是否在活跃运行中，如果是则请求后台链路停止写入。
         with self._run_lock:
             was_active = task_id in self._active_runs
-            thread = self._active_threads.pop(task_id, None)
+            thread = self._active_threads.get(task_id)
             if was_active:
-                self._active_runs.discard(task_id)
+                self._stop_requested.add(task_id)
         if thread is not None and thread.is_alive():
             thread.join(timeout=10)
         record = self.store.cancel_task(task_id, comment=comment)
@@ -210,6 +213,8 @@ class TaskServiceCoreMixin:
         # 再次确认任务不在活跃运行中
         with self._run_lock:
             if task_id in self._active_runs:
+                if task_id in self._stop_requested:
+                    raise ValueError("任务正在取消中，请等待后台线程结束后再删除。")
                 raise ValueError("任务正在运行中，请先取消后再删除。")
         return self.store.delete_task(task_id)
 
@@ -381,6 +386,12 @@ class TaskServiceCoreMixin:
         if not draft_result_data:
             raise RuntimeError("工作流结束后未找到正文结果。")
         draft_result = DraftResult.model_validate(draft_result_data)
+        draft_result = self._rebuild_completed_draft_result_if_needed(
+            task_id=task_id,
+            story_plan=story_plan,
+            draft_result=draft_result,
+            normalized_spec=values.get("normalized_spec") if isinstance(values.get("normalized_spec"), dict) else {},
+        )
         artifacts = self._build_artifacts(story_plan, draft_result)
         auto_review_trace = values.get("auto_review_trace") or []
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
@@ -395,6 +406,62 @@ class TaskServiceCoreMixin:
             detail="章节已全部写完，正文与工件已归档。",
         )
         return record
+
+    def _rebuild_completed_draft_result_if_needed(
+        self,
+        *,
+        task_id: str,
+        story_plan: StoryPlan,
+        draft_result: DraftResult,
+        normalized_spec: dict[str, Any],
+    ) -> DraftResult:
+        planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
+        if planned_total <= 0:
+            return draft_result
+
+        current_chapters = self.get_current_chapters(task_id)
+        if len(current_chapters) >= planned_total and len(current_chapters) > len(draft_result.chapters):
+            chapters = current_chapters[:planned_total]
+            return self._build_draft_result_from_chapters(
+                story_plan=story_plan,
+                chapters=chapters,
+                normalized_spec=normalized_spec,
+            )
+
+        if len(draft_result.chapters) < planned_total:
+            raise RuntimeError(
+                f"正文结果章节数不足：当前 {len(draft_result.chapters)} 章，计划 {planned_total} 章。"
+            )
+        return draft_result
+
+    def _build_draft_result_from_chapters(
+        self,
+        *,
+        story_plan: StoryPlan,
+        chapters: list[dict[str, Any]],
+        normalized_spec: dict[str, Any],
+    ) -> DraftResult:
+        chapter_drafts = [
+            ChapterDraft.model_validate(
+                {
+                    "number": chapter.get("number") if chapter.get("number") is not None else index + 1,
+                    "title": chapter.get("title") or f"第{index + 1}章",
+                    "summary": chapter.get("summary") or "",
+                    "content": chapter.get("content") or "",
+                }
+            )
+            for index, chapter in enumerate(chapters)
+        ]
+        if normalized_spec.get("mode") == "short_story" and len(chapter_drafts) <= 3:
+            body = "\n\n".join(chapter.content for chapter in chapter_drafts)
+        else:
+            body = "\n\n".join(f"## {chapter.title}\n{chapter.content}" for chapter in chapter_drafts)
+        return DraftResult(
+            title=story_plan.working_title,
+            summary=story_plan.logline,
+            body=body,
+            chapters=chapter_drafts,
+        )
 
     def _persistable_normalized_spec(self, task: TaskRecord, normalized_spec: dict[str, Any]) -> dict[str, Any]:
         return self._with_model_id(normalized_spec, self._resolve_task_model_id(task))
@@ -487,6 +554,8 @@ class TaskServiceCoreMixin:
 
     def _mark_failed_unless_stable(self, task_id: str, message: str) -> TaskRecord:
         current = self.store.get(task_id)
+        if self._is_stop_requested(task_id):
+            return current
         if self._has_stable_terminal_state(current):
             logger.warning(
                 "任务已进入稳定状态，跳过失败覆盖。task_id=%s status=%s reason=%s",
@@ -539,6 +608,40 @@ class TaskServiceCoreMixin:
     def _leave_active_run(self, task_id: str) -> None:
         with self._run_lock:
             self._active_runs.discard(task_id)
+            self._active_threads.pop(task_id, None)
+            self._stop_requested.discard(task_id)
+
+    def _is_stop_requested(self, task_id: str) -> bool:
+        with self._run_lock:
+            return task_id in self._stop_requested
+
+    def _guard_workflow_callbacks_for_stop(self, callbacks: WorkflowCallbacks) -> WorkflowCallbacks:
+        guarded: dict[str, Any] = {}
+
+        def cancelled_patch(state: dict[str, Any]) -> dict[str, Any]:
+            patch: dict[str, Any] = {"cancelled": True}
+            review_comment = state.get("review_comment")
+            if review_comment:
+                patch["review_comment"] = review_comment
+            return patch
+
+        def wrap(callback):
+            def guarded_callback(state: dict[str, Any]) -> dict[str, Any]:
+                task_id = str(state.get("task_id") or "")
+                if task_id and self._is_stop_requested(task_id):
+                    return cancelled_patch(state)
+                result = callback(state)
+                if task_id and self._is_stop_requested(task_id):
+                    next_result = dict(result or {})
+                    next_result["cancelled"] = True
+                    return next_result
+                return result
+
+            return guarded_callback
+
+        for field_name in WorkflowCallbacks.__dataclass_fields__:
+            guarded[field_name] = wrap(getattr(callbacks, field_name))
+        return WorkflowCallbacks(**guarded)
 
     def _start_background(self, task_id: str, target, *args: Any) -> None:
         def runner() -> None:
@@ -553,14 +656,14 @@ class TaskServiceCoreMixin:
             finally:
                 # 兜底清理，防止 _active_runs 泄漏
                 self._leave_active_run(task_id)
-                self._active_threads.pop(task_id, None)
 
         t = threading.Thread(
             target=runner,
             name=f"task-worker-{task_id}",
             daemon=True,
         )
-        self._active_threads[task_id] = t
+        with self._run_lock:
+            self._active_threads[task_id] = t
         t.start()
 
     def _emit_trace_summary(

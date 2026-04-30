@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   isGatewayBackedModel,
+  resolveChatSelectValue,
   resolveConversationModel,
   resolveDefaultChatModelId,
 } from "./model-selection.mjs";
@@ -38,4 +39,10 @@ test("resolveConversationModel 会忽略保存的 registry 模型", () => {
 
 test("resolveConversationModel 保留保存的 gateway 模型", () => {
   assert.equal(resolveConversationModel("gateway-alt", mixedModels, "gateway-chat"), "gateway-alt");
+});
+
+test("resolveChatSelectValue 避免选择器使用不存在的模型值", () => {
+  assert.equal(resolveChatSelectValue("outline-local", mixedModels, "gateway-chat"), "gateway-chat");
+  assert.equal(resolveChatSelectValue("missing-model", mixedModels, "gateway-chat"), "gateway-chat");
+  assert.equal(resolveChatSelectValue("gateway-alt", mixedModels, "gateway-chat"), "gateway-alt");
 });

@@ -3,11 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
-from app.observability import get_logger
 from app.graph.state import WorkflowState, MAX_CHAPTER_PAIR_REVISIONS
-
-logger = get_logger(__name__)
-from app.graph.utils.spec import _chapter_batch_size
 from app.graph.utils.helpers import (
     _resolve_model_profile,
     _build_references,
@@ -16,6 +12,10 @@ from app.graph.utils.helpers import (
     _normalize_story_plan,
     _chapter_pair_memory_items,
 )
+from app.graph.utils.spec import _chapter_batch_size
+from app.observability import get_logger
+
+logger = get_logger(__name__)
 
 
 def prepare_chapter_pair_context(

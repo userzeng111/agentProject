@@ -1,5 +1,4 @@
 import unittest
-from unittest.mock import MagicMock, patch
 
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
 from app.llm.protocols import AnthropicAdapter, OpenAIAdapter

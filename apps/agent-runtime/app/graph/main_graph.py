@@ -444,6 +444,7 @@ def build_graph(
         {
             "prepare_chapter_pair_context": "prepare_chapter_pair_context",
             "revise_outline": "revise_outline",
+            "cancel_task": "cancel_task",
         },
     )
     graph.add_edge("revise_outline", "review_outline")
@@ -457,6 +458,7 @@ def build_graph(
         {
             "accumulate_chapters": "accumulate_chapters",
             "revise_chapter_pair": "revise_chapter_pair",
+            "cancel_task": "cancel_task",
         },
     )
     graph.add_edge("revise_chapter_pair", "review_chapter_pair")
@@ -466,6 +468,7 @@ def build_graph(
         {
             "prepare_chapter_pair_context": "prepare_chapter_pair_context",
             "verify_full_story": "verify_full_story",
+            "cancel_task": "cancel_task",
         },
     )
 
@@ -477,6 +480,7 @@ def build_graph(
         {
             "assemble_result": "assemble_result",
             "fix_verified_issues": "fix_verified_issues",
+            "cancel_task": "cancel_task",
         },
     )
     graph.add_edge("fix_verified_issues", "verify_full_story")
