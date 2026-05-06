@@ -115,7 +115,7 @@ function getDeletePrompt(status: TaskStatus): string {
     case "failed":
       return "该任务执行失败，确认删除？";
     case "cancelled":
-      return "确认删除该已取消的任务？";
+      return "该任务已取消，删除后将丢失所有已生成内容且不可恢复。确认删除？";
     case "ready_for_batch":
       return "该任务已有部分进度，删除后将丢失已生成内容。确认删除？";
     default:
@@ -138,7 +138,8 @@ function getStepIndex(status: TaskStatus): number {
     status === "waiting_verification_review" ||
     status === "ready_for_batch" ||
     status === "drafting" ||
-    status === "assembling"
+    status === "assembling" ||
+    status === "cancelled"
   )
     return 2;
   if (status === "planning" || status === "sources_ingested" || status === "waiting_manual_action") return 1;
@@ -1111,14 +1112,33 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                     取消任务
                   </Button>
                 )}
-                {workspace.meta.status !== "completed" && !["planning", "drafting", "assembling", "waiting_manual_action"].includes(workspace.meta.status) && (
+                {workspace.meta.status === "cancelled" && primaryRecoveryAction && (
+                  <Button
+                    variant="contained"
+                    disabled={running}
+                    onClick={handleOpenRecoveryDialog}
+                    size="small"
+                  >
+                    {running ? "提交中..." : "恢复任务"}
+                  </Button>
+                )}
+                {workspace.meta.status === "cancelled" && !primaryRecoveryAction && (
                   <Button
                     variant="outlined"
-                    color="error"
+                    disabled={running}
+                    onClick={handleOpenRecoveryDialog}
                     size="small"
-                    startIcon={<DeleteIcon />}
-                    onClick={handleDeleteTask}
                   >
+                    查看恢复方案
+                  </Button>
+                )}
+                {workspace.meta.status !== "completed" && !["planning", "drafting", "assembling", "waiting_manual_action", "cancelled"].includes(workspace.meta.status) && (
+                  <Button variant="outlined" color="error" size="small" startIcon={<DeleteIcon />} onClick={handleDeleteTask}>
+                    删除任务
+                  </Button>
+                )}
+                {workspace.meta.status === "cancelled" && (
+                  <Button variant="outlined" color="warning" size="small" startIcon={<DeleteIcon />} onClick={handleDeleteTask}>
                     删除任务
                   </Button>
                 )}

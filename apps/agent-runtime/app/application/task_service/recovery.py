@@ -92,6 +92,8 @@ class TaskServiceRecoveryMixin:
             and task.story_plan is None
         ):
             return True
+        if task.status is TaskStatus.CANCELLED:
+            return True
         return False
 
     def _reconcile_pending_review_with_novel_project(self, task: TaskRecord) -> TaskRecord:
@@ -260,7 +262,7 @@ class TaskServiceRecoveryMixin:
                 target_stage = TaskStatus.WAITING_CHAPTER_REVIEW.value
         elif task.status is TaskStatus.WAITING_VERIFICATION_REVIEW and self._can_recover_verification_review(task, force=False):
             target_stage = TaskStatus.WAITING_VERIFICATION_REVIEW.value
-        elif task.status is TaskStatus.WAITING_MANUAL_ACTION:
+        elif task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED}:
             if self._has_novel_project(task.id):
                 from app.storage.db_repository import get_active_batch, get_novel_project
 
@@ -353,7 +355,7 @@ class TaskServiceRecoveryMixin:
         )
 
     def _preview_restart_from_input(self, task: TaskRecord) -> RecoveryPreview | None:
-        can_restart = task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED}
+        can_restart = task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED, TaskStatus.CANCELLED}
         if (
             task.status is TaskStatus.PLANNING
             and str(task.current_unit or "").startswith("outline")
@@ -606,7 +608,7 @@ class TaskServiceRecoveryMixin:
                     "章节批次一致性校验失败，已转入待人工处理。",
                 )
 
-        if task.status is TaskStatus.WAITING_MANUAL_ACTION and project.blocked_from_status:
+        if task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED} and project.blocked_from_status:
             blocked_status = project.blocked_from_status
             if blocked_status == TaskStatus.WAITING_CHAPTER_REVIEW.value and task.pending_review is not None:
                 snapshot = self.store.set_waiting_chapter_review(task.id, task.pending_review)
@@ -636,7 +638,7 @@ class TaskServiceRecoveryMixin:
                 return snapshot
 
         if (
-            task.status is TaskStatus.WAITING_MANUAL_ACTION
+            task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED}
             and task.story_plan is not None
             and project is not None
             and int(project.completed_chapter_count or 0) > 0
@@ -655,7 +657,7 @@ class TaskServiceRecoveryMixin:
         return None
 
     def _retry_task_from_original_input(self, task: TaskRecord, action_model_id: str | None = None) -> TaskRecord | None:
-        if task.status not in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED}:
+        if task.status not in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.FAILED, TaskStatus.CANCELLED}:
             return None
         if task.story_plan is not None or task.pending_review is not None:
             return None
@@ -684,7 +686,7 @@ class TaskServiceRecoveryMixin:
     def _can_recover_outline_review(self, task: TaskRecord) -> bool:
         if task.status is TaskStatus.WAITING_OUTLINE_REVIEW:
             return task.pending_review is None or task.story_plan is None
-        if task.status is TaskStatus.WAITING_MANUAL_ACTION:
+        if task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED}:
             if self._has_novel_project(task.id):
                 from app.storage.db_repository import get_novel_project
                 project = get_novel_project(task.id)

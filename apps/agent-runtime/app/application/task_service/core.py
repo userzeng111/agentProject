@@ -204,6 +204,15 @@ class TaskServiceCoreMixin:
                 self._stop_requested.add(task_id)
         if thread is not None and thread.is_alive():
             thread.join(timeout=10)
+        # 保存 blocked_from_status 以便后续恢复
+        from app.storage.db_repository import get_novel_project, update_project_status
+        project = get_novel_project(task_id)
+        if project is not None and not project.blocked_from_status:
+            update_project_status(
+                task_id,
+                status=project.status,
+                blocked_from_status=project.status,
+            )
         record = self.store.cancel_task(task_id, comment=comment)
         self._sync_supervisor_plan(task_id)
         return record
