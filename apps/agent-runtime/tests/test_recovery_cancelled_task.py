@@ -118,6 +118,53 @@ class RecoveryCancelledTaskTests(unittest.TestCase):
         # cancel_task 应在 blocked_from_status 为空时保存当前 project.status
         # 当前 project.status 为 WAITING_MANUAL_ACTION，因此保存该值
         self.assertEqual(project.blocked_from_status, TaskStatus.WAITING_MANUAL_ACTION.value)
+        # cancel_task 应清理 active_batch_no 和 active_continue_request_id
+        self.assertIsNone(project.active_batch_no)
+        self.assertEqual(project.active_continue_request_id, "")
+
+    def test_cancel_task_clears_active_batch(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, _story_plan = self._setup_task_with_completed_chapters(store, service)
+        # 创建一个活动批次
+        from app.storage.db_repository import create_batch, get_active_batch
+        batch = create_batch(
+            task.id,
+            continue_request_id="test-req-1",
+            requested_count=2,
+            effective_count=2,
+            actual_start_chapter=4,
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.READY_FOR_BATCH.value,
+            active_batch_no=batch.batch_no,
+            active_continue_request_id="test-req-1",
+        )
+        # 将任务转入 WAITING_MANUAL_ACTION（可取消状态）
+        task = store.set_waiting_manual_action(
+            task.id,
+            "模拟异常",
+            payload={"summary": "测试", "display_level": "public", "reason": "recoverable_runtime_error"},
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+        )
+        # 取消前应存在活动批次
+        self.assertIsNotNone(get_active_batch(task.id))
+
+        service.cancel_task(task.id)
+
+        # 取消后活动批次应被标记为 failed
+        self.assertIsNone(get_active_batch(task.id))
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertIsNone(project.active_batch_no)
+        self.assertEqual(project.active_continue_request_id, "")
 
     def test_cancelled_task_with_chapters_can_recover_to_ready_for_batch(self) -> None:
         tmp_dir, store, service = self._build_service()
