@@ -56,6 +56,7 @@ import {
   resolveRecoveryPreview,
 } from "@/features/task-recovery/recovery-state.mjs";
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
+import { buildChapterProgress, buildThinkingGroups } from "@/features/task-run/task-run-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
@@ -352,41 +353,6 @@ function buildSummaryStream(events: WorkspaceEvent[], activeTraceSummary?: strin
   return fallback;
 }
 
-function buildChapterProgress(events: WorkspaceEvent[]) {
-  const chapterMap = new Map<
-    number,
-    {
-      number: number;
-      title: string;
-      status: string;
-      progress: number;
-      summary?: string;
-      updatedAt: string;
-    }
-  >();
-
-  events
-    .filter((event) => event.event_type.startsWith("chapter."))
-    .forEach((event) => {
-      const chapterNumber = event.payload?.chapter_number;
-      if (typeof chapterNumber !== "number") {
-        return;
-      }
-      const current = chapterMap.get(chapterNumber);
-      const title = event.payload?.chapter_title || current?.title || event.unit_id || `第 ${chapterNumber} 章`;
-      chapterMap.set(chapterNumber, {
-        number: chapterNumber,
-        title,
-        status: event.event_type === "chapter.saved" ? "已完成" : "生成中",
-        progress: event.event_type === "chapter.saved" ? 100 : 56,
-        summary: event.payload?.chapter_summary || current?.summary,
-        updatedAt: event.created_at,
-      });
-    });
-
-  return Array.from(chapterMap.values()).sort((left, right) => left.number - right.number);
-}
-
 function countIncomingDependencies(workspace: WorkspaceResponse, subtaskId: string) {
   return workspace.supervisor_plan?.dependencies.filter((edge) => edge.downstream_subtask_id === subtaskId).length ?? 0;
 }
@@ -401,53 +367,6 @@ function resolveSupervisorStatus(subtask: SupervisorSubtaskItem) {
 
 function buildSystemStages(events: WorkspaceEvent[]) {
   return events.filter((event) => !event.event_type.startsWith("chapter.") && event.event_type !== "model.thinking").slice(-10);
-}
-
-interface ThinkingGroup {
-  unitId: string;
-  stage: string;
-  content: string;
-  lastUpdatedAt: string;
-  isActive: boolean;
-  model?: string;
-  finishReason?: string | null;
-}
-
-function buildThinkingGroups(events: WorkspaceEvent[], workspaceStatus?: TaskStatus): ThinkingGroup[] {
-  const thinkingEvents = events.filter((event) => event.event_type === "model.thinking");
-  if (!thinkingEvents.length) return [];
-
-  const groupMap = new Map<string, ThinkingGroup>();
-  for (const event of thinkingEvents) {
-    const key = event.unit_id || "default";
-    const existing = groupMap.get(key);
-    const chunk = event.payload?.reasoning_chunk || "";
-    const model = event.payload?.model || existing?.model || "";
-    const finishReason = event.payload?.finish_reason ?? existing?.finishReason ?? null;
-    groupMap.set(key, {
-      unitId: key,
-      stage: event.stage || "",
-      content: (existing?.content || "") + chunk,
-      lastUpdatedAt: event.created_at,
-      isActive: false,
-      model,
-      finishReason,
-    });
-  }
-
-  const groups = Array.from(groupMap.values());
-  const activeStatuses: TaskStatus[] = ["planning", "drafting", "assembling"];
-  const isTaskRunning = workspaceStatus ? activeStatuses.includes(workspaceStatus) : false;
-
-  if (isTaskRunning && groups.length > 0) {
-    // 按最后更新时间排序，取最新的作为活跃组
-    const latestGroup = groups.reduce((latest, group) =>
-      new Date(group.lastUpdatedAt) > new Date(latest.lastUpdatedAt) ? group : latest,
-    );
-    latestGroup.isActive = true;
-  }
-
-  return groups;
 }
 
 export default function TaskRunClient({ taskId }: { taskId?: string }) {
@@ -486,7 +405,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   // 提前计算 thinkingGroups，确保相关 hook 位于条件 return 之前，避免 Hook 数量不一致
   const thinkingGroups = useMemo(() => {
     if (!workspace) return [];
-    return buildThinkingGroups(workspace.recent_events, workspace.meta.status);
+    return buildThinkingGroups(workspace.recent_events, workspace.meta.status, {
+      minimumChapterNumber: workspace.novel_progress?.next_chapter_number,
+    });
   }, [workspace]);
 
   // 自动展开新到达的活跃思考组（用户未手动折叠过的）
@@ -705,6 +626,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
     let disposed = false;
     let source: EventSource | null = null;
+    let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
     const candidatePaths = streamPathCandidates(resolvedTaskId);
     let reconnectAttempts = 0;
     const MAX_RECONNECT = 3;
@@ -732,6 +654,10 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       };
 
       const handleRefresh = () => {
+        if (refreshTimeout) return;
+        refreshTimeout = setTimeout(() => {
+          refreshTimeout = null;
+        }, 3000);
         void refreshWorkspace();
       };
       source.addEventListener("snapshot", handleRefresh);
@@ -765,6 +691,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
     return () => {
       disposed = true;
+      if (refreshTimeout) clearTimeout(refreshTimeout);
       source?.close();
       eventSourceRef.current = null;
     };
@@ -841,7 +768,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
     try {
       setRunning(true);
-      const requestId = continueRequestIdRef.current ?? crypto.randomUUID();
+      const requestId = continueRequestIdRef.current ?? (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `${Math.random().toString(36).substring(2, 10)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36).substring(0, 4)}`);
       continueRequestIdRef.current = requestId;
       await continueTask(resolvedTaskId, {
         requested_chapter_count: requestedChapterCount,
@@ -916,7 +845,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   const status = statusMap[workspace.meta.status] ?? statusMap.created;
   const systemStages = buildSystemStages(workspace.recent_events);
-  const chapterProgress = buildChapterProgress(workspace.recent_events);
+  const chapterProgress = buildChapterProgress(workspace.recent_events, workspace.novel_progress);
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
   const currentStep = getStepIndex(workspace.meta.status);
   const contextStatus = resolveContextStatus(workspace);

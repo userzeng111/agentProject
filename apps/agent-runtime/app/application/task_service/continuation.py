@@ -16,6 +16,12 @@ from app.domain.models import (
     TaskRecord,
     TaskStatus,
 )
+from app.llm.story_engine import (
+    reset_exchange_callback,
+    reset_progress_callback,
+    set_exchange_callback,
+    set_progress_callback,
+)
 
 logger = get_logger(__name__)
 
@@ -30,8 +36,82 @@ _STAGE_LABELS: dict[str, str] = {
 
 class TaskServiceContinuationMixin:
 
-    def continue_task(self, task_id: str, payload: ContinueDraftRequest | dict[str, Any]) -> TaskRecord:
+    def queue_continue_task(self, task_id: str, payload: ContinueDraftRequest | dict[str, Any]) -> TaskRecord:
+        """将继续创作请求放入后台执行，避免 HTTP 请求长时间阻塞。"""
         if not self._enter_active_run(task_id):
+            raise ValueError("当前任务正在执行中，请勿重复提交。")
+        started_background = False
+        try:
+            request = payload if isinstance(payload, ContinueDraftRequest) else ContinueDraftRequest.model_validate(payload)
+            task = self.store.get(task_id)
+            action_model_id = self._resolve_action_model_id(task, request.model_id)
+            self._ensure_novel_project_seeded(task)
+
+            from app.storage.db_repository import (
+                get_active_batch,
+                get_batch_by_request,
+                get_novel_project,
+            )
+
+            existing_batch = get_batch_by_request(task_id, request.continue_request_id)
+            if existing_batch is not None:
+                return self.store.get(task_id)
+
+            if task.status is not TaskStatus.READY_FOR_BATCH:
+                raise ValueError("当前任务尚未进入继续创作阶段。")
+            if task.story_plan is None:
+                raise ValueError("当前任务缺少大纲，无法继续创作。")
+
+            active_batch = get_active_batch(task_id)
+            if active_batch is not None and active_batch.continue_request_id != request.continue_request_id:
+                raise ValueError("当前已有活动批次，不能开启新的继续创作请求。")
+
+            project = get_novel_project(task_id)
+            if project is None:
+                raise ValueError("当前任务缺少小说项目记录。")
+
+            completed_count = int(project.completed_chapter_count or 0)
+            remaining = max(int(project.planned_chapter_count or 0) - completed_count, 0)
+            effective_count = min(int(request.requested_chapter_count), remaining)
+            if effective_count <= 0:
+                raise ValueError("当前任务没有可继续创作的剩余章节。")
+
+            with self._run_lock:
+                self._queued_continue_runs.add(task_id)
+            snapshot = self.store.mark_stage(
+                task_id,
+                status=TaskStatus.READY_FOR_BATCH,
+                stage="ready_for_batch",
+                progress=max(task.progress, 58),
+                message="继续创作已进入后台执行。",
+                event_type="task.queued",
+                unit_id=f"chapter-{completed_count + 1:02d}",
+                payload={
+                    "summary": "继续创作已进入后台执行",
+                    "display_level": "public",
+                    "continue_request_id": request.continue_request_id,
+                    "requested_chapter_count": int(request.requested_chapter_count),
+                    "effective_chapter_count": effective_count,
+                    "next_chapter_number": completed_count + 1,
+                },
+            )
+            snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="continue")
+            snapshot = self._sync_supervisor_plan(task_id)
+            self._start_background(task_id, self.continue_task, task_id, request)
+            started_background = True
+            return snapshot
+        finally:
+            if not started_background:
+                with self._run_lock:
+                    self._queued_continue_runs.discard(task_id)
+                self._leave_active_run(task_id)
+
+    def continue_task(self, task_id: str, payload: ContinueDraftRequest | dict[str, Any]) -> TaskRecord:
+        with self._run_lock:
+            queued_run = task_id in self._queued_continue_runs
+            if queued_run:
+                self._queued_continue_runs.discard(task_id)
+        if not queued_run and not self._enter_active_run(task_id):
             raise ValueError("当前任务正在执行中，请勿重复提交。")
         try:
             request = payload if isinstance(payload, ContinueDraftRequest) else ContinueDraftRequest.model_validate(payload)
@@ -106,19 +186,28 @@ class TaskServiceContinuationMixin:
                 list(range(completed_count + 1, completed_count + effective_count + 1)),
             )
             try:
-                chapter_pair = self.engine.generate_chapter_pair(
-                    spec=self._with_model_id(
-                        task.normalized_spec or self._initial_state(task)["input_payload"],
-                        action_model_id,
-                    ),
-                    story_plan=task.story_plan.model_dump(mode="json"),
-                    batch_index=completed_count,
-                    completed_chapters=completed_chapters,
-                    reference_text="\n\n".join(source.content for source in task.sources),
-                    model=action_model_id,
-                    requested_batch_size=effective_count,
-                    draft_seeds=draft_seed_map,
-                )
+                progress_callback = self._build_progress_callback(task_id, update_completed_on_saved=False)
+                exchange_callback = self._build_exchange_callback(task_id)
+                progress_token = set_progress_callback(progress_callback)
+                exchange_token = set_exchange_callback(exchange_callback)
+                try:
+                    chapter_pair = self.engine.generate_chapter_pair(
+                        spec=self._with_model_id(
+                            task.normalized_spec or self._initial_state(task)["input_payload"],
+                            action_model_id,
+                        ),
+                        story_plan=task.story_plan.model_dump(mode="json"),
+                        batch_index=completed_count,
+                        completed_chapters=completed_chapters,
+                        reference_text="\n\n".join(source.content for source in task.sources),
+                        model=action_model_id,
+                        progress_callback=progress_callback,
+                        requested_batch_size=effective_count,
+                        draft_seeds=draft_seed_map,
+                    )
+                finally:
+                    reset_progress_callback(progress_token)
+                    reset_exchange_callback(exchange_token)
                 if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
                     return self.store.get(task_id)
                 chapter_drafts = [ChapterDraft.model_validate(item) for item in chapter_pair]

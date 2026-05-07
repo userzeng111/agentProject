@@ -8,7 +8,7 @@ from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import get_session
 from app.storage.db_models import NovelGenerationBatchModel, NovelOutlineChapterModel
-from app.storage.db_repository import read_file_content_hash
+from app.storage.db_repository import get_novel_project, read_file_content_hash
 from app.storage.task_store import TaskLogStore
 
 
@@ -25,6 +25,7 @@ class FakeBatchEngine:
         self.settings = settings
         self.gateway_client = FakeGatewayClient()
         self.generated_batches: list[dict] = []
+        self.emit_progress_events = False
 
     def set_runtime_default_model(self, model_id: str) -> None:
         self.settings.default_chat_model = model_id
@@ -46,6 +47,32 @@ class FakeBatchEngine:
         batch_size = min(int(requested_batch_size or 1), remaining)
         result = []
         for item in story_plan["chapter_plan"][batch_index : batch_index + batch_size]:
+            if self.emit_progress_events and progress_callback is not None:
+                progress_callback(
+                    {
+                        "event_type": "chapter.started",
+                        "stage": "drafting",
+                        "unit_id": f"chapter-{item['number']:02d}",
+                        "message": f"正在生成第 {item['number']} 章：{item['title']}",
+                        "payload": {
+                            "chapter_number": item["number"],
+                            "chapter_title": item["title"],
+                        },
+                    }
+                )
+                progress_callback(
+                    {
+                        "event_type": "model.thinking",
+                        "stage": "drafting",
+                        "unit_id": f"chapter-{item['number']:02d}",
+                        "message": "模型思考中...",
+                        "payload": {
+                            "reasoning_chunk": f"思考第 {item['number']} 章",
+                            "model": model or "",
+                            "finish_reason": None,
+                        },
+                    }
+                )
             result.append(
                 {
                     "number": item["number"],
@@ -54,6 +81,20 @@ class FakeBatchEngine:
                     "content": f"{item['title']} 正文",
                 }
             )
+            if self.emit_progress_events and progress_callback is not None:
+                progress_callback(
+                    {
+                        "event_type": "chapter.saved",
+                        "stage": "drafting",
+                        "unit_id": f"chapter-{item['number']:02d}",
+                        "message": f"第 {item['number']} 章已生成：{item['title']}",
+                        "payload": {
+                            "chapter_number": item["number"],
+                            "chapter_title": item["title"],
+                            "chapter_summary": f"{item['title']} 摘要",
+                        },
+                    }
+                )
         self.generated_batches.append(
             {
                 "batch_index": batch_index,
@@ -135,6 +176,23 @@ class BatchedChapterGenerationTests(unittest.TestCase):
         chapter_md = Path(tmp_dir.name) / "tasklog" / "runs" / task.id / "chapters" / "01.md"
         self.assertTrue(chapter_md.exists())
 
+    def test_queue_continue_task_returns_before_chapter_generation_runs(self) -> None:
+        tmp_dir, store, service, engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=3)
+        background_calls = []
+        service._start_background = lambda *args, **kwargs: background_calls.append((args, kwargs))
+
+        snapshot = service.queue_continue_task(
+            task.id,
+            {"requested_chapter_count": 2, "continue_request_id": "req-queued"},
+        )
+
+        self.assertEqual(snapshot.status, TaskStatus.READY_FOR_BATCH)
+        self.assertEqual(len(background_calls), 1)
+        self.assertEqual(engine.generated_batches, [])
+        self.assertIn(task.id, service._active_runs)
+
     def test_continue_task_reuses_same_continue_request_id(self) -> None:
         tmp_dir, store, service, engine = self._build_service()
         self.addCleanup(tmp_dir.cleanup)
@@ -175,6 +233,65 @@ class BatchedChapterGenerationTests(unittest.TestCase):
 
         self.assertEqual(approved.status.value, "ready_for_batch")
         self.assertEqual(approved.current_stage, "ready_for_batch")
+
+    def test_chapter_review_approve_advances_past_restored_drafted_chapters(self) -> None:
+        tmp_dir, store, service, _engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=8)
+
+        continue_task = getattr(service, "continue_task", None)
+        self.assertIsNotNone(continue_task)
+        continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-1"})
+        service.resume_task(task.id, approved=True, comment="通过")
+
+        with get_session() as session:
+            for chapter_number in (1, 2, 3):
+                chapter = session.query(NovelOutlineChapterModel).filter_by(
+                    task_id=task.id,
+                    chapter_number=chapter_number,
+                ).first()
+                self.assertIsNotNone(chapter)
+                chapter.status = "drafted"
+                chapter.artifact_state = "present"
+            session.commit()
+
+        continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-2"})
+        approved = service.resume_task(task.id, approved=True, comment="通过")
+
+        self.assertEqual(approved.status, TaskStatus.READY_FOR_BATCH)
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.completed_chapter_count, 6)
+        self.assertEqual(project.next_chapter_number, 7)
+
+    def test_continue_task_emits_progress_and_thinking_events_for_later_batch(self) -> None:
+        tmp_dir, store, service, engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        engine.emit_progress_events = True
+        task = self._seed_ready_task(store, service, planned_chapter_count=8)
+
+        continue_task = getattr(service, "continue_task", None)
+        self.assertIsNotNone(continue_task)
+        continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-1"})
+        service.resume_task(task.id, approved=True, comment="通过")
+        before_event_count = len(store.get(task.id).events)
+        continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-2"})
+
+        events = store.get(task.id).events[before_event_count:]
+        chapter_started = {
+            event.payload.get("chapter_number")
+            for event in events
+            if event.event_type == "chapter.started"
+        }
+        thinking_units = {
+            event.unit_id
+            for event in events
+            if event.event_type == "model.thinking"
+        }
+
+        self.assertEqual(chapter_started, {4, 5, 6})
+        self.assertEqual(thinking_units, {"chapter-04", "chapter-05", "chapter-06"})
 
     def test_recover_task_marks_waiting_manual_action_on_checksum_mismatch(self) -> None:
         tmp_dir, store, service, _engine = self._build_service()

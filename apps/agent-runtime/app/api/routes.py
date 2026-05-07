@@ -243,6 +243,8 @@ def build_router(
     @router.post("/tasks/{task_id}/continue")
     def continue_task(task_id: str, payload: ContinueDraftRequest):
         try:
+            if hasattr(task_service, "queue_continue_task"):
+                return task_service.queue_continue_task(task_id, payload)
             return task_service.continue_task(task_id, payload)
         except Exception as exc:
             logger.exception("继续任务失败 task_id=%s", task_id)

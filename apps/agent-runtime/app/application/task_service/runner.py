@@ -152,7 +152,7 @@ class TaskServiceRunnerMixin:
         finally:
             self._leave_active_run(task_id)
 
-    def _build_progress_callback(self, task_id: str):
+    def _build_progress_callback(self, task_id: str, *, update_completed_on_saved: bool = True):
         def callback(event: dict[str, Any]) -> None:
             from app.storage.db_repository import update_project_status
 
@@ -193,7 +193,7 @@ class TaskServiceRunnerMixin:
                         content=chapter_content,
                     )
                 # 同步更新已生成章节计数
-                if isinstance(chapter_number, int) and chapter_number > 0:
+                if update_completed_on_saved and isinstance(chapter_number, int) and chapter_number > 0:
                     from app.storage.db_repository import get_novel_project
                     project = get_novel_project(task_id)
                     current_completed = int(project.completed_chapter_count or 0) if project else 0

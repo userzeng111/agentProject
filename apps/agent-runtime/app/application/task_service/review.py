@@ -88,9 +88,16 @@ class TaskServiceReviewMixin:
             if approved:
                 mark_outline_chapters_approved(task_id, chapter_numbers)
                 mark_batch_approved(task_id, batch.batch_no)
-                completed_count = count_approved_chapters(task_id)
+                approved_count = count_approved_chapters(task_id)
+                current_completed = int(project.completed_chapter_count or 0)
+                batch_end = int(batch.actual_end_chapter or 0)
+                chapter_end = max(chapter_numbers) if chapter_numbers else 0
+                completed_count = max(current_completed, approved_count, batch_end, chapter_end)
+                planned_total = int(project.planned_chapter_count or 0)
+                if planned_total > 0:
+                    completed_count = min(completed_count, planned_total)
                 next_chapter_number = completed_count + 1
-                if completed_count >= project.planned_chapter_count:
+                if planned_total > 0 and completed_count >= planned_total:
                     update_project_status(
                         task_id,
                         status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
@@ -189,4 +196,3 @@ class TaskServiceReviewMixin:
                 raise ValueError("任务正在运行中，请勿重复提交。")
         self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
         return snapshot
-

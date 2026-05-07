@@ -102,6 +102,7 @@ class TaskServiceCoreMixin:
         self._chapter_file_locks: dict[str, threading.Lock] = {}
         self._active_threads: dict[str, threading.Thread] = {}
         self._stop_requested: set[str] = set()
+        self._queued_continue_runs: set[str] = set()
 
         # 初始化 SQLite 业务数据库
         from app.storage.database import init_db

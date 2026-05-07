@@ -357,6 +357,7 @@ export interface WorkspaceResponse extends RecoveryContractFields {
     planned_chapter_count?: number;
     completed_chapter_count?: number;
     next_chapter_number?: number;
+    current_generating_chapter_number?: number | null;
     remaining_chapter_count?: number;
     default_batch_size?: number;
   };
