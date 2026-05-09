@@ -280,6 +280,55 @@ class RecoveryCancelledTaskTests(unittest.TestCase):
         recovered = service.recover_task(task.id, force=True)
         self.assertEqual(recovered.status, TaskStatus.WAITING_OUTLINE_REVIEW)
 
+    def test_recover_clears_stale_active_batch(self) -> None:
+        """恢复已取消任务时，若数据库中残留旧版本未清理的活动批次，应自动清理。"""
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task, story_plan = self._setup_task_with_completed_chapters(store, service)
+        # 创建一个活动批次（模拟旧版本 cancel_task 未清理的残留）
+        from app.storage.db_repository import create_batch, get_active_batch
+        batch = create_batch(
+            task.id,
+            continue_request_id="stale-req-1",
+            requested_count=2,
+            effective_count=2,
+            actual_start_chapter=4,
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.READY_FOR_BATCH.value,
+            active_batch_no=batch.batch_no,
+            active_continue_request_id="stale-req-1",
+        )
+        # 直接取消任务，但不清理批次（模拟旧版本行为）
+        task = store.set_waiting_manual_action(
+            task.id,
+            "模拟异常",
+            payload={"summary": "测试", "display_level": "public", "reason": "recoverable_runtime_error"},
+        )
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+        )
+        store.cancel_task(task.id)
+
+        # 确认取消后批次仍然存在（旧版本残留）
+        self.assertIsNotNone(get_active_batch(task.id))
+
+        # 恢复任务应自动清理残留批次
+        recovered = service.recover_task(task.id, force=True)
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+
+        # 清理后不应再有活动批次
+        self.assertIsNone(get_active_batch(task.id))
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertIsNone(project.active_batch_no)
+        self.assertEqual(project.active_continue_request_id, "")
+
 
 if __name__ == "__main__":
     unittest.main()

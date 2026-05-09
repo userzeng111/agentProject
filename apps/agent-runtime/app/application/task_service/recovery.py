@@ -531,6 +531,7 @@ class TaskServiceRecoveryMixin:
             get_active_batch,
             get_novel_project,
             list_outline_chapters,
+            mark_batch_failed,
             mark_outline_chapter_manual_action,
             read_file_content_hash,
             update_project_status,
@@ -540,6 +541,19 @@ class TaskServiceRecoveryMixin:
         project = get_novel_project(task.id)
         if project is None:
             return None
+
+        # 清理旧版本 cancel_task 未处理的残留活动批次
+        if task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED}:
+            active_batch = get_active_batch(task.id)
+            if active_batch is not None:
+                mark_batch_failed(task.id, int(active_batch.batch_no))
+                update_project_status(
+                    task.id,
+                    status=project.status,
+                    active_batch_no=None,
+                    active_continue_request_id="",
+                )
+                project = get_novel_project(task.id)
 
         chapters = list_outline_chapters(task.id)
         for chapter in chapters:

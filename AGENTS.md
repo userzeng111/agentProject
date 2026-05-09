@@ -107,3 +107,126 @@
 	- 特性完整保留；
 	- 对外行为与语义不变。
 - 任一特性回归即判定失败，必须停止并修复或回滚当前批次。
+
+## 项目概述
+
+基于 LangChain + LangGraph 的 AI 辅助小说创作系统，Monorepo 结构：
+
+- `apps/agent-runtime/`：FastAPI 后端（Python 3.11+，uv 管理依赖）
+- `apps/web/`：Next.js 14 前端（Node.js 18+，npm 管理依赖）
+- `embeddingProject/`：BGE Embedding RAG 子项目（独立 Python 项目，llama.cpp + FAISS + SQLite）
+
+## 常用开发命令
+
+### 后端（apps/agent-runtime）
+
+```bash
+# 安装依赖
+cd apps/agent-runtime && uv sync --locked --dev
+
+# 启动后端
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+
+# 运行全部测试
+uv run --project apps/agent-runtime pytest apps/agent-runtime/tests/ -v
+
+# 运行单个测试文件
+uv run --project apps/agent-runtime pytest apps/agent-runtime/tests/test_xxx.py -v
+
+# 代码检查
+uv run --project apps/agent-runtime ruff check apps/agent-runtime/
+```
+
+### 前端（apps/web）
+
+```bash
+# 安装依赖
+cd apps/web && npm ci
+
+# 启动开发服务器（端口 3000）
+npm run dev
+
+# 构建校验
+npm run build
+
+# 运行单元测试（Node.js 内置 test runner）
+npm test
+
+# ESLint 检查
+npm run lint
+```
+
+### 根目录快捷命令
+
+```bash
+# 一键启动后端 + Cloudflare Tunnel
+./start-backend-tunnel.sh
+
+# 根 package.json 提供的快捷方式
+npm run web:dev    # 启动前端 dev
+npm run web:build  # 前端构建
+npm run web:test   # 前端测试
+```
+
+### embeddingProject
+
+```bash
+cd embeddingProject
+uv sync --dev
+
+# 常用 CLI 命令
+uv run python cli.py show-config
+uv run python cli.py index --input-file data.jsonl --root-dir artifacts
+uv run python cli.py search --query "xxx" --top-k 3 --root-dir artifacts
+uv run python cli.py answer --query "xxx" --config-file rag.config.json --root-dir artifacts
+
+# 测试
+uv run pytest tests/test_rag.py tests/test_cli.py tests/test_config.py tests/test_storage.py tests/test_embedders.py tests/test_pipeline.py -q
+```
+
+## 项目架构
+
+### 后端（FastAPI）
+
+入口 `app/main.py`，通过依赖注入组装核心服务：
+
+- `app/api/`：REST 路由层
+  - `routes.py`：v1 API（任务、归档、聊天、RAG、模型管理等）
+  - `dynamic_routes.py`：v2 动态 Agent 编排 API
+- `app/application/`：业务服务层，核心为 `task_service/`（任务创建、执行、恢复、取消、审核）
+- `app/domain/`：领域模型
+- `app/graph/`：LangGraph 工作流
+  - `main_graph.py`：主创作图（创建 → 规划 → 审核 → 生成 → 归档）
+  - `supervisor_graph.py`：监督者图
+  - `nodes/`：各节点实现
+  - `routers/`：条件路由逻辑
+- `app/llm/`：LLM 引擎
+  - `story_engine.py`：故事生成引擎，统一网关调用
+  - `model_catalog.py`：模型目录与切换服务
+- `app/context/`：上下文管理（预算分配、参考素材压缩、缓存）
+- `app/storage/`：任务持久化（`task_store.py`）
+- `app/rag/`：RAG 检索增强（NovelCorpusRebuildService、RagService）
+- `app/novel_skills/`：小说创作技能
+- `app/style_profiles/`：风格配置
+- `app/settings/`：应用配置（Pydantic Settings）
+- `app/observability/`：日志与追踪中间件
+
+### 前端（Next.js 14 App Router）
+
+- `src/app/`：页面路由
+  - `page.tsx`：首页（双栏布局：任务列表 + 侧边栏统计/模型切换）
+  - `create/`、`tasks/`、`result/`、`review/`、`archive/`、`chat/`、`settings/`：各功能页面
+- `src/features/`：功能组件，按业务域划分
+  - `task-create`、`task-run`、`task-review`、`task-archive`、`task-recovery`、`chat`、`settings`
+- `src/components/`：通用 UI 组件
+- `src/lib/`：API 客户端、工具函数
+
+### 构建产物隔离
+
+前端开发态与构建态产物目录已隔离：
+- `npm run dev` 使用 `apps/web/.next-dev`
+- `npm run build` / `npm run start` 使用 `apps/web/.next`
+
+### SPA 静态文件挂载
+
+后端 `app/main.py` 在 `_static_dir = Path("/home/user01/WorkSpace/AgentProject/apps/web/out")` 存在时，挂载前端静态文件并启用 SPA fallback。
