@@ -149,7 +149,15 @@ function formatActionKindLabel(kind?: string) {
 }
 
 function resolveReviewTaskModelId(review?: ReviewResponse | null) {
-  return review?.meta.default_model_id || review?.meta.model_id || "";
+  return review?.meta.creative_model_id || review?.meta.default_model_id || review?.meta.model_id || "";
+}
+
+function formatReviewModelLabel(review: ReviewResponse) {
+  if (review.meta.auto_review_model_mode === "follow_creative") {
+    const creativeModelId = resolveReviewTaskModelId(review);
+    return `跟随创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
+  }
+  return review.meta.review_model_id || "未设置";
 }
 
 function ReviewHistory({ history }: { history: ReviewResponse["review_history"] }) {
@@ -578,6 +586,7 @@ function ReviewActionModelSelector({
   defaultModelId,
   lastActionModelId,
   lastActionKind,
+  reviewModelLabel,
   onRefreshModels,
 }: {
   models: ModelOption[];
@@ -587,6 +596,7 @@ function ReviewActionModelSelector({
   defaultModelId?: string;
   lastActionModelId?: string;
   lastActionKind?: string;
+  reviewModelLabel?: string;
   onRefreshModels: () => void;
 }) {
   const resolvedModelId = models.some((item) => item.id === actionModelId) ? actionModelId : "";
@@ -603,7 +613,7 @@ function ReviewActionModelSelector({
     >
       <Stack spacing={1.5}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-          <Typography variant="subtitle2">本次继续执行模型</Typography>
+          <Typography variant="subtitle2">审核后继续创作模型</Typography>
           <Button size="small" variant="outlined" onClick={onRefreshModels}>
             刷新模型
           </Button>
@@ -616,7 +626,7 @@ function ReviewActionModelSelector({
           sx={{ maxWidth: 360 }}
         >
           <MenuItem value="">
-            <em>请选择本次执行模型</em>
+            <em>请选择审核后继续创作模型</em>
           </MenuItem>
           {models.length ? (
             models.map((model) => (
@@ -633,19 +643,22 @@ function ReviewActionModelSelector({
         {!models.length ? (
           <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
         ) : !resolvedModelId ? (
-          <Alert severity="warning">任务默认模型当前不在可用模型列表中，请先手动选择本次执行模型。</Alert>
+          <Alert severity="warning">任务创作模型当前不在可用模型列表中，请先手动选择审核后继续创作模型。</Alert>
         ) : null}
         <Typography variant="caption" color="text.secondary">
           {formatModelRefreshStatus(modelRefresh)}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          默认沿用当前任务模型；点击通过或驳回后继续生成时可临时切换。
+          默认沿用当前创作模型；点击通过或驳回后继续生成时可临时切换。自动审核模型由创建任务时的审核模型配置决定。
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          任务默认模型：{defaultModelId || "未设置"}
+          创作模型：{defaultModelId || "未设置"}
           {lastActionModelId
-            ? ` · 最近一次动作模型：${lastActionModelId}${formatActionKindLabel(lastActionKind) ? `（${formatActionKindLabel(lastActionKind)}）` : ""}`
+            ? ` · 最近一次创作动作模型：${lastActionModelId}${formatActionKindLabel(lastActionKind) ? `（${formatActionKindLabel(lastActionKind)}）` : ""}`
             : ""}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">
+          自动审核模型：{reviewModelLabel || "未设置"}
         </Typography>
       </Stack>
     </Box>
@@ -753,9 +766,10 @@ function OutlineReview({
               modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
-              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              reviewModelLabel={formatReviewModelLabel(review)}
               onRefreshModels={onRefreshModels}
             />
             <TextField
@@ -895,9 +909,10 @@ function ChapterPairReview({
               modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
-              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              reviewModelLabel={formatReviewModelLabel(review)}
               onRefreshModels={onRefreshModels}
             />
             <TextField
@@ -1048,9 +1063,10 @@ function VerificationReview({
               modelRefresh={modelRefresh}
               actionModelId={actionModelId}
               setActionModelId={setActionModelId}
-              defaultModelId={review.meta.default_model_id || review.meta.model_id}
+              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
               lastActionModelId={review.meta.last_action_model_id}
               lastActionKind={review.meta.last_action_kind}
+              reviewModelLabel={formatReviewModelLabel(review)}
               onRefreshModels={onRefreshModels}
             />
             <TextField

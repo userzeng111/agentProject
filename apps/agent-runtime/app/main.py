@@ -49,6 +49,7 @@ rag_rebuild_service = NovelCorpusRebuildService(RagConfig.from_env())
 style_profile_service = StyleProfileService()
 novel_skill_service = NovelSkillService(style_profile_service=style_profile_service)
 auto_review_policy = {
+    "auto_review_model_mode": settings.auto_review_model_mode,
     "auditor_model": settings.auto_review_auditor_model,
     "synthesis_model": settings.auto_review_synthesis_model,
     "outline_pass_threshold": 60.0,
@@ -76,6 +77,14 @@ chat_service = ChatService(
 )
 
 app = FastAPI(title=settings.app_name)
+
+
+@app.on_event("shutdown")
+async def close_gateway_clients() -> None:
+    """关闭长期复用的模型网关连接池。"""
+    gateway_client = getattr(engine, "gateway_client", None)
+    if gateway_client is not None and hasattr(gateway_client, "aclose"):
+        await gateway_client.aclose()
 
 # 请求追踪中间件（放在最外层，确保捕获所有请求）
 app.add_middleware(TracingMiddleware)

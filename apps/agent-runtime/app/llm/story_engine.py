@@ -4,6 +4,7 @@ from collections.abc import Callable
 from contextvars import ContextVar, Token
 import hashlib
 import json
+import time
 from app.observability import get_logger
 from pathlib import Path
 from typing import Any
@@ -901,7 +902,9 @@ class StoryEngine(BaseAgent):
             )
 
         # 解析 JSON
+        parse_started = time.perf_counter()
         payload = self._strip_and_parse_json(full_content)
+        parse_duration_ms = (time.perf_counter() - parse_started) * 1000
 
         self.response_cache.set(cache_key, payload)
         conversation_history = self._append_assistant_message(request_messages, payload)
@@ -915,6 +918,7 @@ class StoryEngine(BaseAgent):
             conversation_history=conversation_history,
             response_payload=payload,
             cache_key=cache_key,
+            parse_duration_ms=parse_duration_ms,
         )
         return payload, conversation_history
 
@@ -962,6 +966,7 @@ class StoryEngine(BaseAgent):
         conversation_history: list[dict[str, str]],
         response_payload: dict[str, Any],
         cache_key: str | None,
+        parse_duration_ms: float | None = None,
     ) -> None:
         if callback is None:
             return
@@ -975,8 +980,40 @@ class StoryEngine(BaseAgent):
                 "request_messages": request_messages,
                 "conversation_history": conversation_history,
                 "response_payload": response_payload,
+                "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
+                "parse_duration_ms": parse_duration_ms,
             }
         )
+
+    def _prompt_cache_diagnostics(self, request_messages: list[dict[str, str]]) -> dict[str, Any]:
+        parts: list[dict[str, Any]] = []
+        for index, message in enumerate(request_messages):
+            content = str(message.get("content") or "")
+            parts.append(
+                {
+                    "index": index,
+                    "role": message.get("role") or "",
+                    "chars": len(content),
+                    "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()[:16],
+                }
+            )
+        stable_prefix = "\n".join(
+            str(message.get("content") or "")
+            for message in request_messages
+            if message.get("role") == "system"
+        )
+        dynamic_tail = "\n".join(
+            str(message.get("content") or "")
+            for message in request_messages
+            if message.get("role") != "system"
+        )
+        return {
+            "message_count": len(request_messages),
+            "total_chars": sum(int(item["chars"]) for item in parts),
+            "stable_prefix_hash": hashlib.sha256(stable_prefix.encode("utf-8")).hexdigest()[:16],
+            "dynamic_tail_hash": hashlib.sha256(dynamic_tail.encode("utf-8")).hexdigest()[:16],
+            "parts": parts,
+        }
 
     def _response_cache_key(self, model: str, request_messages: list[dict[str, str]]) -> str:
         payload = json.dumps(

@@ -52,6 +52,8 @@ class TaskLogStore:
         task = TaskRecord(
             mode=payload.mode,
             model_id=(payload.model_id or "").strip(),
+            auto_review_model_mode=payload.auto_review_model_mode,
+            review_model_id=(payload.review_model_id or "").strip(),
             input=payload,
             auto_review=payload.auto_review,
         )

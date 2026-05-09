@@ -10,6 +10,8 @@ from typing import Any
 from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from app.context.manager import ContextManager
 from app.domain.models import (
+    AutoReviewModelMode,
+    AutoReviewPolicy,
     ChapterDraft,
     DraftResult,
     ReviewPayload,
@@ -154,6 +156,9 @@ class TaskServiceCoreMixin:
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
         self.model_catalog.ensure_novel_generation_model_supported(requested_model)
+        review_model_id = (payload.review_model_id or "").strip()
+        if payload.auto_review_model_mode is AutoReviewModelMode.FIXED and review_model_id:
+            self.model_catalog.ensure_novel_generation_model_supported(review_model_id)
         task = self.store.create_task(payload)
         task.supervisor_plan = build_initial_supervisor_plan(payload)
         resolved_auto_review = self._resolve_task_auto_review(task)
@@ -174,6 +179,44 @@ class TaskServiceCoreMixin:
             self.model_catalog.ensure_novel_generation_model_supported(requested_model)
             return requested_model
         return self._resolve_task_model_id(task)
+
+    def _resolve_auto_review_policy(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, Any]:
+        policy_dict = dict(task.auto_review_policy or self.auto_review_policy or {})
+        if task.auto_review_model_mode is not None:
+            policy_dict["auto_review_model_mode"] = task.auto_review_model_mode.value
+        if task.review_model_id:
+            policy_dict["review_model_id"] = task.review_model_id
+
+        resolved_model_id = self._resolve_action_model_id(task, action_model_id)
+        mode = AutoReviewPolicy.model_validate(policy_dict).auto_review_model_mode
+        if mode is AutoReviewModelMode.FOLLOW_CREATIVE:
+            policy_dict["auditor_model"] = resolved_model_id
+            policy_dict["synthesis_model"] = resolved_model_id
+        else:
+            fixed_model = str(policy_dict.get("review_model_id") or "").strip()
+            if fixed_model:
+                self.model_catalog.ensure_novel_generation_model_supported(fixed_model)
+                policy_dict["auditor_model"] = fixed_model
+                policy_dict["synthesis_model"] = fixed_model
+            elif not str(policy_dict.get("auditor_model") or "").strip():
+                policy_dict["auditor_model"] = resolved_model_id
+            if not str(policy_dict.get("synthesis_model") or "").strip():
+                policy_dict["synthesis_model"] = str(policy_dict.get("auditor_model") or resolved_model_id)
+        AutoReviewPolicy.model_validate(policy_dict)
+        return policy_dict
+
+    def _auto_review_model_metadata(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, str]:
+        creative_model_id = self._resolve_action_model_id(task, action_model_id)
+        policy = AutoReviewPolicy.model_validate(self._resolve_auto_review_policy(task, action_model_id))
+        if policy.auto_review_model_mode is AutoReviewModelMode.FOLLOW_CREATIVE:
+            return {
+                "auto_review_model_mode": AutoReviewModelMode.FOLLOW_CREATIVE.value,
+                "review_model_id": creative_model_id,
+            }
+        return {
+            "auto_review_model_mode": AutoReviewModelMode.FIXED.value,
+            "review_model_id": policy.auditor_model or policy.synthesis_model or "",
+        }
 
     def _with_model_id(self, payload: dict[str, Any], model_id: str) -> dict[str, Any]:
         next_payload = dict(payload)
@@ -204,7 +247,7 @@ class TaskServiceCoreMixin:
             if was_active:
                 self._stop_requested.add(task_id)
         if thread is not None and thread.is_alive():
-            thread.join(timeout=10)
+            logger.info("取消任务已发送停止信号，后台线程将自行收敛，task_id=%s", task_id)
         # 保存 blocked_from_status 以便后续恢复，并清理残留的活动批次
         from app.storage.db_repository import get_active_batch, get_novel_project, mark_batch_failed, update_project_status
         project = get_novel_project(task_id)
@@ -490,11 +533,7 @@ class TaskServiceCoreMixin:
         reference_text = "\n\n".join(source.content for source in task.sources)
         resolved_auto_review = self._resolve_task_auto_review(task)
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
-        # 自动审核模型默认跟随用户选择的创作模型
-        auto_review_policy = dict(task.auto_review_policy or self.auto_review_policy)
-        if resolved_model_id:
-            auto_review_policy.setdefault("auditor_model", resolved_model_id)
-            auto_review_policy.setdefault("synthesis_model", resolved_model_id)
+        auto_review_policy = self._resolve_auto_review_policy(task, action_model_id)
         return {
             "task_id": task.id,
             "input_payload": {

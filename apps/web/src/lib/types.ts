@@ -1,6 +1,7 @@
 export type TaskMode = "short_story" | "long_story" | "fanfic" | "style_remix";
 export type CreativeMode = "original" | "fanfic" | "style_remix";
 export type NovelSize = "short" | "medium" | "long";
+export type AutoReviewModelMode = "follow_creative" | "fixed";
 export type TaskStatus =
   | "created"
   | "sources_ingested"
@@ -30,6 +31,9 @@ export interface TaskInput {
   banned: string;
   title_hint: string;
   model_id?: string;
+  creative_model_id?: string;
+  auto_review_model_mode?: AutoReviewModelMode;
+  review_model_id?: string;
 }
 
 export interface TaskCreatePayload extends TaskInput {
@@ -212,9 +216,12 @@ export interface TaskRecord {
   input: TaskInput;
   error_message: string | null;
   model_id?: string;
+  creative_model_id?: string;
   default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
+  auto_review_model_mode?: AutoReviewModelMode;
+  review_model_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -237,6 +244,8 @@ export interface TaskCardSummary {
   updated_at: string;
   summary: string;
   error_message?: string | null;
+  auto_review_model_mode?: AutoReviewModelMode;
+  review_model_id?: string;
   storage_state?: string;
 }
 
@@ -267,9 +276,12 @@ export interface WorkspaceMeta {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
+  creative_model_id?: string;
   default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
+  auto_review_model_mode?: AutoReviewModelMode;
+  review_model_id?: string;
   model_capabilities?: ModelCapabilities;
   status: TaskStatus;
   current_stage: string;
@@ -330,9 +342,12 @@ export interface WorkspaceResponse extends RecoveryContractFields {
     novel_size?: NovelSize;
     target_chapter_count?: number;
     model_id?: string;
+    creative_model_id?: string;
     default_model_id?: string;
     last_action_model_id?: string;
     last_action_kind?: string;
+    auto_review_model_mode?: AutoReviewModelMode;
+    review_model_id?: string;
     model_capabilities?: ModelCapabilities;
     genre?: string;
     style?: string;

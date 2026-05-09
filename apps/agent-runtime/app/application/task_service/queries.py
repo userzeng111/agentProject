@@ -342,6 +342,7 @@ class TaskServiceQueriesMixin:
         title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
         summary = task.events[-1].message if task.events else ""
         model_id = task.model_id or self.engine.settings.default_chat_model
+        review_model_meta = self._auto_review_model_metadata(task)
         last_error_detail = task.error_message
         for event in reversed(task.events):
             if event.event_type == "task.error_recorded":
@@ -357,9 +358,12 @@ class TaskServiceQueriesMixin:
             novel_size=task.novel_size,
             chapter_word_min=task.chapter_word_min,
             model_id=model_id,
+            creative_model_id=model_id,
             default_model_id=model_id,
             last_action_model_id=task.last_action_model_id,
             last_action_kind=task.last_action_kind,
+            auto_review_model_mode=review_model_meta["auto_review_model_mode"],
+            review_model_id=review_model_meta["review_model_id"],
             model_capabilities=self._model_capabilities(model_id),
             status=task.status,
             current_stage=task.current_stage,
@@ -580,12 +584,16 @@ class TaskServiceQueriesMixin:
 
     def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
         model_id = task.model_id or self.engine.settings.default_chat_model
+        review_model_meta = self._auto_review_model_metadata(task)
         return {
             "prompt": task.input.prompt,
             "model_id": model_id,
+            "creative_model_id": model_id,
             "default_model_id": model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
+            "auto_review_model_mode": review_model_meta["auto_review_model_mode"],
+            "review_model_id": review_model_meta["review_model_id"],
             "creative_mode": task.creative_mode.value if task.creative_mode else "",
             "novel_size": task.novel_size.value if task.novel_size else "",
             "target_chapter_count": task.target_chapter_count or task.input.target_chapter_count,
@@ -810,4 +818,3 @@ class TaskServiceQueriesMixin:
             "cache_key": snapshot.get("cache_key"),
             "cached_segments": len(compressed_items),
         }
-

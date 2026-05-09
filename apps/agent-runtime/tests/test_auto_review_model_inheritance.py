@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 from app.application.task_service.core import TaskServiceCoreMixin
 from app.domain.models import (
+    AutoReviewModelMode,
     AutoReviewPolicy,
     TaskCreateRequest,
     TaskMode,
@@ -55,6 +56,48 @@ class AutoReviewModelInheritanceTests(unittest.TestCase):
         self.assertEqual(policy.auditor_model, "K2.6")
         self.assertEqual(policy.synthesis_model, "K2.6")
         self.assertEqual(initial_state["input_payload"]["model_id"], "K2.6")
+
+    def test_initial_state_follow_mode_ignores_configured_default_review_model(self):
+        service = self._make_service()
+        service.auto_review_policy = {
+            "auto_review_model_mode": AutoReviewModelMode.FOLLOW_CREATIVE.value,
+            "auditor_model": "MiniMax-M2.7-highspeed",
+            "synthesis_model": "MiniMax-M2.7-highspeed",
+        }
+        payload = TaskCreateRequest(
+            model_id="K2.6",
+            prompt="测试",
+            genre="悬疑",
+            style="冷静",
+            mode=TaskMode.SHORT_STORY,
+            auto_review_model_mode=AutoReviewModelMode.FOLLOW_CREATIVE,
+        )
+        task = service.create_task(payload)
+        initial_state = service._initial_state(task)
+
+        policy = AutoReviewPolicy.model_validate(initial_state["auto_review_policy"])
+        self.assertEqual(policy.auto_review_model_mode, AutoReviewModelMode.FOLLOW_CREATIVE)
+        self.assertEqual(policy.auditor_model, "K2.6")
+        self.assertEqual(policy.synthesis_model, "K2.6")
+
+    def test_initial_state_fixed_mode_uses_task_review_model(self):
+        service = self._make_service()
+        payload = TaskCreateRequest(
+            model_id="K2.6",
+            prompt="测试",
+            genre="悬疑",
+            style="冷静",
+            mode=TaskMode.SHORT_STORY,
+            auto_review_model_mode=AutoReviewModelMode.FIXED,
+            review_model_id="glm-5.1",
+        )
+        task = service.create_task(payload)
+        initial_state = service._initial_state(task)
+
+        policy = AutoReviewPolicy.model_validate(initial_state["auto_review_policy"])
+        self.assertEqual(policy.auto_review_model_mode, AutoReviewModelMode.FIXED)
+        self.assertEqual(policy.auditor_model, "glm-5.1")
+        self.assertEqual(policy.synthesis_model, "glm-5.1")
 
     def test_initial_state_respects_explicit_policy_override(self):
         service = self._make_service()

@@ -31,6 +31,17 @@ class AliveThread:
         return None
 
 
+class BlockingThread:
+    join_called = False
+
+    def is_alive(self) -> bool:
+        return True
+
+    def join(self, timeout=None) -> None:
+        self.join_called = True
+        raise AssertionError("取消接口不应等待仍在运行的后台线程")
+
+
 class TaskServiceCancellationTests(unittest.TestCase):
     def _build_service(self):
         tmp_dir = tempfile.TemporaryDirectory()
@@ -100,6 +111,34 @@ class TaskServiceCancellationTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "正在取消|正在运行"):
             service.delete_task(task.id)
+
+    def test_cancel_task_does_not_wait_for_alive_thread_to_finish(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一个取消时必须快速返回的任务",
+                model_id="gpt-5.4",
+            )
+        )
+        store.mark_stage(
+            task.id,
+            status=TaskStatus.PLANNING,
+            stage="planning",
+            message="后台执行中",
+            event_type="task.queued",
+        )
+        thread = BlockingThread()
+        with service._run_lock:
+            service._active_runs.add(task.id)
+            service._active_threads[task.id] = thread
+
+        cancelled = service.cancel_task(task.id)
+
+        self.assertEqual(cancelled.status, TaskStatus.CANCELLED)
+        self.assertIn(task.id, service._stop_requested)
+        self.assertFalse(thread.join_called)
 
     def test_workflow_callback_returns_cancelled_before_starting_expensive_node(self) -> None:
         tmp_dir, store, service = self._build_service()

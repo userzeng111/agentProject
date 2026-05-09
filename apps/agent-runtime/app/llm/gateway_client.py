@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from app.observability import get_logger
 import re
+import threading
 import time
 from collections.abc import AsyncGenerator, Generator
 from time import sleep
@@ -70,6 +71,32 @@ class OpenAICompatibleGatewayClient:
                 write=timeout.get("write", 60.0),
                 pool=timeout.get("pool", 60.0),
             )
+        self._client_lock = threading.Lock()
+        self._client: httpx.Client | None = None
+        self._async_client: httpx.AsyncClient | None = None
+
+    def _get_client(self) -> httpx.Client:
+        with self._client_lock:
+            if self._client is None or self._client.is_closed:
+                self._client = httpx.Client(timeout=self._timeout, trust_env=False)
+            return self._client
+
+    def _get_async_client(self) -> httpx.AsyncClient:
+        if self._async_client is None or self._async_client.is_closed:
+            self._async_client = httpx.AsyncClient(timeout=self._timeout, trust_env=False)
+        return self._async_client
+
+    def close(self) -> None:
+        with self._client_lock:
+            if self._client is not None and not self._client.is_closed:
+                self._client.close()
+            self._client = None
+
+    async def aclose(self) -> None:
+        self.close()
+        if self._async_client is not None and not self._async_client.is_closed:
+            await self._async_client.aclose()
+        self._async_client = None
 
     def _get_adapter(self, model: str | None = None):
         """根据模型选择对应的协议适配器。"""
@@ -260,24 +287,20 @@ class OpenAICompatibleGatewayClient:
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                with httpx.Client(
-                    timeout=self._timeout,
-                    trust_env=False,
-                ) as client:
-                    response = client.request(
-                        method,
-                        f"{self.base_url}{path}",
-                        headers=self.headers,
-                        json=json,
+                response = self._get_client().request(
+                    method,
+                    f"{self.base_url}{path}",
+                    headers=self.headers,
+                    json=json,
+                )
+                # 5xx 服务端错误也触发重试
+                if response.status_code >= 500 and attempt < 2:
+                    last_error = GatewayClientError(
+                        f"服务端错误，状态码 {response.status_code}，响应：{response.text[:240]}"
                     )
-                    # 5xx 服务端错误也触发重试
-                    if response.status_code >= 500 and attempt < 2:
-                        last_error = GatewayClientError(
-                            f"服务端错误，状态码 {response.status_code}，响应：{response.text[:240]}"
-                        )
-                        sleep(1.5 * (attempt + 1))
-                        continue
-                    return response
+                    sleep(1.5 * (attempt + 1))
+                    continue
+                return response
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt < 2:
@@ -298,45 +321,44 @@ class OpenAICompatibleGatewayClient:
         endpoint = adapter.get_endpoint()
         start = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=self._timeout, trust_env=False) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self.base_url}{endpoint}",
-                    headers=self.headers,
-                    json=payload,
-                ) as response:
-                    if response.status_code >= 400:
-                        body = await response.aread()
-                        raise GatewayClientError(
-                            f"流式调用失败，状态码 {response.status_code}，响应：{body.decode('utf-8', errors='replace')[:240]}"
-                        )
-                    async for raw_line in response.aiter_lines():
-                        line = raw_line.strip()
-                        if not line or not line.startswith("data:"):
-                            continue
-                        data_str = line[len("data:"):].strip()
-                        if data_str == "[DONE]":
-                            duration_ms = (time.perf_counter() - start) * 1000
-                            record_llm_call(resolved_model, duration_ms, success=True)
-                            logger.info("llm_stream model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
-                            return
-                        try:
-                            chunk_data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-                        parsed = adapter.parse_stream_chunk(chunk_data)
-                        if parsed is None:
-                            continue
-                        if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
-                            yield StreamChunk(usage=parsed["usage"])
-                            continue
-                        yield StreamChunk(
-                            content=parsed.get("content", ""),
-                            reasoning_content=parsed.get("reasoning_content", ""),
-                            finish_reason=parsed.get("finish_reason"),
-                            model=chunk_data.get("model", ""),
-                            usage=parsed.get("usage"),
-                        )
+            async with self._get_async_client().stream(
+                "POST",
+                f"{self.base_url}{endpoint}",
+                headers=self.headers,
+                json=payload,
+            ) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise GatewayClientError(
+                        f"流式调用失败，状态码 {response.status_code}，响应：{body.decode('utf-8', errors='replace')[:240]}"
+                    )
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if data_str == "[DONE]":
+                        duration_ms = (time.perf_counter() - start) * 1000
+                        record_llm_call(resolved_model, duration_ms, success=True)
+                        logger.info("llm_stream model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
+                        return
+                    try:
+                        chunk_data = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    parsed = adapter.parse_stream_chunk(chunk_data)
+                    if parsed is None:
+                        continue
+                    if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                        yield StreamChunk(usage=parsed["usage"])
+                        continue
+                    yield StreamChunk(
+                        content=parsed.get("content", ""),
+                        reasoning_content=parsed.get("reasoning_content", ""),
+                        finish_reason=parsed.get("finish_reason"),
+                        model=chunk_data.get("model", ""),
+                        usage=parsed.get("usage"),
+                    )
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000
             record_llm_call(resolved_model, duration_ms, success=False)
@@ -360,57 +382,56 @@ class OpenAICompatibleGatewayClient:
         last_stream_error: Exception | None = None
         for attempt in range(3):
             try:
-                with httpx.Client(timeout=self._timeout, trust_env=False) as client:
-                    with client.stream(
-                        "POST",
-                        f"{self.base_url}{endpoint}",
-                        headers=self.headers,
-                        json=payload,
-                    ) as response:
-                        if response.status_code >= 500:
-                            body = response.read()
-                            if attempt < 2:
-                                logger.warning("llm_stream_sync_retry model=%s attempt=%d status=%d", resolved_model, attempt + 1, response.status_code)
-                                sleep(1.5 * (attempt + 1))
-                                continue
-                            raise GatewayClientError(
-                                f"同步流式调用失败（已重试 {attempt + 1} 次），状态码 {response.status_code}，"
-                                f"响应：{body.decode('utf-8', errors='replace')[:240]}"
-                            )
-                        if response.status_code >= 400:
-                            body = response.read()
-                            raise GatewayClientError(
-                                f"同步流式调用失败，状态码 {response.status_code}，"
-                                f"响应：{body.decode('utf-8', errors='replace')[:240]}"
-                            )
-                        for raw_line in response.iter_lines():
-                            line = raw_line.strip()
-                            if not line or not line.startswith("data:"):
-                                continue
-                            data_str = line[len("data:"):].strip()
-                            if data_str == "[DONE]":
-                                duration_ms = (time.perf_counter() - start) * 1000
-                                record_llm_call(resolved_model, duration_ms, success=True)
-                                logger.info("llm_stream_sync model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
-                                return
-                            try:
-                                chunk_data = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
-                            parsed = adapter.parse_stream_chunk(chunk_data)
-                            if parsed is None:
-                                continue
-                            if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
-                                yield StreamChunk(usage=parsed["usage"])
-                                continue
-                            yield StreamChunk(
-                                content=parsed.get("content", ""),
-                                reasoning_content=parsed.get("reasoning_content", ""),
-                                finish_reason=parsed.get("finish_reason"),
-                                model=chunk_data.get("model", ""),
-                                usage=parsed.get("usage"),
-                            )
-                        return  # 成功完成，退出重试循环
+                with self._get_client().stream(
+                    "POST",
+                    f"{self.base_url}{endpoint}",
+                    headers=self.headers,
+                    json=payload,
+                ) as response:
+                    if response.status_code >= 500:
+                        body = response.read()
+                        if attempt < 2:
+                            logger.warning("llm_stream_sync_retry model=%s attempt=%d status=%d", resolved_model, attempt + 1, response.status_code)
+                            sleep(1.5 * (attempt + 1))
+                            continue
+                        raise GatewayClientError(
+                            f"同步流式调用失败（已重试 {attempt + 1} 次），状态码 {response.status_code}，"
+                            f"响应：{body.decode('utf-8', errors='replace')[:240]}"
+                        )
+                    if response.status_code >= 400:
+                        body = response.read()
+                        raise GatewayClientError(
+                            f"同步流式调用失败，状态码 {response.status_code}，"
+                            f"响应：{body.decode('utf-8', errors='replace')[:240]}"
+                        )
+                    for raw_line in response.iter_lines():
+                        line = raw_line.strip()
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line[len("data:"):].strip()
+                        if data_str == "[DONE]":
+                            duration_ms = (time.perf_counter() - start) * 1000
+                            record_llm_call(resolved_model, duration_ms, success=True)
+                            logger.info("llm_stream_sync model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
+                            return
+                        try:
+                            chunk_data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        parsed = adapter.parse_stream_chunk(chunk_data)
+                        if parsed is None:
+                            continue
+                        if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                            yield StreamChunk(usage=parsed["usage"])
+                            continue
+                        yield StreamChunk(
+                            content=parsed.get("content", ""),
+                            reasoning_content=parsed.get("reasoning_content", ""),
+                            finish_reason=parsed.get("finish_reason"),
+                            model=chunk_data.get("model", ""),
+                            usage=parsed.get("usage"),
+                        )
+                    return  # 成功完成，退出重试循环
             except httpx.HTTPError as exc:
                 last_stream_error = exc
                 if attempt < 2:

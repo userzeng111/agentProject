@@ -247,6 +247,8 @@ class TaskServiceRunnerMixin:
             )
             cache_hit = bool(event.get("cache_hit"))
             cache_key = event.get("cache_key")
+            prompt_diagnostics = event.get("prompt_diagnostics") if isinstance(event.get("prompt_diagnostics"), dict) else {}
+            parse_duration_ms = event.get("parse_duration_ms")
             model_name = str(event.get("model") or self.engine.settings.default_chat_model)
             message = (
                 f"{stage} 阶段已命中模型响应缓存：{exchange_label}"
@@ -268,6 +270,8 @@ class TaskServiceRunnerMixin:
                     "model": model_name,
                     "history_count": len(history),
                     "exchange_label": exchange_label,
+                    "prompt_diagnostics": prompt_diagnostics,
+                    "parse_duration_ms": parse_duration_ms,
                 },
             )
 

@@ -96,6 +96,7 @@ class NovelCorpusRebuildService:
 
     def get_status(self) -> dict[str, Any]:
         status_payload = self._load_status()
+        index_health = self._inspect_index_health(status_payload)
         return {
             "available": self.config.faiss_index_path.exists() and self.config.sqlite_path.exists(),
             "library_dir": str(self.config.library_dir),
@@ -103,6 +104,7 @@ class NovelCorpusRebuildService:
             "sqlite_path": str(self.config.sqlite_path),
             "sources": self._source_patterns(),
             "last_result": status_payload,
+            "index_health": index_health,
         }
 
     def rebuild(self) -> dict[str, Any]:
@@ -144,6 +146,94 @@ class NovelCorpusRebuildService:
         if not items:
             raise ValueError("未扫描到任何可入库的小说语料。")
         return items
+
+    def _inspect_index_health(self, status_payload: dict[str, Any] | None) -> dict[str, Any]:
+        warnings: list[str] = []
+        faiss_count: int | None = None
+        faiss_dimension: int | None = None
+        sqlite_count: int | None = None
+        sqlite_min_doc_id: int | None = None
+        sqlite_max_doc_id: int | None = None
+        source_mtime_max: float | None = None
+
+        faiss_exists = self.config.faiss_index_path.exists()
+        sqlite_exists = self.config.sqlite_path.exists()
+
+        if sqlite_exists:
+            try:
+                with sqlite3.connect(self.config.sqlite_path) as connection:
+                    row = connection.execute("SELECT COUNT(*), MIN(doc_id), MAX(doc_id) FROM documents").fetchone()
+                    if row is not None:
+                        sqlite_count = int(row[0] or 0)
+                        sqlite_min_doc_id = int(row[1]) if row[1] is not None else None
+                        sqlite_max_doc_id = int(row[2]) if row[2] is not None else None
+            except Exception as exc:
+                warnings.append(f"SQLite 元数据读取失败：{exc}")
+        else:
+            warnings.append("SQLite 元数据文件不存在。")
+
+        if faiss_exists:
+            try:
+                self._ensure_import_path(self.config)
+                faiss_module = importlib.import_module("storage.faiss_store")
+                faiss_store = getattr(faiss_module, "FaissStore").load(self.config.faiss_index_path)
+                faiss_count = int(getattr(faiss_store.index, "ntotal", 0))
+                faiss_dimension = int(getattr(faiss_store.index, "d", 0))
+            except Exception as exc:
+                warnings.append(f"FAISS 索引读取失败：{exc}")
+        else:
+            warnings.append("FAISS 索引文件不存在。")
+
+        if faiss_count is not None and sqlite_count is not None and faiss_count != sqlite_count:
+            warnings.append(f"FAISS 向量数与 SQLite 文档数不一致：FAISS={faiss_count}，SQLite={sqlite_count}。")
+
+        expected_count = None
+        if isinstance(status_payload, dict):
+            try:
+                expected_count = int(status_payload.get("indexed_documents") or 0)
+            except Exception:
+                expected_count = None
+        if expected_count and sqlite_count is not None and sqlite_count != expected_count:
+            warnings.append(f"SQLite 文档数与最近重建记录不一致：SQLite={sqlite_count}，最近记录={expected_count}。")
+
+        try:
+            source_files = self._collect_source_files()
+            mtimes = [path.stat().st_mtime for _, path in source_files if path.exists()]
+            source_mtime_max = max(mtimes) if mtimes else None
+        except Exception as exc:
+            warnings.append(f"源文件状态读取失败：{exc}")
+
+        index_mtimes = [
+            path.stat().st_mtime
+            for path in (self.config.faiss_index_path, self.config.sqlite_path)
+            if path.exists()
+        ]
+        index_mtime_min = min(index_mtimes) if index_mtimes else None
+        if source_mtime_max is not None and index_mtime_min is not None and source_mtime_max > index_mtime_min:
+            warnings.append("存在源文件更新时间晚于索引文件，建议重建小说知识库索引。")
+
+        return {
+            "ok": bool(faiss_exists and sqlite_exists and not warnings),
+            "warnings": warnings,
+            "faiss": {
+                "exists": faiss_exists,
+                "vector_count": faiss_count,
+                "dimension": faiss_dimension,
+                "mtime": self.config.faiss_index_path.stat().st_mtime if faiss_exists else None,
+                "size_bytes": self.config.faiss_index_path.stat().st_size if faiss_exists else None,
+            },
+            "sqlite": {
+                "exists": sqlite_exists,
+                "document_count": sqlite_count,
+                "min_doc_id": sqlite_min_doc_id,
+                "max_doc_id": sqlite_max_doc_id,
+                "mtime": self.config.sqlite_path.stat().st_mtime if sqlite_exists else None,
+                "size_bytes": self.config.sqlite_path.stat().st_size if sqlite_exists else None,
+            },
+            "sources": {
+                "max_mtime": source_mtime_max,
+            },
+        }
 
     def _build_documents(self, source_files: list[tuple[str, Path]]) -> list[IndexedDocument]:
         documents: list[IndexedDocument] = []

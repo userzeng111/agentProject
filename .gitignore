@@ -107,6 +107,7 @@ Data/rag/
 exampleIndexData/
 apps/agent-runtime/app/logs/
 embeddingProject/
+backups/
 
 # 环境变量文件
 .env

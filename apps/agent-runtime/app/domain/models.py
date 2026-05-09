@@ -35,6 +35,11 @@ class NovelSize(str, Enum):
     LONG = "long"
 
 
+class AutoReviewModelMode(str, Enum):
+    FOLLOW_CREATIVE = "follow_creative"
+    FIXED = "fixed"
+
+
 class TaskStatus(str, Enum):
     CREATED = "created"
     SOURCES_INGESTED = "sources_ingested"
@@ -141,6 +146,8 @@ class TaskInput(BaseModel):
 class TaskCreateRequest(TaskInput):
     model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
     auto_review: bool | None = None  # 是否开启自动审核 [NEW]
+    auto_review_model_mode: AutoReviewModelMode | None = None
+    review_model_id: str = ""
 
     @model_validator(mode="after")
     def _ensure_task_mode_fields(self) -> "TaskCreateRequest":
@@ -371,6 +378,8 @@ class TaskRecord(BaseModel):
     chapter_count_max: int | None = None
     chapter_word_min: int | None = None
     model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "model"))
+    auto_review_model_mode: AutoReviewModelMode | None = None
+    review_model_id: str = ""
     status: TaskStatus = TaskStatus.CREATED
     current_stage: str = "created"
     current_unit: str | None = None
@@ -439,9 +448,12 @@ class TaskSummary(BaseModel):
     novel_size: NovelSize | None = None
     chapter_word_min: int | None = None
     model_id: str
+    creative_model_id: str = ""
     default_model_id: str = ""
     last_action_model_id: str = ""
     last_action_kind: str = ""
+    auto_review_model_mode: AutoReviewModelMode | None = None
+    review_model_id: str = ""
     model_capabilities: dict[str, Any] | None = None
     status: TaskStatus
     current_stage: str
@@ -586,7 +598,8 @@ class AutoReviewPolicy(BaseModel):
     auto_escalate_on_low_score: bool = True  # 低于阈值时升级人工
     outline_auto_escalate_on_critical: bool | None = None
     chapter_auto_escalate_on_critical: bool | None = None
-    # Agent 模型选择（空字符串表示跟随任务创作模型，由调用方注入）
+    # Agent 模型选择（跟随模式由调用方注入当前创作模型）
+    auto_review_model_mode: AutoReviewModelMode = AutoReviewModelMode.FOLLOW_CREATIVE
     auditor_model: str = ""
     synthesis_model: str = ""
     # 多 Agent 并行
@@ -599,6 +612,20 @@ class AutoReviewPolicy(BaseModel):
     chapter_max_auto_revisions: int | None = None
     # 审核严格度
     strictness: Strictness = Strictness.BALANCED
+
+    @model_validator(mode="before")
+    @classmethod
+    def _infer_auto_review_model_mode(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if data.get("auto_review_model_mode"):
+            return data
+        next_data = dict(data)
+        if str(next_data.get("auditor_model") or "").strip() or str(next_data.get("synthesis_model") or "").strip():
+            next_data["auto_review_model_mode"] = AutoReviewModelMode.FIXED.value
+        else:
+            next_data["auto_review_model_mode"] = AutoReviewModelMode.FOLLOW_CREATIVE.value
+        return next_data
 
     def get_pass_threshold(self, review_type: str) -> float:
         """根据审核类型获取对应的通过阈值"""

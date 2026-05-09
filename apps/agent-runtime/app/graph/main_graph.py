@@ -105,13 +105,17 @@ def build_default_callbacks(
 
     active_context_manager = context_manager or ContextManager()
     active_model_catalog = model_catalog
-    auto_review_manager: AutoReviewManager | None = AutoReviewManager(
-        gateway_client=getattr(engine, "gateway_client", None),
-    )
+    auto_review_manager: AutoReviewManager | None = None
     dynamic_review_bridge: Any | None = None
+    auto_review_max_workers = 2
     try:
         from app.settings.config import get_settings
         _settings = get_settings()
+        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 2) or 2)
+        auto_review_manager = AutoReviewManager(
+            gateway_client=getattr(engine, "gateway_client", None),
+            max_workers=auto_review_max_workers,
+        )
         gateway_client = getattr(engine, "gateway_client", None)
         if (
             getattr(_settings, "dynamic_agent_review", False)
@@ -122,8 +126,13 @@ def build_default_callbacks(
             dynamic_review_bridge = DynamicReviewBridge(
                 gateway_client=gateway_client,
                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
+                max_workers=auto_review_max_workers,
             )
     except Exception as e:
+        auto_review_manager = AutoReviewManager(
+            gateway_client=getattr(engine, "gateway_client", None),
+            max_workers=auto_review_max_workers,
+        )
         logger.warning("动态 Agent 审核初始化失败，使用旧模式: %s", e)
 
     def _execute_auto_review(payload: ReviewPayload, policy: AutoReviewPolicy):
@@ -269,14 +278,18 @@ def build_graph(
     active_context_manager = context_manager or ContextManager()
     active_model_catalog = model_catalog
     # 自动审核编排器
-    auto_review_manager: AutoReviewManager | None = AutoReviewManager(
-        gateway_client=getattr(engine, "gateway_client", None),
-    )
+    auto_review_manager: AutoReviewManager | None = None
     # 动态 Agent 审核桥接层（与旧 AutoReviewManager 并行，通过配置切换）
     dynamic_review_bridge: Any | None = None
+    auto_review_max_workers = 2
     try:
         from app.settings.config import get_settings
         _settings = get_settings()
+        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 2) or 2)
+        auto_review_manager = AutoReviewManager(
+            gateway_client=getattr(engine, "gateway_client", None),
+            max_workers=auto_review_max_workers,
+        )
         gateway_client = getattr(engine, "gateway_client", None)
         if (
             getattr(_settings, "dynamic_agent_review", False)
@@ -287,9 +300,14 @@ def build_graph(
             dynamic_review_bridge = DynamicReviewBridge(
                 gateway_client=gateway_client,
                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
+                max_workers=auto_review_max_workers,
             )
             logger.info("动态 Agent 审核模式已启用")
     except Exception as e:
+        auto_review_manager = AutoReviewManager(
+            gateway_client=getattr(engine, "gateway_client", None),
+            max_workers=auto_review_max_workers,
+        )
         logger.warning("动态 Agent 审核初始化失败，使用旧模式: %s", e)
     # 审核执行器：优先使用动态桥接层，否则使用旧 AutoReviewManager
     def _execute_auto_review(payload: ReviewPayload, policy: AutoReviewPolicy):

@@ -251,18 +251,16 @@ class TaskServiceContinuationMixin:
                 )
                 # 自动审核：若开启则在入库前生成 Agent 评分与建议
                 auto_review_trace: list[dict[str, Any]] | None = None
-                if getattr(self, "auto_review", False):
+                if self._resolve_task_auto_review(task):
                     try:
                         from datetime import datetime, timezone
                         from app.llm.auto_reviewer import AutoReviewManager
                         from app.settings.config import get_settings
 
                         gateway_client = getattr(self.engine, "gateway_client", None)
-                        policy_dict = dict(self.auto_review_policy or {})
-                        if action_model_id:
-                            policy_dict.setdefault("auditor_model", action_model_id)
-                            policy_dict.setdefault("synthesis_model", action_model_id)
-                        policy = AutoReviewPolicy.model_validate(policy_dict)
+                        policy = AutoReviewPolicy.model_validate(
+                            self._resolve_auto_review_policy(task, action_model_id)
+                        )
                         decision: ReviewDecision | None = None
                         _settings = get_settings()
                         if (
@@ -274,10 +272,14 @@ class TaskServiceContinuationMixin:
                             bridge = DynamicReviewBridge(
                                 gateway_client=gateway_client,
                                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
+                                max_workers=getattr(_settings, "auto_review_max_workers", 2),
                             )
                             decision = bridge.review(review, policy)
                         else:
-                            manager = AutoReviewManager(gateway_client=gateway_client)
+                            manager = AutoReviewManager(
+                                gateway_client=gateway_client,
+                                max_workers=getattr(_settings, "auto_review_max_workers", 2),
+                            )
                             decision = manager.review(review, policy)
 
                         if decision is not None:

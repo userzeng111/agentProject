@@ -40,6 +40,14 @@ class Settings(BaseSettings):
         default="MiniMax-M2.7-highspeed",
         validation_alias=AliasChoices("AUTO_REVIEW_SYNTHESIS_MODEL"),
     )
+    auto_review_model_mode: str = Field(
+        default="follow_creative",
+        validation_alias=AliasChoices("AUTO_REVIEW_MODEL_MODE"),
+    )
+    auto_review_max_workers: int = Field(
+        default=2,
+        validation_alias=AliasChoices("AUTO_REVIEW_MAX_WORKERS"),
+    )
     # 动态 Agent 审核模式（True=使用动态Agent编排审核，False=使用旧硬编码审核）
     dynamic_agent_review: bool = Field(
         default=False,

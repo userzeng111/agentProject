@@ -175,12 +175,24 @@ function formatActionKindLabel(kind?: string) {
 
 function resolveWorkspaceTaskModelId(workspace?: WorkspaceResponse | null) {
   return (
+    workspace?.request_preview?.creative_model_id ||
+    workspace?.meta.creative_model_id ||
     workspace?.request_preview?.default_model_id ||
     workspace?.meta.default_model_id ||
     workspace?.request_preview?.model_id ||
     workspace?.meta.model_id ||
     ""
   );
+}
+
+function formatWorkspaceReviewModel(workspace?: WorkspaceResponse | null) {
+  const mode = workspace?.request_preview?.auto_review_model_mode || workspace?.meta.auto_review_model_mode;
+  const reviewModelId = workspace?.request_preview?.review_model_id || workspace?.meta.review_model_id || "";
+  const creativeModelId = resolveWorkspaceTaskModelId(workspace);
+  if (mode === "follow_creative") {
+    return `跟随创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
+  }
+  return reviewModelId || "未设置";
 }
 
 function formatTokenCount(value?: number) {
@@ -1117,7 +1129,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             >
               <Stack spacing={1.5}>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-                  <Typography variant="subtitle1">本次动作模型</Typography>
+                  <Typography variant="subtitle1">本次创作动作模型</Typography>
                   <Button size="small" variant="outlined" onClick={() => void loadModels(true)}>
                     刷新模型
                   </Button>
@@ -1130,7 +1142,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   sx={{ maxWidth: 360 }}
                 >
                   <MenuItem value="">
-                    <em>请选择本次动作模型</em>
+                    <em>请选择本次创作动作模型</em>
                   </MenuItem>
                   {selectableModels.length ? (
                     selectableModels.map((model) => (
@@ -1158,10 +1170,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   默认沿用当前任务模型；开始执行和继续创作时都可临时切换。恢复动作请在恢复面板中单独选择模型。
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  任务默认模型：{workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
+                  创作模型：{workspace.meta.creative_model_id || workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
                   {workspace.meta.last_action_model_id
-                    ? ` · 最近一次动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
+                    ? ` · 最近一次创作动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
                     : ""}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  审核模型：{formatWorkspaceReviewModel(workspace)}
                 </Typography>
               </Stack>
             </Box>
@@ -1182,6 +1197,16 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               ))}
               <Chip
                 label={`自动审核：${workspace.meta.auto_review ? "开启" : "关闭"}`}
+                size="small"
+                variant="outlined"
+              />
+              <Chip
+                label={`创作模型：${workspace.meta.creative_model_id || workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}`}
+                size="small"
+                variant="outlined"
+              />
+              <Chip
+                label={`审核模型：${formatWorkspaceReviewModel(workspace)}`}
                 size="small"
                 variant="outlined"
               />
