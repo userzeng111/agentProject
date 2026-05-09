@@ -102,6 +102,11 @@ apps/web/.next/
 apps/agent-runtime/.venv/
 apps/web/node_modules.bak/
 tasklog/
+.run/
+Data/rag/
+exampleIndexData/
+apps/agent-runtime/app/logs/
+embeddingProject/
 
 # 环境变量文件
 .env

@@ -58,6 +58,13 @@ def _create_console_handler() -> logging.StreamHandler:
     return handler
 
 
+def _rotate_log_filename(name: str) -> str:
+    """将轮转日志命名为 app-源日期-轮转日期.log。"""
+    if ".log." not in name:
+        return name
+    return f"{name.replace('.log.', '-')}.log"
+
+
 def _create_file_handler() -> TimedRotatingFileHandler:
     """创建文件处理器 (DEBUG 级别，按天轮转，保留7天)"""
     _ensure_log_dir()
@@ -73,7 +80,7 @@ def _create_file_handler() -> TimedRotatingFileHandler:
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(_StructuredFormatter())
     # 自定义文件命名格式: app-YYYY-MM-DD.log
-    handler.namer = lambda name: name.replace(".log.", "-").replace(".log", ".log")
+    handler.namer = _rotate_log_filename
     return handler
 
 
