@@ -106,6 +106,42 @@ class AnthropicAdapterTests(unittest.TestCase):
         )
         self.assertNotIn("system", payload)
 
+    def test_build_payload_marks_system_block_for_prompt_cache(self):
+        payload = self.adapter.build_payload(
+            messages=[
+                {"role": "system", "content": "稳定系统提示"},
+                {"role": "user", "content": "hi"},
+            ],
+            model="kimi-k2-6",
+            provider_prompt_cache=True,
+            prompt_cache_min_chars=1,
+        )
+
+        self.assertIsInstance(payload["system"], list)
+        self.assertEqual(payload["system"][0]["type"], "text")
+        self.assertEqual(payload["system"][0]["text"], "稳定系统提示")
+        self.assertEqual(payload["system"][0]["cache_control"], {"type": "ephemeral"})
+        self.assertNotIn("provider_prompt_cache", payload)
+        self.assertNotIn("prompt_cache_min_chars", payload)
+
+    def test_build_payload_splits_cacheable_user_prefix_before_dynamic_marker(self):
+        stable_prefix = "作品标题：夜半回廊\n总章节规划：一 / 二\n风格约束：冷静克制"
+        dynamic_tail = "当前章节序号：1\n当前章节标题：第一章"
+        payload = self.adapter.build_payload(
+            messages=[
+                {"role": "user", "content": f"{stable_prefix}\n{dynamic_tail}"},
+            ],
+            model="kimi-k2-6",
+            provider_prompt_cache=True,
+            prompt_cache_min_chars=1,
+        )
+
+        content = payload["messages"][0]["content"]
+        self.assertIsInstance(content, list)
+        self.assertEqual(content[0]["text"], stable_prefix + "\n")
+        self.assertEqual(content[0]["cache_control"], {"type": "ephemeral"})
+        self.assertEqual(content[1]["text"], dynamic_tail)
+
     def test_parse_completion_response(self):
         response = {
             "content": [{"type": "text", "text": "Hello world"}],

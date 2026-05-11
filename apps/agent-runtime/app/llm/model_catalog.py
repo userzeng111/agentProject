@@ -376,7 +376,7 @@ _PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
             "cache": {
                 "runtime_response_cache": True,
                 "runtime_context_cache": True,
-                "provider_prompt_cache": "unknown",
+                "provider_prompt_cache": "anthropic_cache_control",
                 "cache_key_strategy": "stage+model+context_hash",
             },
             "compression": {

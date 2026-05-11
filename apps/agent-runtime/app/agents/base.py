@@ -115,6 +115,18 @@ class BaseAgent:
             request_kwargs["max_tokens"] = max_tokens
         try:
             for chunk in gc.complete_stream_sync(messages, model=model, **request_kwargs):
+                if chunk.usage and progress_callback:
+                    progress_callback({
+                        "event_type": "model.usage",
+                        "stage": stage,
+                        "unit_id": unit_id,
+                        "message": "模型调用用量已更新。",
+                        "payload": {
+                            **chunk.usage,
+                            "model": chunk.model or model,
+                            "finish_reason": chunk.finish_reason,
+                        },
+                    })
                 if chunk.reasoning_content:
                     saw_stream_output = True
                     if progress_callback:
@@ -166,6 +178,18 @@ class BaseAgent:
             request_kwargs["max_tokens"] = max_tokens
         try:
             async for chunk in gc.complete_stream(messages, model=model, **request_kwargs):
+                if chunk.usage and progress_callback:
+                    progress_callback({
+                        "event_type": "model.usage",
+                        "stage": stage,
+                        "unit_id": unit_id,
+                        "message": "模型调用用量已更新。",
+                        "payload": {
+                            **chunk.usage,
+                            "model": chunk.model or model,
+                            "finish_reason": chunk.finish_reason,
+                        },
+                    })
                 if chunk.reasoning_content:
                     saw_stream_output = True
                     if progress_callback:

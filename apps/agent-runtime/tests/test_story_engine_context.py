@@ -1,3 +1,8 @@
+import json
+import re
+import threading
+import time
+
 try:
     from datetime import UTC
 except ImportError:
@@ -75,6 +80,46 @@ class StreamSuccessGateway(StreamGatewayBase):
         import json
 
         yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False))
+
+
+class StreamSuccessWithUsageGateway(StreamGatewayBase):
+    def __init__(self, payload: dict, usage: dict) -> None:
+        self.payload = payload
+        self.usage = usage
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        yield StreamChunk(usage=dict(self.usage), model=model or "")
+        yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False), model=model or "")
+
+
+class ConcurrentChapterGateway(StreamGatewayBase):
+    def __init__(self, delay_seconds: float = 0.05) -> None:
+        self.delay_seconds = delay_seconds
+        self.active_calls = 0
+        self.max_active_calls = 0
+        self.calls: list[dict] = []
+        self._lock = threading.Lock()
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        with self._lock:
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        try:
+            time.sleep(self.delay_seconds)
+            prompt = messages[-1]["content"]
+            match = re.search(r"当前章节序号：(\d+)", prompt)
+            number = int(match.group(1)) if match else len(self.calls)
+            payload = {
+                "number": number,
+                "title": f"第{number}章",
+                "summary": f"第{number}章摘要",
+                "content": f"第{number}章正文",
+            }
+            yield StreamChunk(content=json.dumps(payload, ensure_ascii=False), model=model or "")
+        finally:
+            with self._lock:
+                self.active_calls -= 1
 
 
 class StoryEngineContextTests(unittest.TestCase):
@@ -319,6 +364,109 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIsNotNone(max_tokens)
             self.assertLess(max_tokens, 32768)
             self.assertGreaterEqual(max_tokens, 4096)
+
+    def test_stream_usage_emits_provider_prompt_cache_progress_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = StreamSuccessWithUsageGateway(
+                payload={
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角重开玄脉。",
+                    "content": "第一章正文",
+                },
+                usage={
+                    "input_tokens": 0,
+                    "cache_read_input_tokens": 2856,
+                    "cached_tokens": 2856,
+                    "output_tokens": 7,
+                },
+            )
+            events: list[dict] = []
+
+            payload, _ = engine._complete_stream_json_with_cache(  # noqa: SLF001
+                request_messages=[
+                    {"role": "system", "content": "你是章节起草助手。"},
+                    {"role": "user", "content": "当前章节序号：1\n请输出 JSON。"},
+                ],
+                model="K2.6",
+                stage="drafting",
+                exchange_label="chapter-01",
+                exchange_callback=None,
+                progress_callback=events.append,
+                max_tokens=1024,
+            )
+
+            self.assertEqual(payload["number"], 1)
+            usage_events = [event for event in events if event.get("event_type") == "model.usage"]
+            self.assertEqual(len(usage_events), 1)
+            self.assertEqual(usage_events[0]["payload"]["cached_tokens"], 2856)
+            self.assertEqual(usage_events[0]["payload"]["cache_read_input_tokens"], 2856)
+
+    def test_generate_chapter_pair_parallelizes_three_chapter_batch_with_configured_worker_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                    CHAPTER_PARALLEL_DRAFT_ENABLED=True,
+                    CHAPTER_PARALLEL_MAX_WORKERS=4,
+                )
+            )
+            gateway = ConcurrentChapterGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "玄幻大陆废材逆袭",
+                    "genre": "玄幻",
+                    "style": "热血逆袭",
+                    "chapter_word_min": 2600,
+                    "chapter_word_max": 3380,
+                    "model_id": "K2.6",
+                },
+                story_plan={
+                    "working_title": "玄脉逆天",
+                    "logline": "废材少年重开玄脉。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "开篇"},
+                        {"number": 2, "title": "第二章", "goal": "遭遇"},
+                        {"number": 3, "title": "第三章", "goal": "反击"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="K2.6",
+                requested_batch_size=3,
+            )
+
+            self.assertEqual([chapter.number for chapter in drafts], [1, 2, 3])
+            self.assertEqual(len(gateway.calls), 3)
+            self.assertGreater(gateway.max_active_calls, 1)
+
+    def test_chapter_parallel_worker_limit_caps_at_six(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                    CHAPTER_PARALLEL_MAX_WORKERS=99,
+                )
+            )
+
+            self.assertEqual(engine._chapter_parallel_worker_limit(), 6)  # noqa: SLF001
 
     def test_context_references_text_is_not_truncated_to_eighty_chars(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

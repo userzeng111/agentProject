@@ -114,6 +114,24 @@ class OpenAICompatibleGatewayClient:
             return AnthropicAdapter()
         return OpenAIAdapter()
 
+    def _provider_prompt_cache_kwargs(self, adapter: Any) -> dict[str, Any]:
+        from app.llm.protocols import AnthropicAdapter
+        from app.settings.config import get_settings
+
+        if not isinstance(adapter, AnthropicAdapter):
+            return {}
+        try:
+            settings = get_settings()
+        except Exception:
+            return {}
+        if not getattr(settings, "provider_prompt_cache", True):
+            return {}
+        return {
+            "provider_prompt_cache": True,
+            "prompt_cache_min_chars": max(int(getattr(settings, "provider_prompt_cache_min_chars", 1024) or 1024), 1),
+            "prompt_cache_ttl": str(getattr(settings, "provider_prompt_cache_ttl", "") or "").strip() or None,
+        }
+
     @staticmethod
     def _resolve_max_tokens(model: str) -> int:
         """根据模型 catalog 返回该模型支持的最大输出 token 数。"""
@@ -139,6 +157,7 @@ class OpenAICompatibleGatewayClient:
         resolved_model = model or self.model
         kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
+        kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=False, **kwargs)
         endpoint = adapter.get_endpoint()
         start = time.perf_counter()
@@ -317,6 +336,7 @@ class OpenAICompatibleGatewayClient:
         resolved_model = model or self.model
         kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
+        kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
         endpoint = adapter.get_endpoint()
         start = time.perf_counter()
@@ -375,6 +395,7 @@ class OpenAICompatibleGatewayClient:
         resolved_model = model or self.model
         kwargs = self._inject_max_tokens(resolved_model, kwargs)
         adapter = self._get_adapter(resolved_model)
+        kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
         payload = adapter.build_payload(messages=messages, model=resolved_model, stream=True, **kwargs)
         endpoint = adapter.get_endpoint()
         start = time.perf_counter()

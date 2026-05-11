@@ -44,7 +44,7 @@ class ProtocolAdapter(ABC):
     def build_payload(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         stream: bool = False,
         **kwargs: Any,
@@ -76,11 +76,11 @@ class ProtocolAdapter(ABC):
 
 
 def _extract_system_message(
-    messages: list[dict[str, str]],
-) -> tuple[str | None, list[dict[str, str]]]:
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
     """提取 system 消息，返回 (system_content, 过滤后的 messages)。"""
     system_content: str | None = None
-    filtered: list[dict[str, str]] = []
+    filtered: list[dict[str, Any]] = []
     for msg in messages:
         if msg.get("role") == "system":
             # 若存在多条 system 消息，以第一条为准；后续可扩展为拼接
@@ -100,7 +100,7 @@ class OpenAIAdapter(ProtocolAdapter):
     def build_payload(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         stream: bool = False,
         **kwargs: Any,
@@ -145,25 +145,122 @@ class OpenAIAdapter(ProtocolAdapter):
 class AnthropicAdapter(ProtocolAdapter):
     """Anthropic Messages API 协议适配器。"""
 
+    _DYNAMIC_MARKERS = (
+        "\n当前章节序号：",
+        "\n用户对当前章节提出了以下修改意见",
+        "\n修改意见：",
+        "\n已完成正文：",
+        "\n【审核意见】",
+    )
+
     def get_endpoint(self) -> str:
         return "/messages"
+
+    def _cache_control(self, ttl: str | None = None) -> dict[str, str]:
+        payload = {"type": "ephemeral"}
+        if ttl:
+            payload["ttl"] = ttl
+        return payload
+
+    def _cacheable_text_block(self, text: str, ttl: str | None) -> dict[str, Any]:
+        return {
+            "type": "text",
+            "text": text,
+            "cache_control": self._cache_control(ttl),
+        }
+
+    def _system_payload(
+        self,
+        system_content: str,
+        *,
+        provider_prompt_cache: bool,
+        prompt_cache_min_chars: int,
+        prompt_cache_ttl: str | None,
+    ) -> str | list[dict[str, Any]]:
+        if provider_prompt_cache and len(system_content) >= prompt_cache_min_chars:
+            return [self._cacheable_text_block(system_content, prompt_cache_ttl)]
+        return system_content
+
+    def _message_content_payload(
+        self,
+        content: Any,
+        *,
+        provider_prompt_cache: bool,
+        prompt_cache_min_chars: int,
+        prompt_cache_ttl: str | None,
+    ) -> Any:
+        if not provider_prompt_cache or not isinstance(content, str):
+            return content
+        split_index = -1
+        for marker in self._DYNAMIC_MARKERS:
+            candidate = content.find(marker)
+            if candidate > 0 and (split_index < 0 or candidate < split_index):
+                split_index = candidate + 1
+        if split_index <= 0:
+            return content
+        stable_prefix = content[:split_index]
+        dynamic_tail = content[split_index:]
+        if len(stable_prefix) < prompt_cache_min_chars or not dynamic_tail.strip():
+            return content
+        return [
+            self._cacheable_text_block(stable_prefix, prompt_cache_ttl),
+            {
+                "type": "text",
+                "text": dynamic_tail,
+            },
+        ]
+
+    def _messages_payload(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        provider_prompt_cache: bool,
+        prompt_cache_min_chars: int,
+        prompt_cache_ttl: str | None,
+    ) -> list[dict[str, Any]]:
+        payload_messages: list[dict[str, Any]] = []
+        for message in messages:
+            next_message = dict(message)
+            next_message["content"] = self._message_content_payload(
+                next_message.get("content"),
+                provider_prompt_cache=provider_prompt_cache,
+                prompt_cache_min_chars=prompt_cache_min_chars,
+                prompt_cache_ttl=prompt_cache_ttl,
+            )
+            payload_messages.append(next_message)
+        return payload_messages
 
     def build_payload(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         stream: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        provider_prompt_cache = bool(kwargs.pop("provider_prompt_cache", False))
+        prompt_cache_min_chars = int(kwargs.pop("prompt_cache_min_chars", 1024) or 1024)
+        prompt_cache_ttl = kwargs.pop("prompt_cache_ttl", None)
+        if prompt_cache_ttl is not None:
+            prompt_cache_ttl = str(prompt_cache_ttl).strip() or None
         system_content, filtered_messages = _extract_system_message(messages)
         payload: dict[str, Any] = {
             "model": model,
-            "messages": filtered_messages,
+            "messages": self._messages_payload(
+                filtered_messages,
+                provider_prompt_cache=provider_prompt_cache,
+                prompt_cache_min_chars=prompt_cache_min_chars,
+                prompt_cache_ttl=prompt_cache_ttl,
+            ),
             "stream": stream,
         }
         if system_content is not None:
-            payload["system"] = system_content
+            payload["system"] = self._system_payload(
+                system_content,
+                provider_prompt_cache=provider_prompt_cache,
+                prompt_cache_min_chars=prompt_cache_min_chars,
+                prompt_cache_ttl=prompt_cache_ttl,
+            )
         # 仅在 kwargs 未显式提供 max_tokens 时才使用默认值 4096
         if "max_tokens" not in kwargs:
             payload["max_tokens"] = 4096

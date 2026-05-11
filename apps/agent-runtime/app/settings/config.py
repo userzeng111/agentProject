@@ -48,6 +48,31 @@ class Settings(BaseSettings):
         default=2,
         validation_alias=AliasChoices("AUTO_REVIEW_MAX_WORKERS"),
     )
+    provider_prompt_cache: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("PROVIDER_PROMPT_CACHE"),
+    )
+    provider_prompt_cache_min_chars: int = Field(
+        default=1024,
+        validation_alias=AliasChoices("PROVIDER_PROMPT_CACHE_MIN_CHARS"),
+    )
+    provider_prompt_cache_ttl: str = Field(
+        default="",
+        validation_alias=AliasChoices("PROVIDER_PROMPT_CACHE_TTL"),
+    )
+    # 章节批次并行草稿配置。硬上限在 StoryEngine 内再次限制，避免配置过大压满本机或上游网关。
+    chapter_parallel_draft_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("CHAPTER_PARALLEL_DRAFT_ENABLED"),
+    )
+    chapter_parallel_max_workers: int = Field(
+        default=4,
+        validation_alias=AliasChoices("CHAPTER_PARALLEL_MAX_WORKERS"),
+    )
+    chapter_parallel_min_batch_size: int = Field(
+        default=3,
+        validation_alias=AliasChoices("CHAPTER_PARALLEL_MIN_BATCH_SIZE"),
+    )
     # 动态 Agent 审核模式（True=使用动态Agent编排审核，False=使用旧硬编码审核）
     dynamic_agent_review: bool = Field(
         default=False,

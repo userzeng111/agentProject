@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, Token
 import hashlib
 import json
+import threading
 import time
 from app.observability import get_logger
 from pathlib import Path
@@ -119,11 +121,12 @@ class StoryEngine(BaseAgent):
                     "number(int), title(string), summary(string), content(string)。\n"
                     "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n作品标题：{title}\n一句话梗概：{logline}\n"
                     "单章字数下限：{chapter_word_min}\n当前章节建议字数：{chapter_word_range}\n"
-                    "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
-                    "总章节规划：{chapter_titles}\n已完成章节摘要：{completed_summaries}\n"
-                    "上一章全文：{previous_chapter_full_text}\n当前章节历史草稿：{current_chapter_existing_draft}\n"
+                    "总章节规划：{chapter_titles}\n"
                     "风格目标：{style}\n风格约束：{style_requirements}\n"
                     "上下文记忆：{context_memory}\n参考摘要：{reference_excerpt}\n"
+                    "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
+                    "已完成章节摘要：{completed_summaries}\n"
+                    "上一章全文：{previous_chapter_full_text}\n当前章节历史草稿：{current_chapter_existing_draft}\n"
                     "要求：当前章节内容控制在 {chapter_word_range} 字，严格遵守上述风格约束，不得退回默认通用风格。",
                 ),
             ]
@@ -533,19 +536,37 @@ class StoryEngine(BaseAgent):
         summary = story_plan.get("logline", "")
 
         self._require_gateway_client()
-        drafts: list[ChapterDraft] = []
-        for plan in pair_plans:
-            if active_progress_callback:
-                active_progress_callback({
-                    "event_type": "chapter.started",
-                    "stage": "drafting",
-                    "unit_id": f"chapter-{plan['number']:02d}",
-                    "message": f"正在生成第 {plan['number']} 章：{plan['title']}",
-                    "payload": {
-                        "chapter_number": plan["number"],
-                        "chapter_title": plan["title"],
-                    },
-                })
+        callback_lock = threading.Lock()
+
+        def emit_progress(event: dict[str, Any]) -> None:
+            if active_progress_callback is None:
+                return
+            with callback_lock:
+                active_progress_callback(event)
+
+        def emit_exchange(event: dict[str, Any]) -> None:
+            if active_exchange_callback is None:
+                return
+            with callback_lock:
+                active_exchange_callback(event)
+
+        def generate_one_chapter(
+            plan: dict[str, Any],
+            *,
+            prompt_completed_text: str,
+            prompt_previous_chapter_full_text: str,
+            prompt_conversation_history: list[dict[str, str]],
+        ) -> tuple[ChapterDraft, list[dict[str, str]]]:
+            emit_progress({
+                "event_type": "chapter.started",
+                "stage": "drafting",
+                "unit_id": f"chapter-{plan['number']:02d}",
+                "message": f"正在生成第 {plan['number']} 章：{plan['title']}",
+                "payload": {
+                    "chapter_number": plan["number"],
+                    "chapter_title": plan["title"],
+                },
+            })
 
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
@@ -560,8 +581,8 @@ class StoryEngine(BaseAgent):
                 chapter_title=plan["title"],
                 chapter_goal=plan["goal"],
                 chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
-                completed_summaries=completed_text,
-                previous_chapter_full_text=previous_chapter_full_text,
+                completed_summaries=prompt_completed_text,
+                previous_chapter_full_text=prompt_previous_chapter_full_text,
                 current_chapter_existing_draft=self._existing_draft_text(draft_seeds, int(plan["number"])),
                 style=self._style_label(spec),
                 style_requirements=self._style_requirements(spec),
@@ -570,38 +591,66 @@ class StoryEngine(BaseAgent):
             )
 
             request_messages = self._conversation_request_messages(
-                conversation_history=conversation_history,
+                conversation_history=prompt_conversation_history,
                 prompt_messages=chapter_request_messages,
             )
-            payload, conversation_history = self._complete_stream_json_with_cache(
+            payload, next_conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="drafting",
                 exchange_label=f"chapter-{plan['number']:02d}",
-                exchange_callback=active_exchange_callback,
-                progress_callback=active_progress_callback,
+                exchange_callback=emit_exchange,
+                progress_callback=emit_progress,
                 max_tokens=chapter_max_tokens,
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(payload))
+
+            emit_progress({
+                "event_type": "chapter.saved",
+                "stage": "drafting",
+                "unit_id": f"chapter-{chapter_draft.number:02d}",
+                "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
+                "payload": {
+                    "chapter_number": chapter_draft.number,
+                    "chapter_title": chapter_draft.title,
+                    "chapter_summary": chapter_draft.summary,
+                },
+            })
+            return chapter_draft, next_conversation_history
+
+        if self._should_parallel_chapter_draft(spec, pair_plans):
+            worker_limit = min(self._chapter_parallel_worker_limit(), len(pair_plans))
+            parallel_drafts: list[ChapterDraft] = []
+            with ThreadPoolExecutor(max_workers=worker_limit, thread_name_prefix="chapter-draft") as executor:
+                futures = [
+                    executor.submit(
+                        generate_one_chapter,
+                        plan,
+                        prompt_completed_text=completed_text,
+                        prompt_previous_chapter_full_text=previous_chapter_full_text,
+                        prompt_conversation_history=[],
+                    )
+                    for plan in pair_plans
+                ]
+                for future in as_completed(futures):
+                    chapter_draft, _ = future.result()
+                    parallel_drafts.append(chapter_draft)
+            return sorted(parallel_drafts, key=lambda item: item.number)
+
+        drafts: list[ChapterDraft] = []
+        for plan in pair_plans:
+            chapter_draft, conversation_history = generate_one_chapter(
+                plan,
+                prompt_completed_text=completed_text,
+                prompt_previous_chapter_full_text=previous_chapter_full_text,
+                prompt_conversation_history=conversation_history,
+            )
 
             drafts.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
             completed_summaries = completed_summaries[-20:]
             completed_text = "；".join(completed_summaries)
             previous_chapter_full_text = chapter_draft.content or previous_chapter_full_text
-
-            if active_progress_callback:
-                active_progress_callback({
-                    "event_type": "chapter.saved",
-                    "stage": "drafting",
-                    "unit_id": f"chapter-{chapter_draft.number:02d}",
-                    "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
-                    "payload": {
-                        "chapter_number": chapter_draft.number,
-                        "chapter_title": chapter_draft.title,
-                        "chapter_summary": chapter_draft.summary,
-                    },
-                })
 
         return drafts
 
@@ -1084,6 +1133,32 @@ class StoryEngine(BaseAgent):
         if str(spec.get("creative_mode") or spec.get("mode") or "").strip() == TaskMode.STYLE_REMIX.value and total_chapters > 2:
             default_batch_size = 2 if completed_count == 0 else 1
         return min(default_batch_size, remaining)
+
+    def _chapter_parallel_worker_limit(self) -> int:
+        try:
+            configured = int(getattr(self.settings, "chapter_parallel_max_workers", 4) or 4)
+        except (TypeError, ValueError):
+            configured = 4
+        return min(max(configured, 1), 6)
+
+    def _chapter_parallel_min_batch_size(self) -> int:
+        try:
+            configured = int(getattr(self.settings, "chapter_parallel_min_batch_size", 3) or 3)
+        except (TypeError, ValueError):
+            configured = 3
+        return max(configured, 2)
+
+    def _should_parallel_chapter_draft(self, spec: dict[str, Any], pair_plans: list[dict[str, Any]]) -> bool:
+        if not bool(getattr(self.settings, "chapter_parallel_draft_enabled", True)):
+            return False
+        if len(pair_plans) < self._chapter_parallel_min_batch_size():
+            return False
+        if self._chapter_parallel_worker_limit() <= 1:
+            return False
+        # 风格仿写更依赖逐章语气承接，默认继续使用顺序路径。
+        if str(spec.get("creative_mode") or spec.get("mode") or "").strip() == TaskMode.STYLE_REMIX.value:
+            return False
+        return True
 
     def _style_label(self, spec: dict[str, Any]) -> str:
         profile_name = str(spec.get("style_profile_name") or "").strip()
