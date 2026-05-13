@@ -31,8 +31,84 @@ const inlineCodeStyle: React.CSSProperties = {
   fontFamily: "monospace",
 };
 
+/** 危险协议前缀 */
+const DANGEROUS_PROTOCOLS = ["javascript:", "data:", "vbscript:"];
+
+/** 安全的图片 data URI MIME 类型前缀 */
+const SAFE_IMAGE_DATA_URI_PREFIXES = [
+  "data:image/png",
+  "data:image/jpeg",
+  "data:image/jpg",
+  "data:image/gif",
+  "data:image/webp",
+  "data:image/svg+xml",
+  "data:image/bmp",
+  "data:image/avif",
+];
+
+/** 判断 href 是否包含危险协议 */
+function isDangerousHref(href?: string): boolean {
+  if (!href) return false;
+  const lower = href.trim().toLowerCase();
+  return DANGEROUS_PROTOCOLS.some((proto) => lower.startsWith(proto));
+}
+
+/** 判断图片 src 是否安全 */
+function isSafeImageSrc(src?: string): boolean {
+  if (!src) return false;
+  const lower = src.trim().toLowerCase();
+  // 禁止危险协议（非图片 data URI 的 data: 也在这里被拦截）
+  if (DANGEROUS_PROTOCOLS.some((proto) => lower.startsWith(proto))) {
+    // 例外：允许已知图片类型的 data URI
+    if (lower.startsWith("data:")) {
+      return SAFE_IMAGE_DATA_URI_PREFIXES.some((prefix) => lower.startsWith(prefix));
+    }
+    return false;
+  }
+  return true;
+}
+
+/** 判断是否为外部链接 */
+function isExternalLink(href?: string): boolean {
+  if (!href) return false;
+  return /^https?:\/\//.test(href.trim());
+}
+
+/** 安全的链接组件 */
+function SafeLink({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  if (isDangerousHref(href)) {
+    return (
+      <a {...rest} href="#" onClick={(e) => e.preventDefault()}>
+        {children}
+      </a>
+    );
+  }
+  const external = isExternalLink(href);
+  return (
+    <a
+      {...rest}
+      href={href}
+      target={external ? "_blank" : undefined}
+      rel={external ? "noopener noreferrer" : undefined}
+    >
+      {children}
+    </a>
+  );
+}
+
+/** 安全的图片组件 */
+function SafeImage({ src, alt, ...rest }: React.ImgHTMLAttributes<HTMLImageElement>) {
+  if (!isSafeImageSrc(src)) {
+    return null;
+  }
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img {...rest} src={src} alt={alt || ""} />;
+}
+
 /** 正文变体的组件映射 */
 const articleComponents: Components = {
+  a: SafeLink,
+  img: SafeImage,
   h1: ({ children }) => (
     <Typography variant="h4" sx={{ mt: 3, mb: 1.5, fontWeight: 700, fontFamily: "var(--font-serif-sc)" }}>
       {children}
@@ -126,6 +202,8 @@ const articleComponents: Components = {
 
 /** 大纲变体的组件映射（紧凑风格） */
 const outlineComponents: Components = {
+  a: SafeLink,
+  img: SafeImage,
   h1: ({ children }) => (
     <Typography variant="h6" sx={{ mt: 2, mb: 0.75, fontWeight: 700 }}>
       {children}

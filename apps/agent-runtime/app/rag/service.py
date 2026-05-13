@@ -107,10 +107,30 @@ class EmbeddingProjectSearchBackend:
             sys.path.insert(0, root)
 
 
+def _jaccard_similarity(a: str, b: str) -> float:
+    """计算两个字符串基于空白分词的 Jaccard 相似度。"""
+    set_a = set(a.split())
+    set_b = set(b.split())
+    if not set_a and not set_b:
+        return 1.0
+    intersection = len(set_a & set_b)
+    union = len(set_a | set_b)
+    return intersection / union if union else 0.0
+
+
 class RagService:
-    def __init__(self, config: RagConfig, search_backend: SearchBackend | None = None) -> None:
+    def __init__(
+        self,
+        config: RagConfig,
+        search_backend: SearchBackend | None = None,
+        *,
+        score_threshold: float = 0.3,
+        dedup_jaccard_threshold: float = 0.85,
+    ) -> None:
         self.config = config
         self.search_backend = search_backend or EmbeddingProjectSearchBackend(config)
+        self.score_threshold = score_threshold
+        self.dedup_jaccard_threshold = dedup_jaccard_threshold
 
     def is_ready(self) -> bool:
         return self.config.faiss_index_path.exists() and self.config.sqlite_path.exists()
@@ -146,6 +166,7 @@ class RagService:
                 error=str(exc),
             )
 
+        hits = self._filter_and_dedup_hits(hits)
         selected_hits = self._select_hits(hits, max_context_chars or self.config.max_context_chars)
         return RagSearchResult(
             query=normalized_query,
@@ -249,6 +270,24 @@ class RagService:
                 )
             )
         return references
+
+    def _filter_and_dedup_hits(self, hits: list[RagHit]) -> list[RagHit]:
+        """按 score 阈值过滤，并用 Jaccard 相似度去重（保留 score 更高的）。"""
+        threshold = getattr(self, "score_threshold", 0.3)
+        dedup_threshold = getattr(self, "dedup_jaccard_threshold", 0.85)
+
+        filtered = [hit for hit in hits if hit.score >= threshold]
+        filtered.sort(key=lambda h: h.score, reverse=True)
+
+        deduped: list[RagHit] = []
+        for hit in filtered:
+            if any(
+                _jaccard_similarity(hit.content, existing.content) >= dedup_threshold
+                for existing in deduped
+            ):
+                continue
+            deduped.append(hit)
+        return deduped
 
     def _select_hits(self, hits: list[RagHit], max_context_chars: int) -> list[RagHit]:
         selected: list[RagHit] = []

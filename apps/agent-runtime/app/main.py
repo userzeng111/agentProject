@@ -20,6 +20,73 @@ from app.style_profiles import StyleProfileService
 from app.storage.task_store import TaskLogStore
 
 
+import time
+from collections import defaultdict
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """基于内存的按 IP 限流中间件。
+
+    - 通用接口：60 请求 / 分钟
+    - 聊天接口（/api/chat/）：20 请求 / 分钟
+    - /health 豁免
+    - 每 10 分钟清理一次过期记录
+    """
+
+    _general_limit = 60
+    _general_window = 60.0
+    _chat_limit = 20
+    _chat_window = 60.0
+    _last_cleanup = 0.0
+    _cleanup_interval = 600.0
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._records: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request, call_next):
+        path = request.url.path
+        if path == "/health":
+            return await call_next(request)
+
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+
+        # 定期清理过期条目
+        if now - self._last_cleanup > self._cleanup_interval:
+            self._cleanup(now)
+            self._last_cleanup = now
+
+        is_chat = path.startswith("/api/chat/")
+        limit = self._chat_limit if is_chat else self._general_limit
+        window = self._chat_window if is_chat else self._general_window
+
+        timestamps = self._records[client_ip]
+        # 移除窗口期外的旧记录
+        cutoff = now - window
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.pop(0)
+
+        if len(timestamps) >= limit:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "请求过于频繁，请稍后再试。"},
+            )
+
+        timestamps.append(now)
+        return await call_next(request)
+
+    def _cleanup(self, now: float):
+        for ip, timestamps in list(self._records.items()):
+            # 以通用窗口为准清理长期无请求的 IP
+            cutoff = now - self._general_window
+            while timestamps and timestamps[0] < cutoff:
+                timestamps.pop(0)
+            if not timestamps:
+                del self._records[ip]
+
+
 class CacheControlMiddleware(BaseHTTPMiddleware):
     """为静态资源添加长期缓存，API 响应不缓存。"""
 
@@ -114,6 +181,7 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
     max_age=600,
 )
+app.add_middleware(RateLimitMiddleware)
 app.include_router(
     build_router(
         task_service,

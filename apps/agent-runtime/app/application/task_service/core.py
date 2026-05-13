@@ -286,7 +286,22 @@ class TaskServiceCoreMixin:
                 if task_id in self._stop_requested:
                     raise ValueError("任务正在取消中，请等待后台线程结束后再删除。")
                 raise ValueError("任务正在运行中，请先取消后再删除。")
-        return self.store.delete_task(task_id)
+        result = self.store.delete_task(task_id)
+        # 级联清理数据库关联记录
+        self._delete_db_associations(task_id)
+        return result
+
+    def _delete_db_associations(self, task_id: str) -> None:
+        """删除任务的数据库关联记录（agent_run、novel_generation_batch、novel_project）。"""
+        try:
+            from app.storage.database import get_session
+            with get_session() as session:
+                session.execute("DELETE FROM agent_run WHERE task_id = :tid", {"tid": task_id})
+                session.execute("DELETE FROM novel_generation_batch WHERE task_id = :tid", {"tid": task_id})
+                session.execute("DELETE FROM novel_project WHERE task_id = :tid", {"tid": task_id})
+                session.commit()
+        except Exception as exc:
+            logger.warning("删除任务 %s 的数据库关联记录失败: %s", task_id, exc)
 
     def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
         with self._run_lock:
@@ -578,6 +593,33 @@ class TaskServiceCoreMixin:
         except Exception:
             return {}
         return snapshot.values if snapshot and hasattr(snapshot, "values") and isinstance(snapshot.values, dict) else {}
+
+    def _sync_checkpoint_with_db(self, task_id: str) -> None:
+        """checkpoint 状态与数据库状态对账，以数据库为准。"""
+        if not hasattr(self.workflow_engine, "update_state"):
+            return
+        from app.storage.db_repository import get_novel_project
+        project = get_novel_project(task_id)
+        if project is None:
+            return
+        values = self._graph_state_values(task_id)
+        if not values:
+            return
+        db_status = str(project.status or "")
+        patch: dict[str, Any] = {}
+        # 同步小说项目状态字段
+        if db_status and values.get("novel_project_status") != db_status:
+            patch["novel_project_status"] = db_status
+        if project.completed_chapter_count is not None and values.get("completed_chapter_count") != project.completed_chapter_count:
+            patch["completed_chapter_count"] = project.completed_chapter_count
+        if project.next_chapter_number is not None and values.get("next_chapter_number") != project.next_chapter_number:
+            patch["next_chapter_number"] = project.next_chapter_number
+        if patch:
+            logger.info("checkpoint 与数据库状态不一致，已同步: %s", patch)
+            try:
+                self.workflow_engine.update_state(self._config(task_id), patch)
+            except Exception as exc:
+                logger.warning("checkpoint 状态同步失败: %s", exc)
 
     def _sync_supervisor_plan(self, task_id: str) -> TaskRecord:
         task = self.store.get(task_id)

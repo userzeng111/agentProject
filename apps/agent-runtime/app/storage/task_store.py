@@ -736,7 +736,22 @@ class TaskLogStore:
             except Exception as exc:
                 logger.warning("清理旧归档备份失败: %s", exc)
         if source_dir.exists():
-            shutil.move(str(source_dir), str(target_dir))
+            # 原子归档：先复制到临时目录，再原子移动到目标
+            tmp_target = self.archive_dir / f".{task.id}.tmp"
+            shutil.copytree(str(source_dir), str(tmp_target), dirs_exist_ok=True)
+            try:
+                shutil.move(str(tmp_target), str(target_dir))
+            except Exception:
+                # 移动失败时清理临时目录
+                try:
+                    shutil.rmtree(str(tmp_target))
+                except OSError:
+                    pass
+                raise
+            try:
+                shutil.rmtree(str(source_dir))
+            except Exception as exc:
+                logger.warning("归档后清理源目录失败: %s", exc)
         task.storage_state = "archive"
         run_prefix = f"tasklog/runs/{task.id}/"
         archive_prefix = f"tasklog/archive/{task.id}/"

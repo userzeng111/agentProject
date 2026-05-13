@@ -136,6 +136,8 @@ class TaskServiceRunnerMixin:
                     as_node = as_node_map.get(review_type)
                     if as_node and hasattr(self.workflow_engine, "update_state"):
                         self.workflow_engine.update_state(self._config(task_id), {}, as_node=as_node)
+                    # checkpoint 与数据库状态同步：以数据库状态为准
+                    self._sync_checkpoint_with_db(task_id)
                 result = self.workflow_engine.resume(
                     Command(resume={"approved": approved, "comment": comment}),
                     config=self._config(task_id),

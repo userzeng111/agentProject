@@ -4,6 +4,10 @@
   路径：`worklog/archive/代码审查/20260513-01-AgentTeam全面项目审查.md`
   摘要：5 个 Agent 并行审查发现 18 个 P0、29 个 P1、24 个 P2、28 个 P3 问题，已修复全部 17 个可修 P0（API Key 项按用户要求跳过）。
 
+- 标题：P1 安全与稳定性修复（AgentTeam 审查跟进）
+  路径：`worklog/archive/功能开发/20260513-01-后端状态机与数据一致性修复.md`
+  摘要：5 个 Agent 并行修复 P1 问题：速率限制、错误去敏、Markdown XSS 消毒、Prompt 注入转义、缓存 key、RAG 相关性阈值与去重、checkpoint 一致性、删除孤立记录、归档原子化。
+
 - 标题：缓存命中率与 Provider Prompt Cache 优化
   路径：`worklog/archive/功能开发/20260509-03-缓存命中率与ProviderPromptCache优化.md`
   摘要：接入 Anthropic prompt cache、稳定化章节 prompt 结构、新增章节并行草稿配置，经真实 K2.6 验证缓存命中与并行提速约 2.5x。

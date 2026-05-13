@@ -35,6 +35,7 @@ class RagConfig:
     n_threads: int | None = None
     n_batch: int = 512
     top_k: int = 3
+    score_threshold: float = 0.3
     max_context_chars: int = 3000
 
     @property
@@ -69,5 +70,6 @@ class RagConfig:
             n_threads=int(os.getenv("RAG_N_THREADS")) if os.getenv("RAG_N_THREADS") else None,
             n_batch=int(os.getenv("RAG_N_BATCH", "512")),
             top_k=int(os.getenv("RAG_TOP_K", "3")),
+            score_threshold=float(os.getenv("RAG_SCORE_THRESHOLD", "0.3")),
             max_context_chars=int(os.getenv("RAG_MAX_CONTEXT_CHARS", "3000")),
         )

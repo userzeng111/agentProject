@@ -121,10 +121,11 @@ def build_router(
             raise HTTPException(status_code=503, detail="RAG 重建服务未配置。")
         try:
             return rag_rebuild_service.rebuild()
-        except Exception as exc:
+        except Exception:
+            logger.exception("RAG 重建失败")
             return {
                 "success": False,
-                "message": str(exc),
+                "message": "RAG 重建失败，请检查配置或稍后重试。",
                 "scanned_files": 0,
                 "indexed_documents": 0,
                 "output_dir": "",
@@ -400,7 +401,14 @@ def build_router(
         if chat_service is None:
             raise HTTPException(status_code=503, detail="聊天服务未配置。")
 
-        stream = await chat_service.chat_stream(payload)
+        try:
+            stream = await chat_service.chat_stream(payload)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("聊天流初始化失败")
+            raise HTTPException(status_code=500, detail="聊天服务内部错误，请稍后重试。")
+
         return StreamingResponse(
             stream,
             media_type="text/event-stream",
@@ -417,7 +425,13 @@ def build_router(
         if chat_service is None:
             raise HTTPException(status_code=503, detail="聊天服务未配置。")
 
-        result = await chat_service.chat_completions(payload)
+        try:
+            result = await chat_service.chat_completions(payload)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("聊天补全初始化失败")
+            raise HTTPException(status_code=500, detail="聊天服务内部错误，请稍后重试。")
 
         # 如果返回的是异步生成器，则包装为 StreamingResponse
         if hasattr(result, "__aiter__"):

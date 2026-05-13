@@ -275,6 +275,20 @@ class StoryEngine(BaseAgent):
         return candidate or self._runtime_default_model or self.settings.default_chat_model
 
     @staticmethod
+    def _escape_user_input(text: str) -> str:
+        """对用户输入进行边界转义，防止 prompt 注入与模板误解析。"""
+        if not isinstance(text, str):
+            text = str(text) if text is not None else ""
+        # 1. 防止 LangChain prompt template 将 {/} 误解析为变量插值
+        text = text.replace("{", "{{").replace("}", "}}")
+        # 2. 去除控制字符（保留 \n \t \r）
+        text = "".join(ch for ch in text if ch in "\n\t\r" or ord(ch) >= 32)
+        # 3. 连续多个换行压缩为单个换行
+        while "\n\n" in text:
+            text = text.replace("\n\n", "\n")
+        return text
+
+    @staticmethod
     def _positive_int(value: Any, default: int = 0) -> int:
         try:
             parsed = int(value)
@@ -322,20 +336,20 @@ class StoryEngine(BaseAgent):
         if revision_comment and original_plan:
             request_messages = self._render_skill_prompt(
                 "outline-reviser",
-                revision_comment=revision_comment,
+                revision_comment=self._escape_user_input(revision_comment),
                 original_plan_json=json.dumps(original_plan, ensure_ascii=False),
-                mode=spec["mode"],
-                creative_mode=spec.get("creative_mode", spec["mode"]),
-                novel_size=spec.get("novel_size", ""),
-                genre=spec.get("genre", ""),
-                style=spec.get("style", ""),
-                style_requirements=self._style_requirements(spec),
+                mode=self._escape_user_input(spec["mode"]),
+                creative_mode=self._escape_user_input(spec.get("creative_mode", spec["mode"])),
+                novel_size=self._escape_user_input(spec.get("novel_size", "")),
+                genre=self._escape_user_input(spec.get("genre", "")),
+                style=self._escape_user_input(spec.get("style", "")),
+                style_requirements=self._escape_user_input(self._style_requirements(spec)),
                 chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
                 chapter_word_range=self._chapter_word_range_text(spec, original_plan.get("chapter_plan") or []),
-                chapter_count_range_text=spec.get("chapter_count_range_text", ""),
-                structure_hint=self._structure_hint(spec),
-                context_memory=self._context_memory(context_packet),
-                reference_excerpt=self._context_reference(reference_text, context_packet),
+                chapter_count_range_text=self._escape_user_input(spec.get("chapter_count_range_text", "")),
+                structure_hint=self._escape_user_input(self._structure_hint(spec)),
+                context_memory=self._escape_user_input(self._context_memory(context_packet)),
+                reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
             )
             self._require_gateway_client()
             return self._build_story_plan_with_retry(
@@ -350,19 +364,19 @@ class StoryEngine(BaseAgent):
         # 首次生成
         request_messages = self._render_skill_prompt(
             "outline-planner",
-            mode=spec["mode"],
-            creative_mode=spec.get("creative_mode", spec["mode"]),
-            novel_size=spec.get("novel_size", ""),
-            genre=spec.get("genre", ""),
-            style=spec.get("style", ""),
-            style_requirements=self._style_requirements(spec),
+            mode=self._escape_user_input(spec["mode"]),
+            creative_mode=self._escape_user_input(spec.get("creative_mode", spec["mode"])),
+            novel_size=self._escape_user_input(spec.get("novel_size", "")),
+            genre=self._escape_user_input(spec.get("genre", "")),
+            style=self._escape_user_input(spec.get("style", "")),
+            style_requirements=self._escape_user_input(self._style_requirements(spec)),
             chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
             chapter_word_range=spec.get("chapter_word_range_text", self._chapter_word_range_text(spec, [])),
-            chapter_count_range_text=spec.get("chapter_count_range_text", ""),
-            structure_hint=self._structure_hint(spec),
-            prompt=spec.get("prompt", ""),
-            context_memory=self._context_memory(context_packet),
-            reference_excerpt=self._context_reference(reference_text, context_packet),
+            chapter_count_range_text=self._escape_user_input(spec.get("chapter_count_range_text", "")),
+            structure_hint=self._escape_user_input(self._structure_hint(spec)),
+            prompt=self._escape_user_input(spec.get("prompt", "")),
+            context_memory=self._escape_user_input(self._context_memory(context_packet)),
+            reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
         )
         self._require_gateway_client()
         return self._build_story_plan_with_retry(
@@ -427,24 +441,24 @@ class StoryEngine(BaseAgent):
                 )
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
-                mode=spec["mode"],
-                creative_mode=spec.get("creative_mode", spec["mode"]),
-                novel_size=spec.get("novel_size", ""),
-                title=title,
-                logline=summary,
+                mode=self._escape_user_input(spec["mode"]),
+                creative_mode=self._escape_user_input(spec.get("creative_mode", spec["mode"])),
+                novel_size=self._escape_user_input(spec.get("novel_size", "")),
+                title=self._escape_user_input(title),
+                logline=self._escape_user_input(summary),
                 chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
                 chapter_word_range=chapter_word_range,
                 chapter_number=item["number"],
-                chapter_title=item["title"],
-                chapter_goal=item["goal"],
-                chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
-                completed_summaries="；".join(completed_summaries) if completed_summaries else "无",
-                previous_chapter_full_text=previous_chapter_full_text,
+                chapter_title=self._escape_user_input(item["title"]),
+                chapter_goal=self._escape_user_input(item["goal"]),
+                chapter_titles=self._escape_user_input(" / ".join(ch["title"] for ch in chapter_plan)),
+                completed_summaries=self._escape_user_input("；".join(completed_summaries) if completed_summaries else "无"),
+                previous_chapter_full_text=self._escape_user_input(previous_chapter_full_text),
                 current_chapter_existing_draft="无",
-                style=self._style_label(spec),
-                style_requirements=self._style_requirements(spec),
-                context_memory=self._context_memory(context_packet),
-                reference_excerpt=self._context_reference(reference_text, context_packet),
+                style=self._escape_user_input(self._style_label(spec)),
+                style_requirements=self._escape_user_input(self._style_requirements(spec)),
+                context_memory=self._escape_user_input(self._context_memory(context_packet)),
+                reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
             )
             request_messages = self._conversation_request_messages(
                 conversation_history=conversation_history,
@@ -570,24 +584,24 @@ class StoryEngine(BaseAgent):
 
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
-                mode=spec["mode"],
-                creative_mode=spec.get("creative_mode", spec["mode"]),
-                novel_size=spec.get("novel_size", ""),
-                title=title,
-                logline=summary,
+                mode=self._escape_user_input(spec["mode"]),
+                creative_mode=self._escape_user_input(spec.get("creative_mode", spec["mode"])),
+                novel_size=self._escape_user_input(spec.get("novel_size", "")),
+                title=self._escape_user_input(title),
+                logline=self._escape_user_input(summary),
                 chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
                 chapter_word_range=chapter_word_range,
                 chapter_number=plan["number"],
-                chapter_title=plan["title"],
-                chapter_goal=plan["goal"],
-                chapter_titles=" / ".join(ch["title"] for ch in chapter_plan),
-                completed_summaries=prompt_completed_text,
-                previous_chapter_full_text=prompt_previous_chapter_full_text,
-                current_chapter_existing_draft=self._existing_draft_text(draft_seeds, int(plan["number"])),
-                style=self._style_label(spec),
-                style_requirements=self._style_requirements(spec),
-                context_memory=self._context_memory(context_packet),
-                reference_excerpt=self._context_reference(reference_text, context_packet),
+                chapter_title=self._escape_user_input(plan["title"]),
+                chapter_goal=self._escape_user_input(plan["goal"]),
+                chapter_titles=self._escape_user_input(" / ".join(ch["title"] for ch in chapter_plan)),
+                completed_summaries=self._escape_user_input(prompt_completed_text),
+                previous_chapter_full_text=self._escape_user_input(prompt_previous_chapter_full_text),
+                current_chapter_existing_draft=self._escape_user_input(self._existing_draft_text(draft_seeds, int(plan["number"]))),
+                style=self._escape_user_input(self._style_label(spec)),
+                style_requirements=self._escape_user_input(self._style_requirements(spec)),
+                context_memory=self._escape_user_input(self._context_memory(context_packet)),
+                reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
             )
 
             request_messages = self._conversation_request_messages(
@@ -679,20 +693,20 @@ class StoryEngine(BaseAgent):
 
         request_messages = self._render_skill_prompt(
             "chapter-reviser",
-            revision_comment=revision_comment,
+            revision_comment=self._escape_user_input(revision_comment),
             current_chapters_json=json.dumps(current_pair, ensure_ascii=False),
-            mode=spec["mode"],
-            creative_mode=spec.get("creative_mode", spec["mode"]),
-            novel_size=spec.get("novel_size", ""),
-            title=title,
-            logline=summary,
+            mode=self._escape_user_input(spec["mode"]),
+            creative_mode=self._escape_user_input(spec.get("creative_mode", spec["mode"])),
+            novel_size=self._escape_user_input(spec.get("novel_size", "")),
+            title=self._escape_user_input(title),
+            logline=self._escape_user_input(summary),
             chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
             chapter_word_range=chapter_word_range,
-            completed_summaries=completed_text,
-            style=self._style_label(spec),
-            style_requirements=self._style_requirements(spec),
-            context_memory=self._context_memory(context_packet),
-            reference_excerpt=self._context_reference(reference_text, context_packet),
+            completed_summaries=self._escape_user_input(completed_text),
+            style=self._escape_user_input(self._style_label(spec)),
+            style_requirements=self._escape_user_input(self._style_requirements(spec)),
+            context_memory=self._escape_user_input(self._context_memory(context_packet)),
+            reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
         )
 
         self._require_gateway_client()
@@ -769,11 +783,11 @@ class StoryEngine(BaseAgent):
         request_messages = self._render_skill_prompt(
             "issue-fixer",
             issues_json=issues_json,
-            user_comment=review_comment,
+            user_comment=self._escape_user_input(review_comment),
             chapters_json=chapters_json,
-            mode=spec["mode"],
-            title=title,
-            logline=summary,
+            mode=self._escape_user_input(spec["mode"]),
+            title=self._escape_user_input(title),
+            logline=self._escape_user_input(summary),
         )
 
         self._require_gateway_client()
@@ -847,7 +861,7 @@ class StoryEngine(BaseAgent):
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         max_tokens: int | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-        cache_key = self._response_cache_key(model=model, request_messages=request_messages)
+        cache_key = self._response_cache_key(model=model, request_messages=request_messages, max_tokens=max_tokens)
         cached_payload = self.response_cache.get(cache_key)
         if isinstance(cached_payload, dict):
             conversation_history = self._append_assistant_message(request_messages, cached_payload)
@@ -903,7 +917,7 @@ class StoryEngine(BaseAgent):
         - 失败时 fallback 到 _complete_json_with_cache
         """
         # 缓存命中则直接返回（不发 thinking 事件）
-        cache_key = self._response_cache_key(model=model, request_messages=request_messages)
+        cache_key = self._response_cache_key(model=model, request_messages=request_messages, max_tokens=max_tokens)
         cached_payload = self.response_cache.get(cache_key)
         if isinstance(cached_payload, dict):
             conversation_history = self._append_assistant_message(request_messages, cached_payload)
@@ -1064,11 +1078,12 @@ class StoryEngine(BaseAgent):
             "parts": parts,
         }
 
-    def _response_cache_key(self, model: str, request_messages: list[dict[str, str]]) -> str:
+    def _response_cache_key(self, model: str, request_messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
         payload = json.dumps(
             {
                 "model": model,
                 "messages": request_messages,
+                "max_tokens": max_tokens,
             },
             ensure_ascii=False,
             sort_keys=True,
