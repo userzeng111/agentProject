@@ -127,7 +127,11 @@ class TaskServiceCoreMixin:
         若注入对象仅提供旧式 ``invoke`` 接口，自动包装为 ``NovelWorkflowEngine``
         兼容形态，使 ``start/resume/get_state/update_state`` 均可正常调用。
         """
-        if value is None or all(hasattr(value, attr) for attr in ("start", "resume", "get_state", "update_state")):
+        if value is None:
+            logger.warning("workflow_engine 被设置为 None，后续依赖工作流引擎的操作可能失败。")
+            self.workflow_engine = None
+            return
+        if all(hasattr(value, attr) for attr in ("start", "resume", "get_state", "update_state")):
             self.workflow_engine = value
             return
 
@@ -252,20 +256,23 @@ class TaskServiceCoreMixin:
         from app.storage.db_repository import get_active_batch, get_novel_project, mark_batch_failed, update_project_status
         project = get_novel_project(task_id)
         if project is not None:
+            current_status = project.status
+            blocked = project.blocked_from_status or current_status
             if not project.blocked_from_status:
                 update_project_status(
                     task_id,
-                    status=project.status,
-                    blocked_from_status=project.status,
+                    status=current_status,
+                    blocked_from_status=blocked,
                 )
             active_batch = get_active_batch(task_id)
             if active_batch is not None:
                 mark_batch_failed(task_id, int(active_batch.batch_no))
             update_project_status(
                 task_id,
-                status=project.status,
+                status=current_status,
                 active_batch_no=None,
                 active_continue_request_id="",
+                blocked_from_status=blocked,
             )
         record = self.store.cancel_task(task_id, comment=comment)
         self._sync_supervisor_plan(task_id)

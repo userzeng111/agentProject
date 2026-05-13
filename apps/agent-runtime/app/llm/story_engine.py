@@ -618,7 +618,7 @@ class StoryEngine(BaseAgent):
             })
             return chapter_draft, next_conversation_history
 
-        if self._should_parallel_chapter_draft(spec, pair_plans):
+        if self._should_parallel_chapter_draft(spec, pair_plans) and batch_index == 0:
             worker_limit = min(self._chapter_parallel_worker_limit(), len(pair_plans))
             parallel_drafts: list[ChapterDraft] = []
             with ThreadPoolExecutor(max_workers=worker_limit, thread_name_prefix="chapter-draft") as executor:
@@ -628,7 +628,7 @@ class StoryEngine(BaseAgent):
                         plan,
                         prompt_completed_text=completed_text,
                         prompt_previous_chapter_full_text=previous_chapter_full_text,
-                        prompt_conversation_history=[],
+                        prompt_conversation_history=conversation_history,
                     )
                     for plan in pair_plans
                 ]

@@ -132,6 +132,7 @@ export function ChatClient() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // 用于标记是否正在流式输出中（避免在流式期间写入 localStorage）
   const streamingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -239,6 +240,13 @@ export function ChatClient() {
     setConversationList(listConversations());
   }, [messages, currentConvId, currentModel]);
 
+  // 组件卸载时中止正在进行的请求
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+    };
+  }, []);
+
   // ── 显示提示 ──
   const showSnackbar = useCallback((message: string, severity: "success" | "error" | "info" = "info") => {
     setSnackbar({ open: true, message, severity });
@@ -309,6 +317,9 @@ export function ChatClient() {
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
+
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = new AbortController();
 
     const userMsg: DisplayMessage = { role: "user", content: text };
     const assistantMsg: DisplayMessage = {
@@ -398,6 +409,7 @@ export function ChatClient() {
         setLoading(false);
         streamingRef.current = false;
       },
+      abortControllerRef.current?.signal,
     );
   }, [currentModel, input, loading, messages, ragAvailable]);
 

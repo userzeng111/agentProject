@@ -92,23 +92,27 @@ app.add_middleware(TracingMiddleware)
 # 缓存控制中间件
 app.add_middleware(CacheControlMiddleware)
 
+import os
+
+_default_origins = [
+    settings.runtime_origin,
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3001",
+    "http://localhost:3001",
+]
+_allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")
+if _allowed_origins:
+    _default_origins = [o.strip() for o in _allowed_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        settings.runtime_origin,
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-        "http://127.0.0.1:3001",
-        "http://localhost:3001",
-        "https://app.yuegui666.icu",
-        "https://api.yuegui666.icu",
-        "https://yuegui666.icu",
-        "https://agentproject.pages.dev",
-    ],
-    allow_origin_regex=r"^https?://((localhost)|(127\.0\.0\.1)|(\d{1,3}(\.\d{1,3}){3}))(:\d+)?$",
+    allow_origins=_default_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
+    max_age=600,
 )
 app.include_router(
     build_router(

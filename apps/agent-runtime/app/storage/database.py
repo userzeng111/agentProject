@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Any, Generator, Optional
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -36,6 +37,7 @@ def init_db(db_path: str | Path) -> sessionmaker[Session]:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA busy_timeout=5000")
         cursor.close()
 
     import app.storage.db_models  # noqa: F401
@@ -81,8 +83,16 @@ def _ensure_novel_project_columns(engine) -> None:
             connection.execute(text(ddl))
 
 
-def get_session() -> Session:
-    """创建一个新的数据库会话。"""
+@contextmanager
+def get_session() -> Generator[Session, Any, None]:
+    """创建一个新的数据库会话，异常时自动回滚，退出时自动关闭。"""
     if _session_factory is None:
         raise RuntimeError("数据库尚未初始化，请先调用 init_db()")
-    return _session_factory()
+    session = _session_factory()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

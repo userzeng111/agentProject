@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from app.observability import get_logger
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -307,16 +309,18 @@ class TaskServiceContinuationMixin:
             except Exception as exc:
                 if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
                     return self.store.get(task_id)
+                # 扫描实际已写入的章节，避免 completed_chapter_count 与文件不一致
+                actual_completed = len([c for c in self.get_current_chapters(task_id) if c.get("content")])
                 mark_batch_failed(task_id, batch.batch_no)
                 update_project_status(
                     task_id,
                     status=TaskStatus.WAITING_MANUAL_ACTION.value,
-                    completed_chapter_count=completed_count,
-                    next_chapter_number=completed_count + 1,
+                    completed_chapter_count=actual_completed,
+                    next_chapter_number=actual_completed + 1,
                     active_batch_no=None,
                     active_continue_request_id="",
                     blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
-                    current_generating_chapter_number=self._current_generating_chapter_number_from_error(task_id, completed_count + 1),
+                    current_generating_chapter_number=self._current_generating_chapter_number_from_error(task_id, actual_completed + 1),
                 )
                 snapshot = self.store.set_waiting_manual_action(
                     task_id,
@@ -357,6 +361,27 @@ class TaskServiceContinuationMixin:
                 chapters.append(item)
         return chapters
 
+    def _atomic_write_text(self, path: Path, content: str) -> None:
+        """使用临时文件 + rename 实现原子写入。"""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(fd)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
     def _write_chapter_file(
         self,
         task_id: str,
@@ -365,7 +390,7 @@ class TaskServiceContinuationMixin:
         summary: str,
         content: str,
     ) -> None:
-        """将章节正文写入磁盘文件。"""
+        """将章节正文原子写入磁盘文件。"""
         task = self.store.get(task_id)
         task_dir = self.store._task_dir(task)
         chapters_dir = task_dir / "chapters"
@@ -379,8 +404,8 @@ class TaskServiceContinuationMixin:
             "summary": summary,
             "content": content,
         }
-        chapter_md_file.write_text(f"# {title}\n\n{content}\n", encoding="utf-8")
-        chapter_file.write_text(json.dumps(chapter_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._atomic_write_text(chapter_md_file, f"# {title}\n\n{content}\n")
+        self._atomic_write_text(chapter_file, json.dumps(chapter_data, ensure_ascii=False, indent=2))
         # 更新 chapters/index.json（加锁防止读-改-写竞态）
         lock = self._chapter_file_locks.setdefault(task_id, threading.Lock())
         with lock:
@@ -396,7 +421,7 @@ class TaskServiceContinuationMixin:
             if chapter_number not in existing:
                 index_data.append({"number": chapter_number, "title": title, "summary": summary})
                 index_data.sort(key=lambda x: x.get("number") or 0)
-            index_file.write_text(json.dumps(index_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._atomic_write_text(index_file, json.dumps(index_data, ensure_ascii=False, indent=2))
 
     def _extract_chapter_content(self, conversation_history: list[dict[str, Any]]) -> str | None:
         """从对话历史中提取最后一轮 assistant 消息中的章节正文。"""

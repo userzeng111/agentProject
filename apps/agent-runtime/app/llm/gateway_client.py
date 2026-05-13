@@ -82,9 +82,10 @@ class OpenAICompatibleGatewayClient:
             return self._client
 
     def _get_async_client(self) -> httpx.AsyncClient:
-        if self._async_client is None or self._async_client.is_closed:
-            self._async_client = httpx.AsyncClient(timeout=self._timeout, trust_env=False)
-        return self._async_client
+        with self._client_lock:
+            if self._async_client is None or self._async_client.is_closed:
+                self._async_client = httpx.AsyncClient(timeout=self._timeout, trust_env=False)
+            return self._async_client
 
     def close(self) -> None:
         with self._client_lock:

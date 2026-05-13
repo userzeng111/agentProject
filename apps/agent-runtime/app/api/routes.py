@@ -32,7 +32,10 @@ def build_router(
             return HTTPException(status_code=404, detail="文件不存在")
         if isinstance(exc, ValueError):
             return HTTPException(status_code=400, detail=str(exc))
-        return HTTPException(status_code=500, detail="服务内部错误")
+        if isinstance(exc, PermissionError):
+            return HTTPException(status_code=403, detail="权限不足")
+        logger.exception("内部错误")
+        return HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
     def _sse_payload(event_name: str, payload: dict) -> str:
         return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -313,10 +316,18 @@ def build_router(
             logger.exception("读取文件失败 ref=%s", ref)
             raise _handle_error(exc) from exc
 
+    import re
+    _SAFE_PATH_RE = re.compile(r"^[a-zA-Z0-9_\-][a-zA-Z0-9_\-\./]*$")
+
     @router.get("/tasks/{task_id}/files/{path:path}")
     def get_task_file_text(task_id: str, path: str):
+        if ".." in path or not _SAFE_PATH_RE.match(path):
+            raise HTTPException(status_code=400, detail="非法文件路径。")
+        normalized = path.lstrip("/")
+        if not normalized:
+            raise HTTPException(status_code=400, detail="文件路径不能为空。")
         try:
-            content = task_service.read_file_text(task_id, path)
+            content = task_service.read_file_text(task_id, normalized)
             return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
         except Exception as exc:
             logger.exception("读取任务文件失败 task_id=%s path=%s", task_id, path)
@@ -337,6 +348,17 @@ def build_router(
             try:
                 yield _sse_payload("snapshot", snapshot)
                 while True:
+                    # 检查任务是否已终止但事件队列为空，避免永久挂起
+                    try:
+                        latest = task_service.store.get(task_id)
+                        if latest.status.value in {"completed", "cancelled", "failed"}:
+                            yield _sse_payload(
+                                "task.done",
+                                {"task_id": task_id, "event_type": f"task.{latest.status.value}"},
+                            )
+                            break
+                    except Exception:
+                        pass
                     try:
                         payload = await asyncio.wait_for(queue.get(), timeout=15)
                     except asyncio.TimeoutError:

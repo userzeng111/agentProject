@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：AgentTeam 全面项目审查
+  路径：`worklog/archive/代码审查/20260513-01-AgentTeam全面项目审查.md`
+  摘要：5 个 Agent 并行审查发现 18 个 P0、29 个 P1、24 个 P2、28 个 P3 问题，已修复全部 17 个可修 P0（API Key 项按用户要求跳过）。
+
 - 标题：缓存命中率与 Provider Prompt Cache 优化
   路径：`worklog/archive/功能开发/20260509-03-缓存命中率与ProviderPromptCache优化.md`
   摘要：接入 Anthropic prompt cache、稳定化章节 prompt 结构、新增章节并行草稿配置，经真实 K2.6 验证缓存命中与并行提速约 2.5x。

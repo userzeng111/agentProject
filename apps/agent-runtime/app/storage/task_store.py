@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 from app.observability import get_logger
+import os
 import shutil
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any
@@ -727,7 +729,12 @@ class TaskLogStore:
         target_dir = self.archive_dir / task.id
         target_dir.parent.mkdir(parents=True, exist_ok=True)
         if target_dir.exists():
-            shutil.rmtree(target_dir)
+            backup_dir = target_dir.with_suffix(".backup")
+            shutil.move(str(target_dir), str(backup_dir))
+            try:
+                shutil.rmtree(backup_dir)
+            except Exception as exc:
+                logger.warning("清理旧归档备份失败: %s", exc)
         if source_dir.exists():
             shutil.move(str(source_dir), str(target_dir))
         task.storage_state = "archive"
@@ -873,10 +880,13 @@ class TaskLogStore:
         return path
 
     def _resolve_task_path(self, task_id: str, relative_path: str) -> Path:
+        import re
         task = self.get(task_id)
         candidate = Path(relative_path)
         if candidate.is_absolute():
             raise FileNotFoundError("禁止读取绝对路径。")
+        if re.search(r"\.\.|\\", relative_path):
+            raise FileNotFoundError("非法路径字符。")
 
         task_dir = self._task_dir(task).resolve()
         if candidate.parts and candidate.parts[0] == "tasklog":
@@ -897,10 +907,30 @@ class TaskLogStore:
             raise FileNotFoundError(relative_path)
         return absolute
 
-    def _write_json(self, path: Path, payload: Any) -> None:
+    def _atomic_write_text(self, path: Path, content: str) -> None:
+        """使用临时文件 + rename 实现原子写入。"""
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(fd)
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _write_json(self, path: Path, payload: Any) -> None:
+        data = json.dumps(payload, ensure_ascii=False, indent=2)
+        self._atomic_write_text(path, data)
 
     def _write_md(self, path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        self._atomic_write_text(path, content)

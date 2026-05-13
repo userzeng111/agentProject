@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
   Avatar,
@@ -382,6 +382,7 @@ function buildSystemStages(events: WorkspaceEvent[]) {
 }
 
 export default function TaskRunClient({ taskId }: { taskId?: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
@@ -499,11 +500,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     try {
       await deleteTask(resolvedTaskId);
       showSnackbar("任务已删除");
-      window.location.href = "/";
+      router.push("/");
     } catch (err) {
       showSnackbar(err instanceof Error ? err.message : "删除任务失败");
     }
-  }, [resolvedTaskId, workspace, showSnackbar]);
+  }, [resolvedTaskId, workspace, showSnackbar, router]);
 
   useEffect(() => {
     const nextDefault = workspace?.novel_progress?.default_batch_size;
@@ -639,6 +640,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     let disposed = false;
     let source: EventSource | null = null;
     let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     const candidatePaths = streamPathCandidates(resolvedTaskId);
     let reconnectAttempts = 0;
     const MAX_RECONNECT = 3;
@@ -688,7 +690,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         if (reconnectAttempts < MAX_RECONNECT) {
           reconnectAttempts += 1;
           setStreamState(`事件流已断开，${RECONNECT_DELAY / 1000}秒后第${reconnectAttempts}次重连...`);
-          setTimeout(() => {
+          reconnectTimeout = setTimeout(() => {
+            reconnectTimeout = null;
             if (!disposed) {
               tryConnect(0);
             }
@@ -704,6 +707,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     return () => {
       disposed = true;
       if (refreshTimeout) clearTimeout(refreshTimeout);
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
       source?.close();
       eventSourceRef.current = null;
     };
