@@ -151,6 +151,31 @@ class StoryEngine(BaseAgent):
                 ),
             ]
         )
+        # 章节计划批次生成 prompt
+        self.chapter_plan_batch_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "你是一个中文小说策划助手，要输出严格 JSON，不要输出额外解释。",
+                ),
+                (
+                    "human",
+                    "请基于以下小说总纲，生成指定范围的章节计划，并严格返回 JSON 数组。\n"
+                    "每个元素结构为：{{number:int, title:string, goal:string}}\n\n"
+                    "作品标题：{title}\n"
+                    "一句话梗概：{logline}\n"
+                    "世界观：{world_notes}\n"
+                    "人物：{character_notes}\n"
+                    "预计总章数：{planned_chapter_count}\n"
+                    "单章字数下限：{chapter_word_min}\n"
+                    "风格目标：{style}\n"
+                    "风格约束：{style_requirements}\n\n"
+                    "已确认章节标题（作为连贯性约束）：{confirmed_chapter_titles}\n\n"
+                    "请只生成第 {start_chapter} 章到第 {end_chapter} 章的计划，不要生成其他章节。\n"
+                    "确保新章节与已确认章节在情节、人物发展上保持连贯。",
+                ),
+            ]
+        )
         # 章节对修订 prompt
         self.chapter_pair_revision_prompt = ChatPromptTemplate.from_messages(
             [
@@ -232,6 +257,7 @@ class StoryEngine(BaseAgent):
     # skill_id → 硬编码 prompt 属性名映射（fallback 用）
     _PROMPT_MAP: dict[str, str] = {
         "outline-planner": "outline_prompt",
+        "chapter-plan-batch": "chapter_plan_batch_prompt",
         "draft-writer": "draft_prompt",
         "chapter-writer": "chapter_prompt",
         "outline-reviser": "outline_revision_prompt",
@@ -387,6 +413,68 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             max_tokens=self._outline_generation_max_tokens(spec),
         )
+
+    def build_chapter_plan_batch(
+        self,
+        spec: dict[str, Any],
+        story_plan: dict[str, Any],
+        batch_index: int,
+        batch_size: int,
+        confirmed_chapter_plans: list[dict[str, Any]],
+        model: str | None = None,
+    ) -> list[ChapterPlan]:
+        """基于总纲生成指定范围的章节计划批次。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+
+        confirmed_titles = " / ".join(
+            f"第{ch.get('number')}章 {ch.get('title')}"
+            for ch in confirmed_chapter_plans
+        ) or "无"
+
+        request_messages = self._render_skill_prompt(
+            "chapter-plan-batch",
+            title=self._escape_user_input(story_plan.get("working_title", "")),
+            logline=self._escape_user_input(story_plan.get("logline", "")),
+            world_notes=self._escape_user_input("\n".join(story_plan.get("world_notes", []))),
+            character_notes=self._escape_user_input("\n".join(story_plan.get("character_notes", []))),
+            planned_chapter_count=story_plan.get("planned_chapter_count", 0),
+            chapter_word_min=spec.get("chapter_word_min", spec.get("target_words", 1800)),
+            style=self._escape_user_input(self._style_label(spec)),
+            style_requirements=self._escape_user_input(self._style_requirements(spec)),
+            confirmed_chapter_titles=self._escape_user_input(confirmed_titles),
+            start_chapter=batch_index + 1,
+            end_chapter=batch_index + batch_size,
+        )
+        self._require_gateway_client()
+
+        payload, _ = self._complete_stream_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="planning",
+            exchange_label="chapter-plan-batch",
+            exchange_callback=active_exchange_callback,
+            progress_callback=None,
+            max_tokens=min(12000, max(4096, batch_size * 128 + 1024)),
+        )
+        if not payload:
+            raise RuntimeError("章节计划批次生成返回空响应")
+
+        parsed = payload if isinstance(payload, list) else self._parse_strict_json(str(payload))
+        if not isinstance(parsed, list):
+            raise RuntimeError(f"章节计划批次生成返回非数组 JSON: {type(parsed)}")
+
+        from app.domain.models import ChapterPlan
+        result: list[ChapterPlan] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            number = int(item.get("number") or 0)
+            title = str(item.get("title") or "")
+            goal = str(item.get("goal") or item.get("summary") or "")
+            if number > 0 and title:
+                result.append(ChapterPlan(number=number, title=title, goal=goal))
+        return result
 
     @staticmethod
     def _normalize_chapter_payload(payload: dict[str, Any]) -> dict[str, Any]:

@@ -100,20 +100,25 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         first = graph.invoke(initial_state, config=config)
         self.assertEqual(first["__interrupt__"][0].value["type"], "outline_review")
 
+        # 总纲审核通过
         second = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(second["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(second["__interrupt__"][0].value["batch_index"], 0)
+        self.assertEqual(second["__interrupt__"][0].value["type"], "outline_review")
 
+        # 章节计划批次审核通过
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 2)
+        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 0)
 
         fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 4)
+        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
 
         fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fifth["__interrupt__"][0].value["type"], "verification_review")
+        self.assertEqual(fifth["__interrupt__"][0].value["type"], "chapter_pair_review")
+        self.assertEqual(fifth["__interrupt__"][0].value["batch_index"], 4)
+
+        sixth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        self.assertEqual(sixth["__interrupt__"][0].value["type"], "verification_review")
 
         final_result = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertNotIn("__interrupt__", final_result)
@@ -150,25 +155,30 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         first = graph.invoke(initial_state, config=config)
         self.assertEqual(first["__interrupt__"][0].value["type"], "outline_review")
 
+        # 总纲审核通过
         second = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(second["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(len(second["__interrupt__"][0].value["chapter_pair"]), 2)
+        self.assertEqual(second["__interrupt__"][0].value["type"], "outline_review")
 
+        # 章节计划批次审核通过
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 2)
-        self.assertEqual(len(third["__interrupt__"][0].value["chapter_pair"]), 1)
+        self.assertEqual(len(third["__interrupt__"][0].value["chapter_pair"]), 2)
 
         fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 3)
+        self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
+        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
         self.assertEqual(len(fourth["__interrupt__"][0].value["chapter_pair"]), 1)
 
         fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fifth["__interrupt__"][0].value["batch_index"], 4)
+        self.assertEqual(fifth["__interrupt__"][0].value["batch_index"], 3)
         self.assertEqual(len(fifth["__interrupt__"][0].value["chapter_pair"]), 1)
 
         sixth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(sixth["__interrupt__"][0].value["type"], "verification_review")
+        self.assertEqual(sixth["__interrupt__"][0].value["batch_index"], 4)
+        self.assertEqual(len(sixth["__interrupt__"][0].value["chapter_pair"]), 1)
+
+        seventh = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        self.assertEqual(seventh["__interrupt__"][0].value["type"], "verification_review")
 
     def test_graph_uses_actual_chapter_plan_length_when_planned_count_is_larger(self) -> None:
         engine = FakeMismatchedPlanEngine()
@@ -199,17 +209,22 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         first = graph.invoke(initial_state, config=config)
         self.assertEqual(first["__interrupt__"][0].value["type"], "outline_review")
 
+        # 总纲审核通过
         second = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(second["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(second["__interrupt__"][0].value["batch_index"], 0)
+        self.assertEqual(second["__interrupt__"][0].value["type"], "outline_review")
 
+        # 章节计划批次审核通过
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 2)
-        self.assertEqual(len(third["__interrupt__"][0].value["chapter_pair"]), 1)
+        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 0)
 
         fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fourth["__interrupt__"][0].value["type"], "verification_review")
+        self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
+        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
+        self.assertEqual(len(fourth["__interrupt__"][0].value["chapter_pair"]), 1)
+
+        fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        self.assertEqual(fifth["__interrupt__"][0].value["type"], "verification_review")
 
         final_result = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertNotIn("__interrupt__", final_result)

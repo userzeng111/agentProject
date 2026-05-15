@@ -5,10 +5,12 @@ from app.observability import get_logger
 
 from app.domain.models import (
     ChapterDraft,
+    OutlineBatchInfo,
     ReviewPayload,
     TaskRecord,
     TaskStatus,
 )
+from app.storage import db_repository
 
 logger = get_logger(__name__)
 
@@ -43,14 +45,121 @@ class TaskServiceReviewMixin:
             story_plan = task.story_plan or task.pending_review.story_plan
             if story_plan is None:
                 raise ValueError("当前任务缺少大纲，无法进入继续创作阶段。")
+
+            from app.storage import db_repository
+
+            outline_batch = task.pending_review.outline_batch if task.pending_review else None
+            phase = outline_batch.phase if outline_batch else "master"
+
+            if phase == "master":
+                # 总纲通过，进入章节计划批次生成
+                task.story_plan = story_plan
+                self._ensure_novel_project_seeded(task)
+                batch_size = outline_batch.batch_size if outline_batch else 20
+                task.pending_review.outline_batch = OutlineBatchInfo(
+                    phase="chapter_batches",
+                    completed_count=0,
+                    batch_index=0,
+                    batch_size=batch_size,
+                    total_count=story_plan.planned_chapter_count or 0,
+                )
+                self.store.save(task)
+                snapshot = self.store.set_waiting_review(task_id, task.pending_review, task.story_plan)
+                snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
+                snapshot = self._sync_supervisor_plan(task_id)
+                with self._run_lock:
+                    if task_id in self._active_runs:
+                        raise ValueError("任务正在运行中，请勿重复提交。")
+                self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
+                return snapshot
+
+            # 章节计划批次通过
+            batch_plans = outline_batch.current_batch_plans if outline_batch else []
+            story_plan.chapter_plan.extend(batch_plans)
+            completed = len(story_plan.chapter_plan)
             task.story_plan = story_plan
-            self._ensure_novel_project_seeded(task)
-            snapshot = self.store.set_ready_for_batch(
-                task_id,
-                story_plan,
-                message=comment.strip() or "大纲审核通过，等待继续创作。",
-            )
-            return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
+
+            total = story_plan.planned_chapter_count or completed
+            batch_size = outline_batch.batch_size if outline_batch else 20
+            batch_no = (outline_batch.batch_index // batch_size) + 1 if outline_batch else 1
+
+            db_repository.mark_chapter_plan_batch_approved(task_id, batch_no)
+            for plan in batch_plans:
+                db_repository.upsert_outline_chapter_plan(
+                    task_id=task_id,
+                    chapter_number=plan.number,
+                    title=plan.title,
+                    goal=plan.goal,
+                    outline_batch_no=batch_no,
+                    status="outline_approved",
+                )
+
+            if completed >= total:
+                self.store.save(task)
+                snapshot = self.store.set_ready_for_batch(
+                    task_id, story_plan,
+                    message=comment.strip() or f"章节计划全部完成（{completed}章），等待继续创作。"
+                )
+                return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
+
+            # 还有剩余，准备下一批
+            outline_batch.completed_count = completed
+            outline_batch.batch_index = completed
+            outline_batch.current_batch_plans = []
+            outline_batch.retry_count = 0
+            self.store.save(task)
+
+            # 同步 checkpoint 状态，避免 graph 恢复时使用旧的分批进度
+            if hasattr(self.workflow_engine, "update_state"):
+                try:
+                    self.workflow_engine.update_state(self._config(task_id), {
+                        "outline_completed_count": completed,
+                        "outline_batch_index": completed,
+                        "outline_batch_retry_count": 0,
+                        "story_plan": task.story_plan.model_dump(mode="json"),
+                    })
+                except Exception as e:
+                    logger.warning("同步 checkpoint 状态失败: %s", e)
+
+            snapshot = self.store.set_waiting_review(task_id, task.pending_review, task.story_plan)
+            snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
+            snapshot = self._sync_supervisor_plan(task_id)
+            with self._run_lock:
+                if task_id in self._active_runs:
+                    raise ValueError("任务正在运行中，请勿重复提交。")
+            self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
+            return snapshot
+
+        if review_type == "outline_review" and not approved:
+            outline_batch = task.pending_review.outline_batch if task.pending_review else None
+            if outline_batch is None:
+                outline_batch = OutlineBatchInfo(phase="master")
+                task.pending_review.outline_batch = outline_batch
+            phase = outline_batch.phase
+            if phase == "master":
+                # 原有逻辑：进入 revise_outline
+                snapshot = self.store.mark_stage(
+                    task_id,
+                    status=TaskStatus.PLANNING,
+                    stage="planning",
+                    progress=max(task.progress, 56),
+                    message=comment.strip() or "人工审核已驳回，正在修订大纲。",
+                    event_type="review.submitted",
+                    unit_id="outline",
+                )
+            else:
+                # 批次驳回：清空当前批次，保留已确认的 chapter_plan，重新生成
+                batch_size = outline_batch.batch_size if outline_batch else 20
+                batch_no = (outline_batch.batch_index // batch_size) + 1 if outline_batch else 1
+                db_repository.mark_chapter_plan_batch_rejected(task_id, batch_no)
+                db_repository.delete_outline_chapter_plans_by_batch(task_id, batch_no)
+                outline_batch.current_batch_plans = []
+                self.store.save(task)
+                snapshot = self.store.set_waiting_review(task_id, task.pending_review, task.story_plan)
+            snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
+            snapshot = self._sync_supervisor_plan(task_id)
+            self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
+            return snapshot
 
         if review_type == "chapter_pair_review" and self._has_novel_project(task_id):
             story_plan = task.story_plan
@@ -196,3 +305,45 @@ class TaskServiceReviewMixin:
                 raise ValueError("任务正在运行中，请勿重复提交。")
         self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
         return snapshot
+
+    def rollback_chapter_plan(self, task_id: str, keep_batch_count: int) -> TaskRecord:
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在后台运行中，请等待完成后再操作回滚。")
+
+            task = self.store.get(task_id)
+
+            if task.status is not TaskStatus.WAITING_OUTLINE_REVIEW:
+                raise ValueError(f"当前任务状态为 {task.status.value}，不支持回滚操作。")
+
+            story_plan = task.story_plan
+            if not story_plan or not story_plan.chapter_plan:
+                raise ValueError("当前没有可回滚的章节计划。")
+
+            outline_batch = task.pending_review.outline_batch if task.pending_review else None
+            batch_size = outline_batch.batch_size if outline_batch else 20
+            keep_count = keep_batch_count * batch_size
+
+            if keep_count >= len(story_plan.chapter_plan):
+                raise ValueError("回滚位置必须早于当前进度。")
+
+            current_confirmed = outline_batch.completed_count if outline_batch else 0
+            current_batch_plans = outline_batch.current_batch_plans if outline_batch else []
+            if keep_count == current_confirmed and not current_batch_plans:
+                return task
+
+            # 数据库回滚 + JSON 截断（同一事务语义：先 DB 操作，再内存修改）
+            db_repository.delete_outline_chapter_plans_after(task_id, keep_count)
+            db_repository.delete_chapter_plan_batches_after(task_id, keep_batch_count)
+
+            story_plan.chapter_plan = story_plan.chapter_plan[:keep_count]
+            task.story_plan = story_plan
+
+            if outline_batch:
+                outline_batch.completed_count = keep_count
+                outline_batch.batch_index = keep_count
+                outline_batch.current_batch_plans = []
+                outline_batch.retry_count = 0
+            self.store.save(task)
+
+            return self.store.set_waiting_review(task_id, task.pending_review, task.story_plan)

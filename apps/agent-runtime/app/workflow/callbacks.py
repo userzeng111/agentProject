@@ -23,6 +23,7 @@ class WorkflowCallbacks:
     normalize_request: Callable[[WorkflowState], WorkflowState]
     prepare_outline_context: Callable[[WorkflowState], WorkflowState]
     plan_story: Callable[[WorkflowState], WorkflowState]
+    plan_chapter_batch: Callable[[WorkflowState], WorkflowState]
     review_outline: Callable[[WorkflowState], WorkflowState]
     revise_outline: Callable[[WorkflowState], WorkflowState]
     prepare_chapter_pair_context: Callable[[WorkflowState], WorkflowState]

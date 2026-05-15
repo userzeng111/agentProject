@@ -40,7 +40,7 @@ import {
   Error as ErrorIcon,
   Check as CheckIcon,
 } from "@mui/icons-material";
-import { fetchTextRef, getModelCatalog, getReview, normalizeModelOptions, recoverTask, resumeTask } from "@/lib/api";
+import { fetchTextRef, getModelCatalog, getReview, normalizeModelOptions, recoverTask, resumeTask, rollbackChapterPlan } from "@/lib/api";
 import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import { derivePrimaryRecoveryAction, filterRecoveryModels, resolveRecoveryPreview } from "@/features/task-recovery/recovery-state.mjs";
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
@@ -52,7 +52,15 @@ import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTr
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
-  { label: "大纲", icon: <ArticleIcon fontSize="small" /> },
+  { label: "大纲总纲", icon: <ArticleIcon fontSize="small" /> },
+  { label: "审核", icon: <CheckCircleIcon fontSize="small" /> },
+  { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
+];
+
+const OUTLINE_BATCH_STEPS = [
+  { label: "创建", icon: <EditIcon fontSize="small" /> },
+  { label: "大纲总纲", icon: <ArticleIcon fontSize="small" /> },
+  { label: "章节计划", icon: <ArticleIcon fontSize="small" /> },
   { label: "审核", icon: <CheckCircleIcon fontSize="small" /> },
   { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
 ];
@@ -665,6 +673,170 @@ function ReviewActionModelSelector({
   );
 }
 
+function MasterOutlineSection({ storyPlan, readOnly }: { storyPlan: { working_title: string; logline: string; world_notes: string[]; character_notes: string[]; planned_chapter_count?: number | null }; readOnly?: boolean }) {
+  const [expanded, setExpanded] = useState(!readOnly);
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="h5" sx={{ flex: 1 }}>
+              大纲总纲
+            </Typography>
+            {readOnly ? <Chip label="已锁定" size="small" color="success" icon={<CheckIcon fontSize="small" />} /> : null}
+            <IconButton onClick={() => setExpanded((v) => !v)} size="small">
+              <ExpandMoreIcon sx={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
+            </IconButton>
+          </Stack>
+          <Collapse in={expanded}>
+            <Stack spacing={2}>
+              <Typography variant="h6" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+                {storyPlan.working_title}
+              </Typography>
+              <Typography color="text.secondary">{storyPlan.logline}</Typography>
+              <Divider />
+              <Typography variant="subtitle1">世界观</Typography>
+              <List dense>
+                {storyPlan.world_notes.map((note, i) => (
+                  <ListItem key={i} disableGutters>
+                    <ListItemText primary={note} />
+                  </ListItem>
+                ))}
+              </List>
+              <Typography variant="subtitle1">人物</Typography>
+              <List dense>
+                {storyPlan.character_notes.map((note, i) => (
+                  <ListItem key={i} disableGutters>
+                    <ListItemText primary={note} />
+                  </ListItem>
+                ))}
+              </List>
+              <Typography variant="subtitle1">预计总章数：{storyPlan.planned_chapter_count ?? "未设定"}</Typography>
+            </Stack>
+          </Collapse>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ConfirmedBatchesSection({ chapters, batchSize }: { chapters: { number: number; title: string; goal: string }[]; batchSize: number }) {
+  const batches: { batchNo: number; items: typeof chapters }[] = [];
+  for (let i = 0; i < chapters.length; i += batchSize) {
+    batches.push({ batchNo: Math.floor(i / batchSize) + 1, items: chapters.slice(i, i + batchSize) });
+  }
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Typography variant="h5">
+            章节计划（已确认 {chapters.length} 章）
+          </Typography>
+          {batches.map((batch) => (
+            <Card key={batch.batchNo} variant="outlined">
+              <CardContent sx={{ py: 1 }}>
+                <Stack direction="row" alignItems="center" spacing={1}>
+                  <Typography variant="subtitle2" sx={{ flex: 1 }}>
+                    批次 {batch.batchNo}（第{batch.items[0]?.number}-{batch.items[batch.items.length - 1]?.number}章）
+                  </Typography>
+                  <Chip label="已确认" size="small" color="success" />
+                </Stack>
+                <List dense>
+                  {batch.items.map((ch) => (
+                    <ListItem key={ch.number} disableGutters>
+                      <ListItemText
+                        primary={`第${ch.number}章 ${ch.title}`}
+                        secondary={ch.goal}
+                      />
+                    </ListItem>
+                  ))}
+                </List>
+              </CardContent>
+            </Card>
+          ))}
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function PendingBatchSection({ chapters }: { chapters: { number: number; title: string; goal: string }[] }) {
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <Typography variant="h5" sx={{ flex: 1 }}>
+              待审核批次（第{chapters[0]?.number}-{chapters[chapters.length - 1]?.number}章）
+            </Typography>
+            <Chip label="待审核" size="small" color="warning" />
+          </Stack>
+          <List dense>
+            {chapters.map((ch) => (
+              <ListItem key={ch.number} disableGutters>
+                <ListItemText
+                  primary={`第${ch.number}章 ${ch.title}`}
+                  secondary={ch.goal}
+                />
+              </ListItem>
+            ))}
+          </List>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
+function BatchRollbackControl({ confirmedCount, batchSize, taskId, onRollback }: { confirmedCount: number; batchSize: number; taskId: string; onRollback: () => void }) {
+  const [value, setValue] = useState("");
+  const [loading, setLoading] = useState(false);
+  const maxBatch = Math.floor(confirmedCount / batchSize);
+  if (maxBatch <= 0) return null;
+
+  async function handleRollback() {
+    const keep = parseInt(value, 10);
+    if (Number.isNaN(keep) || keep < 0 || keep >= maxBatch) {
+      return;
+    }
+    setLoading(true);
+    try {
+      await rollbackChapterPlan(taskId, keep);
+      onRollback();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "回滚失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent>
+        <Stack spacing={2}>
+          <Typography variant="h5">回滚章节计划</Typography>
+          <Typography variant="body2" color="text.secondary">
+            已确认 {confirmedCount} 章（共 {maxBatch} 批），可回滚到任意已确认批次后重新生成。
+          </Typography>
+          <Stack direction="row" spacing={2} alignItems="center">
+            <TextField
+              label="保留批次数"
+              type="number"
+              size="small"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              inputProps={{ min: 0, max: maxBatch - 1 }}
+              sx={{ width: 120 }}
+            />
+            <Button variant="outlined" color="warning" disabled={loading || value === ""} onClick={handleRollback}>
+              {loading ? "回滚中..." : "确认回滚"}
+            </Button>
+          </Stack>
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
+
 function OutlineReview({
   review,
   outlineMarkdown,
@@ -678,6 +850,8 @@ function OutlineReview({
   actionModelId,
   setActionModelId,
   onRefreshModels,
+  taskId,
+  onReload,
 }: {
   review: ReviewResponse;
   outlineMarkdown: string;
@@ -691,13 +865,34 @@ function OutlineReview({
   actionModelId: string;
   setActionModelId: (v: string) => void;
   onRefreshModels: () => void;
+  taskId: string;
+  onReload: () => void;
 }) {
   const revisionCount = review.revision_count ?? 0;
   const hasValidActionModel = models.some((item) => item.id === actionModelId);
+  const outlineBatch = review.outline_batch;
+  const phase = outlineBatch?.phase ?? "master";
+  const batchSize = outlineBatch?.batch_size ?? 20;
+  const completedCount = outlineBatch?.completed_count ?? 0;
+  const totalCount = outlineBatch?.total_count ?? 0;
+  const currentBatchPlans = outlineBatch?.current_batch_plans ?? [];
+
+  // 优先使用后端返回的结构化 story_plan 数据
+  const storyPlan = review.story_plan ?? {
+    working_title: review.meta.title || "",
+    logline: review.summary || "",
+    world_notes: [] as string[],
+    character_notes: [] as string[],
+    planned_chapter_count: totalCount || null,
+  };
+
+  const isMasterPhase = phase === "master";
+  const isBatchPhase = phase === "chapter_batches";
+
   return (
     <>
       <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-        大纲审核
+        {isMasterPhase ? "大纲审核 · 总纲阶段" : `大纲审核 · 章节计划阶段（已确认 ${completedCount}/${totalCount} 章）`}
       </Typography>
       <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
         <Chip label={review.meta.title || review.meta.task_id} size="small" />
@@ -711,50 +906,54 @@ function OutlineReview({
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">审核摘要</Typography>
-            <Typography>{review.summary || review.meta.summary || "暂无审核摘要"}</Typography>
-          </Stack>
-        </CardContent>
-      </Card>
+      {/* 总纲区 */}
+      <MasterOutlineSection storyPlan={storyPlan} readOnly={isBatchPhase} />
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">风险提示</Typography>
-            <List dense>
-              {review.risk_flags.length ? (
-                review.risk_flags.map((flag, index) => (
-                  <ListItem key={`${flag}-${index}`} disableGutters>
-                    <Chip label={flag} size="small" color="warning" variant="outlined" sx={{ mr: 1 }} />
-                  </ListItem>
-                ))
+      {/* 章节计划区 */}
+      {isBatchPhase && (
+        <>
+          {/* 已确认批次 */}
+          {completedCount > 0 && outlineMarkdown ? (
+            <ConfirmedBatchesSection
+              chapters={[]}
+              batchSize={batchSize}
+            />
+          ) : null}
+
+          {/* 当前待审批次 */}
+          {currentBatchPlans.length > 0 ? (
+            <PendingBatchSection chapters={currentBatchPlans} />
+          ) : (
+            <Alert severity="info">正在生成下一批章节计划...</Alert>
+          )}
+
+          {/* 回滚控制 */}
+          <BatchRollbackControl
+            confirmedCount={completedCount}
+            batchSize={batchSize}
+            taskId={taskId}
+            onRollback={onReload}
+          />
+        </>
+      )}
+
+      {/* master 阶段：传统 Markdown 展示（向后兼容） */}
+      {isMasterPhase && (
+        <Card>
+          <CardContent>
+            <Stack spacing={2}>
+              <Typography variant="h5">大纲内容</Typography>
+              {outlineMarkdown ? (
+                <MarkdownContent variant="outline">
+                  {outlineMarkdown}
+                </MarkdownContent>
               ) : (
-                <ListItem disableGutters>
-                  <ListItemText primary="当前没有风险提示。" />
-                </ListItem>
+                <Alert severity="info">暂无大纲内容。</Alert>
               )}
-            </List>
-          </Stack>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">大纲内容</Typography>
-            {outlineMarkdown ? (
-              <MarkdownContent variant="outline">
-                {outlineMarkdown}
-              </MarkdownContent>
-            ) : (
-              <Alert severity="info">暂无大纲内容。</Alert>
-            )}
-          </Stack>
-        </CardContent>
-      </Card>
+            </Stack>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent>
@@ -782,14 +981,16 @@ function OutlineReview({
             />
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
               <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
-                通过并返回工作台
+                {isMasterPhase ? "通过并进入章节计划设计" : "通过本批"}
               </Button>
               <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并进入大纲修订
+                {isMasterPhase ? "拒绝并进入大纲修订" : "驳回重算本批"}
               </Button>
             </Stack>
             <Typography variant="caption" color="text.secondary">
-              通过后将返回工作台等待继续创作；拒绝后将进入大纲修订并回到工作台。
+              {isMasterPhase
+                ? "通过后将进入章节计划分步设计；拒绝后将进入大纲修订并回到工作台。"
+                : "通过后将生成下一批或进入正文编写；驳回后将重新生成本批章节计划。"}
             </Typography>
           </Stack>
         </CardContent>
@@ -1391,9 +1592,12 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   }
 
   const reviewType = review.review_type || "outline_review";
+  const outlinePhase = review.outline_batch?.phase ?? "master";
   const activeStep =
     reviewType === "outline_review"
-      ? 2
+      ? outlinePhase === "chapter_batches"
+        ? 3
+        : 2
       : reviewType === "chapter_pair_review"
         ? 3
         : reviewType === "verification_review"
@@ -1401,7 +1605,9 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           : 2;
   const steps =
     reviewType === "outline_review"
-      ? OUTLINE_STEPS
+      ? outlinePhase === "chapter_batches"
+        ? OUTLINE_BATCH_STEPS
+        : OUTLINE_STEPS
       : reviewType === "chapter_pair_review"
         ? CHAPTER_STEPS
         : VERIFY_STEPS;
@@ -1479,6 +1685,8 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
             actionModelId={actionModelId}
             setActionModelId={handleActionModelChange}
             onRefreshModels={() => void loadModels(true)}
+            taskId={resolvedTaskId}
+            onReload={loadReview}
           />
         )}
 

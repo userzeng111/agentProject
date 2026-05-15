@@ -27,6 +27,7 @@ from app.graph.nodes.outline import (
     normalize_request as _normalize_request_node,
     prepare_outline_context as _prepare_outline_context_node,
     plan_story as _plan_story_node,
+    plan_chapter_batch as _plan_chapter_batch_node,
     review_outline as _review_outline_node,
     revise_outline as _revise_outline_node,
     interrupt_outline_review,
@@ -177,6 +178,9 @@ def build_default_callbacks(
     def plan_story(state: WorkflowState) -> WorkflowState:
         return _plan_story_node(state, engine=engine)
 
+    def plan_chapter_batch(state: WorkflowState) -> WorkflowState:
+        return _plan_chapter_batch_node(state, engine=engine)
+
     def review_outline(state: WorkflowState) -> WorkflowState:
         return _review_outline_node(
             state,
@@ -243,6 +247,7 @@ def build_default_callbacks(
         normalize_request=normalize_request,
         prepare_outline_context=prepare_outline_context,
         plan_story=plan_story,
+        plan_chapter_batch=plan_chapter_batch,
         review_outline=review_outline,
         revise_outline=revise_outline,
         prepare_chapter_pair_context=prepare_chapter_pair_context,
@@ -366,6 +371,9 @@ def build_graph(
     def plan_story(state: WorkflowState) -> WorkflowState:
         return _plan_story_node(state, engine=engine)
 
+    def plan_chapter_batch(state: WorkflowState) -> WorkflowState:
+        return _plan_chapter_batch_node(state, engine=engine)
+
     def review_outline(state: WorkflowState) -> WorkflowState:
         return _review_outline_node(
             state,
@@ -436,6 +444,7 @@ def build_graph(
     graph.add_node("normalize_request", normalize_request)
     graph.add_node("prepare_outline_context", prepare_outline_context)
     graph.add_node("plan_story", plan_story)
+    graph.add_node("plan_chapter_batch", plan_chapter_batch)
     graph.add_node("review_outline", review_outline)
     graph.add_node("revise_outline", revise_outline)
     graph.add_node("prepare_chapter_pair_context", prepare_chapter_pair_context)
@@ -461,11 +470,13 @@ def build_graph(
         route_after_outline_review,
         {
             "prepare_chapter_pair_context": "prepare_chapter_pair_context",
+            "plan_chapter_batch": "plan_chapter_batch",
             "revise_outline": "revise_outline",
             "cancel_task": "cancel_task",
         },
     )
     graph.add_edge("revise_outline", "review_outline")
+    graph.add_edge("plan_chapter_batch", "review_outline")
 
     # 章节对循环
     graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")

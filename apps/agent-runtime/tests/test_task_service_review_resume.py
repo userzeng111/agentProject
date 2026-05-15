@@ -952,7 +952,7 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
             logline="年轻医生在都市权贵与情感纠葛中崛起。",
             world_notes=["现代都市医院体系"],
             character_notes=["男主是年轻医生"],
-            planned_chapter_count=100,
+            planned_chapter_count=2,
             chapter_plan=[
                 {"number": 1, "title": "入院风波", "goal": "主角初登场"},
                 {"number": 2, "title": "夜班急诊", "goal": "建立职业能力"},
@@ -971,6 +971,18 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
 
         snapshot = service.resume_task(task.id, approved=True, comment="通过")
 
+        # 新行为：总纲通过后进入章节计划批次审核，并启动后台生成第一批
+        self.assertEqual(snapshot.status.value, "waiting_outline_review")
+        self.assertEqual(snapshot.current_stage, "waiting_outline_review")
+        self.assertIsNotNone(snapshot.pending_review)
+        self.assertEqual(snapshot.pending_review.type, "outline_review")
+        self.assertIsNotNone(snapshot.pending_review.outline_batch)
+        self.assertEqual(snapshot.pending_review.outline_batch.phase, "chapter_batches")
+        self.assertEqual(len(background_calls), 1)
+
+        # 继续：批次审核通过后进入 ready_for_batch（全部完成，不启动后台）
+        background_calls.clear()
+        snapshot = service.resume_task(task.id, approved=True, comment="批次通过")
         self.assertEqual(snapshot.status.value, "ready_for_batch")
         self.assertEqual(snapshot.current_stage, "ready_for_batch")
         self.assertIsNone(snapshot.pending_review)

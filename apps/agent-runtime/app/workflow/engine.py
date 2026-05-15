@@ -125,6 +125,7 @@ class NovelWorkflowEngine:
             "normalize_request",
             "prepare_outline_context",
             "plan_story",
+            "plan_chapter_batch",
             "review_outline",
             "revise_outline",
             "prepare_chapter_pair_context",
@@ -156,10 +157,12 @@ class NovelWorkflowEngine:
             route_after_outline_review,
             {
                 "prepare_chapter_pair_context": "prepare_chapter_pair_context",
+                "plan_chapter_batch": "plan_chapter_batch",
                 "revise_outline": "revise_outline",
                 "cancel_task": "cancel_task",
             },
         )
+        graph.add_edge("plan_chapter_batch", "review_outline")
         graph.add_edge("revise_outline", "review_outline")
 
         # 章节对循环

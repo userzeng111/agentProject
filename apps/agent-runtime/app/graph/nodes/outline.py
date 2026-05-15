@@ -80,6 +80,7 @@ def plan_story(
     state: WorkflowState,
     *,
     engine: Any,
+    generate_chapter_plan: bool = True,
 ) -> WorkflowState:
     story_plan = engine.build_story_plan(
         state["normalized_spec"],
@@ -87,9 +88,87 @@ def plan_story(
         context_packet=state.get("outline_context_packet"),
         model=state["normalized_spec"].get("model_id"),
     )
+    plan_dict = _normalize_story_plan(story_plan.model_dump())
+    if not generate_chapter_plan:
+        plan_dict["chapter_plan"] = []
     return {
-        "story_plan": _normalize_story_plan(story_plan.model_dump()),
+        "story_plan": plan_dict,
         "outline_revision_count": 0,
+        "outline_phase": "master",
+        "outline_total_count": plan_dict.get("planned_chapter_count", 0),
+        "outline_batch_index": 0,
+        "outline_batch_size": 20,
+        "outline_completed_count": 0,
+        "outline_batch_retry_count": 0,
+    }
+
+
+def plan_chapter_batch(
+    state: WorkflowState,
+    *,
+    engine: Any,
+    default_batch_size: int = 20,
+) -> WorkflowState:
+    story_plan_dict = state.get("story_plan") or {}
+    # 使用已确认章节数作为下一批起始位置（兼容纯图执行无 checkpoint 同步场景）
+    batch_index = state.get("outline_completed_count", 0)
+    batch_size = state.get("outline_batch_size", default_batch_size)
+    total = story_plan_dict.get("planned_chapter_count", 0)
+
+    effective_size = min(batch_size, max(total - batch_index, 0))
+    if effective_size <= 0:
+        return {
+            "current_batch_chapter_plans": [],
+            "outline_phase": "chapter_batches",
+        }
+
+    existing_chapter_plan = story_plan_dict.get("chapter_plan", [])
+    # 若总纲已携带完整 chapter_plan，直接切片避免重复调用 LLM
+    if existing_chapter_plan and len(existing_chapter_plan) >= batch_index + effective_size:
+        from app.domain.models import ChapterPlan
+        batch_plans = [
+            ChapterPlan.model_validate(ch)
+            for ch in existing_chapter_plan[batch_index : batch_index + effective_size]
+        ]
+    else:
+        batch_plans = engine.build_chapter_plan_batch(
+            spec=state["normalized_spec"],
+            story_plan=story_plan_dict,
+            batch_index=batch_index,
+            batch_size=effective_size,
+            confirmed_chapter_plans=existing_chapter_plan[:batch_index],
+            model=state["normalized_spec"].get("model_id"),
+        )
+
+    from app.storage import db_repository
+    batch_no = (batch_index // batch_size) + 1
+    try:
+        db_repository.create_chapter_plan_batch(
+            task_id=state["task_id"],
+            batch_no=batch_no,
+            start_chapter=batch_index + 1,
+            end_chapter=batch_index + effective_size,
+            requested_count=batch_size,
+            effective_count=effective_size,
+            status="waiting_review",
+        )
+        for plan in batch_plans:
+            db_repository.upsert_outline_chapter_plan(
+                task_id=state["task_id"],
+                chapter_number=plan.number,
+                title=plan.title,
+                goal=plan.goal,
+                outline_batch_no=batch_no,
+                status="outline_planned",
+            )
+    except Exception as e:
+        logger.warning("章节计划批次数据库写入失败（测试环境可忽略）: %s", e)
+
+    return {
+        "current_batch_chapter_plans": [p.model_dump(mode="json") for p in batch_plans],
+        "outline_phase": "chapter_batches",
+        "outline_batch_index": batch_index,
+        "outline_batch_retry_count": state.get("outline_batch_retry_count", 0) + 1,
     }
 
 
@@ -217,16 +296,30 @@ def revise_outline(
 
 
 def interrupt_outline_review(state: WorkflowState, comment: str = ""):
+    phase = state.get("outline_phase", "master")
+    story_plan = state.get("story_plan") or {}
+
+    outline_batch = {
+        "phase": phase,
+        "completed_count": state.get("outline_completed_count", 0),
+        "total_count": story_plan.get("planned_chapter_count", 0),
+        "batch_index": state.get("outline_batch_index", 0),
+        "batch_size": state.get("outline_batch_size", 20),
+    }
+    if phase == "chapter_batches":
+        outline_batch["current_batch_plans"] = state.get("current_batch_chapter_plans", [])
+
     return interrupt(
         {
             "type": "outline_review",
             "version": "v1",
-            "summary": comment or "请确认大纲是否可以进入正文起草。",
-            "story_plan": state["story_plan"],
+            "summary": comment or "请确认大纲内容。",
+            "story_plan": story_plan,
             "risk_flags": [
                 "demo 版本，大纲以稳定展示工作流为优先。",
                 "若上传了参考小说，系统只提炼风味和设定气质，不直接复刻原文。",
             ],
             "revision_count": state.get("outline_revision_count", 0),
+            "outline_batch": outline_batch,
         }
     )

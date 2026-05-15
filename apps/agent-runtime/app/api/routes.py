@@ -8,7 +8,7 @@ from app.observability import get_logger
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, TaskActionRequest, TaskCreateRequest
+from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, RollbackChapterPlanRequest, TaskActionRequest, TaskCreateRequest
 from app.storage.task_store import TaskNotFoundError
 
 logger = get_logger(__name__)
@@ -265,6 +265,14 @@ def build_router(
             )
         except Exception as exc:
             logger.exception("恢复任务失败 task_id=%s", task_id)
+            raise _handle_error(exc) from exc
+
+    @router.post("/tasks/{task_id}/rollback-chapter-plan")
+    def rollback_chapter_plan(task_id: str, payload: RollbackChapterPlanRequest):
+        try:
+            return task_service.rollback_chapter_plan(task_id, payload.keep_batch_count)
+        except Exception as exc:
+            logger.exception("回滚章节计划失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
     @router.get("/tasks/{task_id}/workspace")

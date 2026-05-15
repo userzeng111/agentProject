@@ -83,6 +83,13 @@ class FakeEngine:
             )
         ]
 
+    def build_chapter_plan_batch(self, spec, story_plan, batch_index, batch_size, confirmed_chapter_plans, model=None):
+        chapter_plan = story_plan.get("chapter_plan") or []
+        return [
+            ChapterPlan(number=ch["number"], title=ch["title"], goal=ch["goal"])
+            for ch in chapter_plan[batch_index : batch_index + batch_size]
+        ]
+
     def revise_chapter_pair(
         self,
         current_pair,
@@ -350,9 +357,10 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         )
 
         self.assertNotIn("__interrupt__", result)
+        # 新行为：outline_review 会执行两次（总纲 + 章节计划批次）
         self.assertEqual(
             bridge.calls,
-            ["outline_review", "chapter_pair_review", "verification_review"],
+            ["outline_review", "outline_review", "chapter_pair_review", "verification_review"],
         )
 
 

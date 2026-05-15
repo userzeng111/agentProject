@@ -74,6 +74,13 @@ class FakeStoryEngine:
             ],
         )
 
+    def build_chapter_plan_batch(self, spec, story_plan, batch_index, batch_size, confirmed_chapter_plans, model=None):
+        chapter_plan = story_plan.get("chapter_plan") or []
+        return [
+            ChapterPlan(number=ch["number"], title=ch["title"], goal=ch["goal"])
+            for ch in chapter_plan[batch_index : batch_index + batch_size]
+        ]
+
     def generate_chapter_pair(
         self,
         spec,

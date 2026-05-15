@@ -364,7 +364,8 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["status"], "waiting_chapter_review")
+        # queue_continue_task 立即返回 ready_for_batch，后台异步执行
+        self.assertEqual(payload["status"], "ready_for_batch")
 
     def test_recover_endpoint_restores_outline_review_from_history(self) -> None:
         task = self.task_service.create_task(

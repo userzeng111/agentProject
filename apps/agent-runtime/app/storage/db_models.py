@@ -59,6 +59,27 @@ class NovelProjectModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
 
 
+class NovelChapterPlanBatchModel(Base):
+    __tablename__ = "novel_chapter_plan_batch"
+    __table_args__ = (
+        UniqueConstraint("task_id", "batch_no", name="uq_ncpb_task_batch"),
+        Index("ix_ncpb_task_status", "task_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    batch_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_chapter: Mapped[int] = mapped_column(Integer, default=1)
+    end_chapter: Mapped[int] = mapped_column(Integer, default=1)
+    requested_count: Mapped[int] = mapped_column(Integer, default=0)
+    effective_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(32), default="planned")
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+
+
 class NovelOutlineChapterModel(Base):
     __tablename__ = "novel_outline_chapter"
     __table_args__ = (
@@ -74,6 +95,7 @@ class NovelOutlineChapterModel(Base):
     goal: Mapped[str] = mapped_column(String(1024), default="")
     status: Mapped[str] = mapped_column(String(32), default="planned")
     batch_no: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    outline_batch_no: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     summary: Mapped[str] = mapped_column(String(1024), default="")
     md_ref: Mapped[str] = mapped_column(String(512), default="")
     json_ref: Mapped[str] = mapped_column(String(512), default="")

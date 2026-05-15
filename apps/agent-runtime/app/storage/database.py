@@ -44,6 +44,7 @@ def init_db(db_path: str | Path) -> sessionmaker[Session]:
     Base.metadata.create_all(_engine)
     _ensure_tasks_index_columns(_engine)
     _ensure_novel_project_columns(_engine)
+    _ensure_novel_outline_chapter_columns(_engine)
 
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False)
     return _session_factory
@@ -75,6 +76,21 @@ def _ensure_novel_project_columns(engine) -> None:
         "current_generating_chapter_number": (
             "ALTER TABLE novel_project ADD COLUMN current_generating_chapter_number INTEGER"
         ),
+    }
+    with engine.begin() as connection:
+        for column_name, ddl in required_columns.items():
+            if column_name in existing_columns:
+                continue
+            connection.execute(text(ddl))
+
+
+def _ensure_novel_outline_chapter_columns(engine) -> None:
+    inspector = inspect(engine)
+    if "novel_outline_chapter" not in inspector.get_table_names():
+        return
+    existing_columns = {column["name"] for column in inspector.get_columns("novel_outline_chapter")}
+    required_columns = {
+        "outline_batch_no": "ALTER TABLE novel_outline_chapter ADD COLUMN outline_batch_no INTEGER",
     }
     with engine.begin() as connection:
         for column_name, ddl in required_columns.items():

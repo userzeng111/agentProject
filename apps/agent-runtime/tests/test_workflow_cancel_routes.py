@@ -27,6 +27,7 @@ def _callbacks(cancel_task=None) -> WorkflowCallbacks:
         normalize_request=_passthrough,
         prepare_outline_context=_passthrough,
         plan_story=_passthrough,
+        plan_chapter_batch=_passthrough,
         review_outline=_cancel_from_outline_review,
         revise_outline=_passthrough,
         prepare_chapter_pair_context=_passthrough,

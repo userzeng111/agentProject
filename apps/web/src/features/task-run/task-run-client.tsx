@@ -884,6 +884,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     "waiting_verification_review",
   ].includes(workspace.meta.status);
 
+  const isOutlineBatchPhase = workspace.meta.status === "waiting_outline_review" && workspace.outline_phase === "chapter_batches";
+  const outlineBatchProgress = isOutlineBatchPhase
+    ? `章节计划设计中（已确认 ${workspace.outline_completed_count ?? 0} / ${workspace.outline_total_count ?? 0} 章）`
+    : null;
+
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
     <Stack spacing={3} className="page-fade-in">
@@ -1035,8 +1040,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 )}
                 {canReview && (
                   <Button component={Link} href={reviewHref(workspace.meta.task_id)} variant="contained" size="small">
-                    进入审核
+                    {isOutlineBatchPhase ? "进入章节计划审核" : "进入审核"}
                   </Button>
+                )}
+                {isOutlineBatchPhase && outlineBatchProgress && (
+                  <Chip label={outlineBatchProgress} size="small" color="info" variant="outlined" />
                 )}
                 {workspace.meta.status === "completed" && (
                   <Button component={Link} href={resultHref(workspace.meta.task_id)} variant="contained" size="small">

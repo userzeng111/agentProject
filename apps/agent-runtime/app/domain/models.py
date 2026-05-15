@@ -170,6 +170,10 @@ class ResumeRequest(BaseModel):
     model_id: str = ""
 
 
+class RollbackChapterPlanRequest(BaseModel):
+    keep_batch_count: int = Field(ge=0)
+
+
 class ContinueDraftRequest(BaseModel):
     requested_chapter_count: int
     continue_request_id: str
@@ -227,6 +231,16 @@ class ChapterPlan(BaseModel):
     goal: str
 
 
+class OutlineBatchInfo(BaseModel):
+    phase: str = "master"
+    batch_index: int = 0
+    batch_size: int = 20
+    completed_count: int = 0
+    total_count: int = 0
+    current_batch_plans: list[ChapterPlan] = Field(default_factory=list)
+    retry_count: int = 0
+
+
 class StoryPlan(BaseModel):
     working_title: str
     logline: str
@@ -274,6 +288,8 @@ class ReviewPayload(BaseModel):
     risk_flags: list[str] = Field(default_factory=list)
     # 大纲修订计数
     revision_count: int = 0
+    # 大纲批次分步审核信息（与 chapter_pair 字段隔离）
+    outline_batch: OutlineBatchInfo | None = None
     # 章节对审核时
     batch_index: int | None = None
     chapter_pair: list[ChapterDraft] | None = None
@@ -500,6 +516,10 @@ class WorkspaceResponse(BaseModel):
     sources: list[SourceAsset] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None
     agent_runs: list[AgentRunRecord] = Field(default_factory=list)
+    # 大纲批次分步状态
+    outline_phase: str = ""
+    outline_completed_count: int = 0
+    outline_total_count: int = 0
 
 
 class ReviewResponse(BaseModel):
@@ -521,6 +541,8 @@ class ReviewResponse(BaseModel):
     review_history: list[dict[str, Any]] = Field(default_factory=list)
     # 自动审核追踪 [NEW]
     auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
+    # 结构化大纲数据（供前端 MasterOutlineSection 渲染）
+    story_plan: dict[str, Any] | None = None
     # 章节对审核
     chapter_pair: list[dict[str, Any]] = Field(default_factory=list)
     batch_index: int | None = None

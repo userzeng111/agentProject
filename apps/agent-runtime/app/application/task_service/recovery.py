@@ -1034,7 +1034,33 @@ class TaskServiceRecoveryMixin:
                 seed["outline_context_snapshot"] = snapshot.model_dump(mode="json")
             seed["outline_revision_count"] = review.revision_count
             seed["auto_review_trace"] = [dict(item) for item in (task.auto_review_trace or [])]
-            return seed, "plan_story"
+
+            # 注入大纲批次分步状态
+            outline_batch = review.outline_batch
+            if outline_batch:
+                seed["outline_phase"] = outline_batch.phase or "master"
+                seed["outline_completed_count"] = outline_batch.completed_count or 0
+                seed["outline_batch_index"] = outline_batch.batch_index or 0
+                seed["outline_batch_size"] = outline_batch.batch_size or 20
+                seed["outline_total_count"] = outline_batch.total_count or 0
+                seed["outline_batch_retry_count"] = outline_batch.retry_count or 0
+                plans = outline_batch.current_batch_plans or []
+                seed["current_batch_chapter_plans"] = [
+                    p.model_dump(mode="json") if hasattr(p, "model_dump") else p for p in plans
+                ]
+            else:
+                # 从数据库重建批次状态
+                from app.storage import db_repository
+                summary = db_repository.get_chapter_plan_batch_summary(task.id)
+                if summary:
+                    seed["outline_phase"] = "chapter_batches"
+                    seed["outline_completed_count"] = summary["approved_count"]
+                    seed["outline_batch_index"] = summary["approved_count"]
+                    seed["outline_batch_size"] = summary["batch_size"]
+                    seed["outline_total_count"] = summary["total_count"]
+
+            entry_point = "plan_chapter_batch" if seed.get("outline_phase") == "chapter_batches" else "plan_story"
+            return seed, entry_point
 
         if review.type == "chapter_pair_review":
             completed_count = review.completed_count or 0

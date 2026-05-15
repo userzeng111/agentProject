@@ -25,6 +25,13 @@ class FakeEngine:
             chapter_plan=[ChapterPlan(number=1, title="第一章", goal="建立冲突")],
         )
 
+    def build_chapter_plan_batch(self, spec, story_plan, batch_index, batch_size, confirmed_chapter_plans, model=None):
+        chapter_plan = story_plan.get("chapter_plan") or []
+        return [
+            ChapterPlan(number=ch["number"], title=ch["title"], goal=ch["goal"])
+            for ch in chapter_plan[batch_index : batch_index + batch_size]
+        ]
+
     def generate_chapter_pair(
         self,
         spec,
@@ -135,6 +142,9 @@ class GraphContextIntegrationTests(unittest.TestCase):
         self.assertTrue(engine.outline_contexts)
         self.assertIsNotNone(engine.outline_contexts[0])
 
+        # 总纲审核通过
+        graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        # 章节计划批次审核通过
         graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
 
         final_snapshot = graph.get_state(config).values
@@ -171,6 +181,9 @@ class GraphContextIntegrationTests(unittest.TestCase):
         graph.invoke(initial_state, config=config)
         self.assertIn("灯塔档案", engine.outline_contexts[0]["references_text"])
 
+        # 总纲审核通过
+        graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
+        # 章节计划批次审核通过
         graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertIn("港口潮汐表", engine.chapter_pair_contexts[0]["references_text"])
 

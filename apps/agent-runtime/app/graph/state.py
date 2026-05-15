@@ -13,6 +13,14 @@ class WorkflowState(TypedDict, total=False):
     outline_context_snapshot: dict[str, Any]
     story_plan: dict[str, Any]
     outline_revision_count: int
+    # 大纲批次分步
+    outline_phase: str
+    outline_batch_index: int
+    outline_batch_size: int
+    outline_total_count: int
+    outline_completed_count: int
+    outline_batch_retry_count: int
+    current_batch_chapter_plans: list[dict[str, Any]]
     # 章节对
     batch_index: int
     total_chapters: int

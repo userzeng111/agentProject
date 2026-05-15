@@ -151,6 +151,13 @@ export function resumeTask(taskId: string, approved: boolean, comment: string, m
   });
 }
 
+export function rollbackChapterPlan(taskId: string, keepBatchCount: number) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/rollback-chapter-plan`, {
+    method: "POST",
+    body: JSON.stringify({ keep_batch_count: keepBatchCount }),
+  });
+}
+
 export function continueTask(taskId: string, payload: ContinueDraftPayload) {
   return request<TaskRecord>(`/api/tasks/${taskId}/continue`, {
     method: "POST",

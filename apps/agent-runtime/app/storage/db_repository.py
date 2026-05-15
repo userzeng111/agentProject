@@ -9,6 +9,7 @@ from pathlib import Path
 from app.domain.models import StoryPlan, TaskRecord, utc_now
 from app.storage.database import get_session
 from app.storage.db_models import (
+    NovelChapterPlanBatchModel,
     NovelGenerationBatchModel,
     NovelOutlineChapterModel,
     NovelProjectModel,
@@ -391,3 +392,150 @@ def read_file_content_hash(path: Path) -> tuple[str, int]:
         payload = {}
     content = str(payload.get("content") or raw)
     return hashlib.sha256(content.encode("utf-8")).hexdigest(), len(content.encode("utf-8"))
+
+
+# ── 章节计划批次管理 ──
+
+def create_chapter_plan_batch(
+    task_id: str,
+    batch_no: int,
+    start_chapter: int,
+    end_chapter: int,
+    requested_count: int,
+    effective_count: int,
+    status: str = "planned",
+) -> NovelChapterPlanBatchModel:
+    now = utc_now()
+    with get_session() as session:
+        row = NovelChapterPlanBatchModel(
+            task_id=task_id,
+            batch_no=batch_no,
+            start_chapter=start_chapter,
+            end_chapter=end_chapter,
+            requested_count=requested_count,
+            effective_count=effective_count,
+            status=status,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row
+
+
+def get_chapter_plan_batch(task_id: str, batch_no: int) -> NovelChapterPlanBatchModel | None:
+    with get_session() as session:
+        return (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id, batch_no=batch_no)
+            .first()
+        )
+
+
+def mark_chapter_plan_batch_approved(task_id: str, batch_no: int) -> None:
+    now = utc_now()
+    with get_session() as session:
+        row = (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id, batch_no=batch_no)
+            .first()
+        )
+        if row is not None:
+            row.status = "approved"
+            row.approved_at = now
+            row.updated_at = now
+            session.commit()
+
+
+def mark_chapter_plan_batch_rejected(task_id: str, batch_no: int) -> None:
+    now = utc_now()
+    with get_session() as session:
+        row = (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id, batch_no=batch_no)
+            .first()
+        )
+        if row is not None:
+            row.status = "rejected"
+            row.rejected_at = now
+            row.updated_at = now
+            session.commit()
+
+
+def delete_chapter_plan_batches_after(task_id: str, keep_batch_count: int) -> None:
+    with get_session() as session:
+        session.query(NovelChapterPlanBatchModel).filter(
+            NovelChapterPlanBatchModel.task_id == task_id,
+            NovelChapterPlanBatchModel.batch_no > keep_batch_count,
+        ).delete(synchronize_session=False)
+        session.commit()
+
+
+def get_chapter_plan_batch_summary(task_id: str) -> dict[str, Any] | None:
+    with get_session() as session:
+        approved_batches = (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id, status="approved")
+            .order_by(NovelChapterPlanBatchModel.batch_no.asc())
+            .all()
+        )
+        if not approved_batches:
+            return None
+        # 取最常见 requested_count 作为 batch_size（用户配置一次确定后不变）
+        requested_counts = [b.requested_count for b in approved_batches]
+        batch_size = max(set(requested_counts), key=requested_counts.count)
+        approved_count = sum(b.effective_count for b in approved_batches)
+        # total_count 取最大 end_chapter
+        total_count = max(b.end_chapter for b in approved_batches)
+        return {
+            "approved_count": approved_count,
+            "batch_size": batch_size,
+            "total_count": total_count,
+        }
+
+
+def upsert_outline_chapter_plan(
+    task_id: str,
+    chapter_number: int,
+    title: str,
+    goal: str,
+    outline_batch_no: int,
+    status: str = "outline_planned",
+) -> None:
+    now = utc_now()
+    with get_session() as session:
+        # 先删除同 task_id + chapter_number 的旧记录，确保无残留
+        session.query(NovelOutlineChapterModel).filter(
+            NovelOutlineChapterModel.task_id == task_id,
+            NovelOutlineChapterModel.chapter_number == chapter_number,
+        ).delete(synchronize_session=False)
+        row = NovelOutlineChapterModel(
+            task_id=task_id,
+            chapter_number=chapter_number,
+            title=title,
+            goal=goal,
+            outline_batch_no=outline_batch_no,
+            status=status,
+            updated_at=now,
+        )
+        session.add(row)
+        session.commit()
+
+
+def delete_outline_chapter_plans_after(task_id: str, keep_count: int) -> None:
+    with get_session() as session:
+        session.query(NovelOutlineChapterModel).filter(
+            NovelOutlineChapterModel.task_id == task_id,
+            NovelOutlineChapterModel.chapter_number > keep_count,
+        ).delete(synchronize_session=False)
+        session.commit()
+
+
+def delete_outline_chapter_plans_by_batch(task_id: str, batch_no: int) -> None:
+    with get_session() as session:
+        session.query(NovelOutlineChapterModel).filter(
+            NovelOutlineChapterModel.task_id == task_id,
+            NovelOutlineChapterModel.outline_batch_no == batch_no,
+        ).delete(synchronize_session=False)
+        session.commit()

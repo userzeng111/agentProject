@@ -168,6 +168,7 @@ class TaskServiceQueriesMixin:
         recent_other_events = other_events[-100:]
         recent_events = chapter_events + recent_other_events
         recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
+        outline_batch = task.pending_review.outline_batch if task.pending_review else None
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
@@ -181,6 +182,9 @@ class TaskServiceQueriesMixin:
             sources=task.sources,
             supervisor_plan=task.supervisor_plan,
             agent_runs=task.agent_runs,
+            outline_phase=outline_batch.phase if outline_batch else "",
+            outline_completed_count=outline_batch.completed_count if outline_batch else 0,
+            outline_total_count=outline_batch.total_count if outline_batch else 0,
         )
 
     def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:
@@ -279,6 +283,21 @@ class TaskServiceQueriesMixin:
             )
 
         # 默认：大纲审核
+        outline_batch = review.outline_batch
+        pending_batch = None
+        phase = outline_batch.phase if outline_batch else "master"
+        completed_count = outline_batch.completed_count if outline_batch else 0
+        if outline_batch and outline_batch.phase == "chapter_batches":
+            pending_batch = outline_batch.current_batch_plans or None
+        story_plan_payload = None
+        if task.story_plan is not None:
+            story_plan_payload = {
+                "working_title": task.story_plan.working_title,
+                "logline": task.story_plan.logline,
+                "world_notes": task.story_plan.world_notes,
+                "character_notes": task.story_plan.character_notes,
+                "planned_chapter_count": task.story_plan.planned_chapter_count,
+            }
         return ReviewResponse(
             meta=self._to_summary(task),
             review_type="outline_review",
@@ -286,11 +305,28 @@ class TaskServiceQueriesMixin:
             **recovery_contract,
             summary=review.summary,
             risk_flags=review.risk_flags,
-            outline_markdown=self._outline_markdown(task.story_plan) if task.story_plan else None,
+            outline_markdown=self._outline_markdown(
+                task.story_plan,
+                phase=phase,
+                completed_count=completed_count,
+                pending_batch=pending_batch,
+            ) if task.story_plan else None,
             outline_md_ref=outline_ref,
             revision_count=review.revision_count,
             review_history=self._review_history(task),
             auto_review_trace=auto_review_trace,
+            story_plan=story_plan_payload,
+            outline_batch={
+                "phase": outline_batch.phase,
+                "batch_index": outline_batch.batch_index,
+                "batch_size": outline_batch.batch_size,
+                "completed_count": outline_batch.completed_count,
+                "total_count": outline_batch.total_count,
+                "current_batch_plans": [
+                    {"number": p.number, "title": p.title, "goal": p.goal}
+                    for p in (outline_batch.current_batch_plans or [])
+                ],
+            } if outline_batch else None,
         )
 
     def get_result(self, task_id: str) -> ResultResponse:
@@ -512,7 +548,14 @@ class TaskServiceQueriesMixin:
                 )
         return items
 
-    def _outline_markdown(self, story_plan: StoryPlan) -> str:
+    def _outline_markdown(
+        self,
+        story_plan: StoryPlan,
+        *,
+        phase: str = "master",
+        completed_count: int = 0,
+        pending_batch: list[ChapterPlan] | None = None,
+    ) -> str:
         lines = [
             f"# {story_plan.working_title}",
             "",
@@ -524,9 +567,30 @@ class TaskServiceQueriesMixin:
         lines.extend(f"- {item}" for item in story_plan.world_notes)
         lines.extend(["", "## 人物", ""])
         lines.extend(f"- {item}" for item in story_plan.character_notes)
-        lines.extend(["", "## 章节计划", ""])
-        for chapter in story_plan.chapter_plan:
-            lines.append(f"- 第{chapter.number}章 {chapter.title}：{chapter.goal}")
+
+        total = story_plan.planned_chapter_count or 0
+        if phase == "master":
+            # 总纲阶段：只显示预计总章数，不将 chapter_plan 视为已确认
+            lines.extend(["", f"## 章节计划（预计 {total} 章，待分步设计）", ""])
+            if story_plan.chapter_plan:
+                lines.append(f"大纲总纲已预置 {len(story_plan.chapter_plan)} 章概要，将在总纲通过后分批展示审核。")
+            else:
+                lines.append("总纲通过后，系统将分批次生成章节计划供审核。")
+        else:
+            # 批次阶段：按 completed_count 区分已确认与未确认
+            all_plans = story_plan.chapter_plan or []
+            confirmed = all_plans[:completed_count]
+            lines.extend(["", f"## 章节计划（已确认 {len(confirmed)} / {total or '?'} 章）", ""])
+            for chapter in confirmed:
+                lines.append(f"- [已确认] 第{chapter.number}章 {chapter.title}：{chapter.goal}")
+
+            if pending_batch:
+                lines.append("")
+                lines.append(f"### 待审核批次（第 {pending_batch[0].number}-{pending_batch[-1].number} 章）")
+                lines.append("")
+                for chapter in pending_batch:
+                    lines.append(f"- [待审核] 第{chapter.number}章 {chapter.title}：{chapter.goal}")
+
         return "\n".join(lines) + "\n"
 
     def _result_markdown(self, draft_result: DraftResult) -> str:

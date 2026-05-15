@@ -379,6 +379,10 @@ export interface WorkspaceResponse extends RecoveryContractFields {
   sources?: SourceAsset[];
   supervisor_plan?: SupervisorPlanSnapshot | null;
   agent_runs?: AgentRunItem[];
+  // 大纲批次分步状态
+  outline_phase?: string;
+  outline_completed_count?: number;
+  outline_total_count?: number;
 }
 
 export interface ContinueDraftPayload {
@@ -481,6 +485,12 @@ export interface AgentTraceItem {
   created_at?: string;
 }
 
+export interface ReviewChapterPlanItem {
+  number: number;
+  title: string;
+  goal: string;
+}
+
 export interface ReviewResponse extends RecoveryContractFields {
   meta: WorkspaceMeta;
   review_type: string;
@@ -493,6 +503,23 @@ export interface ReviewResponse extends RecoveryContractFields {
   review_history?: ReviewHistoryItem[];
   // 自动审核追踪 [NEW]
   auto_review_trace?: AgentTraceItem[];
+  // 结构化大纲数据
+  story_plan?: {
+    working_title: string;
+    logline: string;
+    world_notes: string[];
+    character_notes: string[];
+    planned_chapter_count: number | null;
+  };
+  // 大纲批次分步审核
+  outline_batch?: {
+    phase: "master" | "chapter_batches";
+    batch_index: number;
+    batch_size: number;
+    completed_count: number;
+    total_count: number;
+    current_batch_plans: ReviewChapterPlanItem[];
+  };
   // 章节对审核
   chapter_pair?: ReviewChapterItem[];
   batch_index?: number;
