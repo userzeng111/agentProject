@@ -270,11 +270,15 @@ class BatchedChapterGenerationTests(unittest.TestCase):
         self.addCleanup(tmp_dir.cleanup)
         engine.emit_progress_events = True
         task = self._seed_ready_task(store, service, planned_chapter_count=8)
+        event_queue = store.subscribe(task.id)
+        self.addCleanup(store.unsubscribe, task.id, event_queue)
 
         continue_task = getattr(service, "continue_task", None)
         self.assertIsNotNone(continue_task)
         continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-1"})
         service.resume_task(task.id, approved=True, comment="通过")
+        while not event_queue.empty():
+            event_queue.get_nowait()
         before_event_count = len(store.get(task.id).events)
         continue_task(task.id, {"requested_chapter_count": 3, "continue_request_id": "req-2"})
 
@@ -284,14 +288,105 @@ class BatchedChapterGenerationTests(unittest.TestCase):
             for event in events
             if event.event_type == "chapter.started"
         }
-        thinking_units = {
+        persisted_thinking_units = [
             event.unit_id
             for event in events
             if event.event_type == "model.thinking"
-        }
+        ]
+        broadcast_thinking_units = []
+        while not event_queue.empty():
+            event = event_queue.get_nowait()
+            if event.get("event_type") == "model.thinking":
+                broadcast_thinking_units.append(event.get("unit_id"))
 
         self.assertEqual(chapter_started, {4, 5, 6})
-        self.assertEqual(thinking_units, {"chapter-04", "chapter-05", "chapter-06"})
+        self.assertEqual(persisted_thinking_units, [])
+        self.assertEqual(set(broadcast_thinking_units), {"chapter-04", "chapter-05", "chapter-06"})
+
+    def test_model_thinking_progress_callback_only_broadcasts_without_persistence(self) -> None:
+        tmp_dir, store, service, _engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=3)
+        event_queue = store.subscribe(task.id)
+        self.addCleanup(store.unsubscribe, task.id, event_queue)
+
+        original_mark_stage = store.mark_stage
+        original_save = store.save
+        original_sync_supervisor_plan = service._sync_supervisor_plan
+        calls = {"mark_stage": 0, "save": 0, "sync": 0}
+
+        def counted_mark_stage(*args, **kwargs):
+            calls["mark_stage"] += 1
+            return original_mark_stage(*args, **kwargs)
+
+        def counted_save(*args, **kwargs):
+            calls["save"] += 1
+            return original_save(*args, **kwargs)
+
+        def counted_sync_supervisor_plan(*args, **kwargs):
+            calls["sync"] += 1
+            return original_sync_supervisor_plan(*args, **kwargs)
+
+        store.mark_stage = counted_mark_stage
+        store.save = counted_save
+        service._sync_supervisor_plan = counted_sync_supervisor_plan
+        before_event_count = len(store.get(task.id).events)
+
+        service._build_progress_callback(task.id)(
+            {
+                "event_type": "model.thinking",
+                "stage": "drafting",
+                "unit_id": "chapter-01",
+                "message": "模型思考中...",
+                "payload": {
+                    "reasoning_chunk": "这段思考不能写入 task.json",
+                    "model": "gpt-5.4",
+                    "finish_reason": None,
+                },
+            }
+        )
+
+        self.assertEqual(calls, {"mark_stage": 0, "save": 0, "sync": 0})
+        self.assertEqual(len(store.get(task.id).events), before_event_count)
+        broadcast_event = event_queue.get_nowait()
+        self.assertEqual(broadcast_event["event_type"], "model.thinking")
+        self.assertEqual(broadcast_event["unit_id"], "chapter-01")
+        self.assertEqual(broadcast_event["payload"]["reasoning_chunk"], "这段思考不能写入 task.json")
+
+    def test_chapter_started_progress_callback_keeps_persistent_stage_path(self) -> None:
+        tmp_dir, store, service, _engine = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = self._seed_ready_task(store, service, planned_chapter_count=3)
+
+        original_mark_stage = store.mark_stage
+        original_sync_supervisor_plan = service._sync_supervisor_plan
+        calls = {"mark_stage": 0, "sync": 0}
+
+        def counted_mark_stage(*args, **kwargs):
+            calls["mark_stage"] += 1
+            return original_mark_stage(*args, **kwargs)
+
+        def counted_sync_supervisor_plan(*args, **kwargs):
+            calls["sync"] += 1
+            return original_sync_supervisor_plan(*args, **kwargs)
+
+        store.mark_stage = counted_mark_stage
+        service._sync_supervisor_plan = counted_sync_supervisor_plan
+        before_event_count = len(store.get(task.id).events)
+
+        service._build_progress_callback(task.id)(
+            {
+                "event_type": "chapter.started",
+                "stage": "drafting",
+                "unit_id": "chapter-01",
+                "message": "正在生成第 1 章",
+                "payload": {"chapter_number": 1, "chapter_title": "第1章"},
+            }
+        )
+
+        events = store.get(task.id).events[before_event_count:]
+        self.assertEqual(calls, {"mark_stage": 1, "sync": 1})
+        self.assertIn("chapter.started", [event.event_type for event in events])
 
     def test_recover_task_marks_waiting_manual_action_on_checksum_mismatch(self) -> None:
         tmp_dir, store, service, _engine = self._build_service()

@@ -10,8 +10,10 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from langgraph.types import Command
+
 from app.application.task_service import TaskService
-from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
+from app.domain.models import ChapterDraft, ChapterPlan, OutlineBatchInfo, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import init_db
@@ -27,9 +29,68 @@ class FakeEngine:
         self.settings = settings
         self.gateway_client = FakeGatewayClient()
         self.progress_callback = None
+        self.generated_chapter_calls: list[dict] = []
+        self.verification_calls: list[list[dict]] = []
 
     def set_runtime_default_model(self, model_id: str) -> None:
         self.settings.default_chat_model = model_id
+
+    def build_story_plan(self, spec, reference_text, context_packet=None, model=None):
+        return StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=1,
+            chapter_plan=[
+                ChapterPlan(number=1, title="第一章", goal="听见异响"),
+            ],
+        )
+
+    def build_chapter_plan_batch(self, spec, story_plan, batch_index, batch_size, confirmed_chapter_plans, model=None):
+        chapter_plan = story_plan.get("chapter_plan") or []
+        return [
+            ChapterPlan(number=chapter["number"], title=chapter["title"], goal=chapter["goal"])
+            for chapter in chapter_plan[batch_index : batch_index + batch_size]
+        ]
+
+    def generate_chapter_pair(
+        self,
+        spec,
+        story_plan,
+        batch_index,
+        completed_chapters,
+        reference_text,
+        context_packet=None,
+        model=None,
+        progress_callback=None,
+    ):
+        self.generated_chapter_calls.append(
+            {
+                "batch_index": batch_index,
+                "completed_count": len(completed_chapters),
+            }
+        )
+        return [
+            ChapterDraft(
+                number=1,
+                title="第一章",
+                summary="重复生成摘要",
+                content="重复生成正文",
+            )
+        ]
+
+    def verify_full_story(
+        self,
+        completed_chapters,
+        story_plan,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+    ):
+        self.verification_calls.append(list(completed_chapters))
+        return {"overall_score": 100, "issues": []}
 
 
 class RecordingRagService:
@@ -138,6 +199,39 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         assert recovered.pending_review is not None
         self.assertEqual(recovered.pending_review.type, "outline_review")
         self.assertEqual(recovered.pending_review.revision_count, 1)
+
+    def test_get_task_does_not_recover_or_mutate_planning_task(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        broken = store.get(task.id)
+        broken.status = TaskStatus.PLANNING
+        broken.current_stage = "planning"
+        broken.current_unit = "outline-revision"
+        broken.story_plan = None
+        broken.pending_review = None
+        store.save(broken)
+        self._write_outline_history(store, task.id, filename="outline-revision-history", title="可恢复标题", chapter_count=2)
+
+        before = store.get(task.id)
+        before_event_count = len(before.events)
+
+        fetched = service.get_task(task.id)
+        after = store.get(task.id)
+
+        self.assertEqual(fetched.status, TaskStatus.PLANNING)
+        self.assertEqual(after.status, TaskStatus.PLANNING)
+        self.assertEqual(after.current_stage, "planning")
+        self.assertIsNone(after.story_plan)
+        self.assertIsNone(after.pending_review)
+        self.assertEqual(len(after.events), before_event_count)
 
     def test_recover_task_restores_missing_story_plan_for_waiting_chapter_review(self) -> None:
         tmp_dir, store, service = self._build_service()
@@ -988,6 +1082,92 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertIsNone(snapshot.pending_review)
         self.assertEqual(background_calls, [])
 
+    def test_initial_state_passes_top_level_chapter_count_bounds_to_input_payload(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                prompt="写一个长篇都市故事",
+                creative_mode="original",
+                novel_size="long",
+                target_chapter_count=80,
+                model_id="gpt-5.4",
+            )
+        )
+        task = store.get(task.id)
+        task.target_chapter_count = 120
+        task.chapter_count_min = 108
+        task.chapter_count_max = 132
+        task.input.target_chapter_count = 80
+
+        state = service._initial_state(task)
+
+        input_payload = state["input_payload"]
+        self.assertEqual(input_payload["target_chapter_count"], 120)
+        self.assertEqual(input_payload["chapter_count_min"], 108)
+        self.assertEqual(input_payload["chapter_count_max"], 132)
+
+    def test_outline_batch_approve_merges_chapter_plan_by_number_without_duplicates(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                prompt="写一个长篇都市医生故事",
+                creative_mode="original",
+                novel_size="long",
+                target_chapter_count=4,
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="白衣暗线",
+            logline="年轻医生追查医院旧案。",
+            world_notes=["现代都市医院体系"],
+            character_notes=["男主是年轻医生"],
+            planned_chapter_count=4,
+            chapter_plan=[
+                {"number": 1, "title": "入院风波", "goal": "主角初登场"},
+                {"number": 2, "title": "夜班急诊", "goal": "建立职业能力"},
+                {"number": 3, "title": "旧案浮现", "goal": "发现旧案"},
+                {"number": 4, "title": "真相逼近", "goal": "锁定对手"},
+            ],
+        )
+        task = store.get(task.id)
+        task.story_plan = story_plan
+        task.pending_review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核章节计划批次。",
+            story_plan=story_plan,
+            outline_batch=OutlineBatchInfo(
+                phase="chapter_batches",
+                batch_index=0,
+                batch_size=4,
+                completed_count=0,
+                total_count=4,
+                current_batch_plans=[
+                    {"number": 1, "title": "入院修订", "goal": "主角修订登场"},
+                    {"number": 2, "title": "急诊修订", "goal": "能力修订建立"},
+                    {"number": 3, "title": "旧案修订", "goal": "旧案修订浮现"},
+                    {"number": 4, "title": "真相修订", "goal": "对手修订锁定"},
+                ],
+            ),
+        )
+        task.status = TaskStatus.WAITING_OUTLINE_REVIEW
+        task.current_stage = "waiting_outline_review"
+        store.save(task)
+
+        snapshot = service.resume_task(task.id, approved=True, comment="批次通过")
+
+        assert snapshot.story_plan is not None
+        self.assertEqual(len(snapshot.story_plan.chapter_plan), 4)
+        self.assertEqual(
+            [plan.title for plan in snapshot.story_plan.chapter_plan],
+            ["入院修订", "急诊修订", "旧案修订", "真相修订"],
+        )
+
     def test_get_review_preserves_outline_revision_count(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)
@@ -1180,6 +1360,362 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertIn("input_payload", fake_graph.updated["values"])
         self.assertEqual(len(fake_graph.updated["values"]["completed_chapters"]), 2)
         self.assertEqual(len(fake_graph.updated["values"]["current_chapter_pair"]), 2)
+
+    def test_resume_chapter_review_without_checkpoint_seeds_pre_review_node(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.normalized_spec = {
+            "mode": "short_story",
+            "prompt": "写一篇恐怖短篇",
+            "genre": "恐怖",
+            "style": "冷静克制",
+            "requested_target_words": 1500,
+            "target_words": 1500,
+            "chapter_word_min": 1500,
+            "chapter_word_max": 1950,
+            "model_id": "gpt-5.4",
+        }
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "章节摘要",
+                    "content": "第一章正文",
+                },
+                {
+                    "number": 2,
+                    "title": "第二章",
+                    "summary": "章节摘要",
+                    "content": "第二章正文",
+                },
+            ],
+            completed_count=0,
+            total_chapters=2,
+            chapter_pair_revision_count=0,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        store.save(task)
+
+        def fail_if_generating(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("章节审核恢复不应重新生成正文。")
+
+        service.engine.generate_chapter_pair = fail_if_generating  # type: ignore[attr-defined]
+
+        class FakeGraph:
+            def __init__(self):
+                self.values = {}
+                self.as_nodes = []
+
+            def get_state(self, config):
+                return SimpleNamespace(values=self.values)
+
+            def update_state(self, config, values, as_node=None, task_id=None):
+                self.as_nodes.append(as_node)
+                if values:
+                    self.values.update(values)
+                return config
+
+            def start(self, state, config=None):
+                return state
+
+            def resume(self, command, config=None):
+                return {
+                    "approved": command.resume["approved"],
+                    "current_chapter_pair": self.values.get("current_chapter_pair") or [],
+                }
+
+        fake_graph = FakeGraph()
+        service.graph = fake_graph
+        service._sync_result = lambda task_id, result, review_comment="": store.get(task_id)
+
+        service._resume_task_sync(task.id, approved=True, comment="通过")
+
+        self.assertIn("draft_chapter_pair", fake_graph.as_nodes)
+        self.assertNotIn("review_chapter_pair", fake_graph.as_nodes)
+
+    def test_final_chapter_review_queues_real_verification_instead_of_fake_waiting_review(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=2,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+                {"number": 2, "title": "第二章", "goal": "查明真相"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节对。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "章节摘要",
+                    "content": "第一章正文",
+                },
+                {
+                    "number": 2,
+                    "title": "第二章",
+                    "summary": "章节摘要",
+                    "content": "第二章正文",
+                },
+            ],
+            completed_count=0,
+            total_chapters=2,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-0"
+        store.save(task)
+        service._ensure_novel_project_seeded(task)
+
+        background_calls: list[tuple[str, str, tuple[object, ...]]] = []
+
+        def fake_start_background(task_id: str, target, *args: object) -> None:
+            background_calls.append((task_id, target.__name__, args))
+
+        service._start_background = fake_start_background
+
+        snapshot = service.resume_task(task.id, approved=True, comment="最终章节通过")
+
+        self.assertEqual(snapshot.status, TaskStatus.DRAFTING)
+        self.assertEqual(snapshot.current_stage, "verification")
+        self.assertIsNotNone(store.get(task.id).pending_review)
+        assert store.get(task.id).pending_review is not None
+        self.assertEqual(store.get(task.id).pending_review.type, "chapter_pair_review")
+        self.assertEqual(background_calls, [(task.id, "_resume_task_sync", (task.id, True, "最终章节通过", "gpt-5.4"))])
+        waiting_verification_events = [
+            event for event in store.get(task.id).events
+            if event.event_type == "review.waiting" and event.stage == "waiting_verification_review"
+        ]
+        self.assertEqual(waiting_verification_events, [])
+
+    def test_final_chapter_resume_with_existing_checkpoint_does_not_force_review_as_node(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+            )
+        )
+        task = store.get(task.id)
+        task.normalized_spec = {
+            "mode": "short_story",
+            "prompt": "写一篇恐怖短篇",
+            "genre": "恐怖",
+            "style": "冷静克制",
+            "requested_target_words": 1500,
+            "target_words": 1500,
+            "chapter_word_min": 1500,
+            "chapter_word_max": 1950,
+            "model_id": "gpt-5.4",
+        }
+        task.story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=1,
+            chapter_plan=[
+                {"number": 1, "title": "第一章", "goal": "听见异响"},
+            ],
+        )
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "章节摘要",
+                    "content": "第一章正文",
+                },
+            ],
+            completed_count=0,
+            total_chapters=1,
+            chapter_pair_revision_count=0,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-0"
+        store.save(task)
+        service._ensure_novel_project_seeded(task)
+        update_project_status(
+            task.id,
+            status=TaskStatus.DRAFTING.value,
+            completed_chapter_count=1,
+            next_chapter_number=2,
+            active_batch_no=None,
+            active_continue_request_id="",
+        )
+
+        def fail_if_generating(*args, **kwargs):  # noqa: ANN002, ANN003
+            raise AssertionError("最终章节审核恢复不应重新生成正文。")
+
+        service.engine.generate_chapter_pair = fail_if_generating  # type: ignore[attr-defined]
+
+        class FakeGraph:
+            def __init__(self):
+                self.values = {
+                    "input_payload": {"model_id": "gpt-5.4"},
+                    "normalized_spec": dict(task.normalized_spec),
+                    "story_plan": task.story_plan.model_dump(mode="json"),
+                    "batch_index": 0,
+                    "total_chapters": 1,
+                    "completed_count": 0,
+                    "current_chapter_pair": [],
+                }
+                self.as_nodes = []
+
+            def get_state(self, config):
+                return SimpleNamespace(values=self.values)
+
+            def update_state(self, config, values, as_node=None, task_id=None):
+                self.as_nodes.append(as_node)
+                if values:
+                    self.values.update(values)
+                return config
+
+            def invoke(self, command, config=None):
+                self.values["approved"] = command.resume["approved"]
+                return {
+                    "approved": command.resume["approved"],
+                    "current_chapter_pair": self.values.get("current_chapter_pair") or [],
+                    "batch_index": 1,
+                    "total_chapters": 1,
+                    "completed_chapters": self.values.get("current_chapter_pair") or [],
+                }
+
+        fake_graph = FakeGraph()
+        service.graph = fake_graph
+        service._sync_result = lambda task_id, result, review_comment="": store.get(task_id)
+
+        service._resume_task_sync(task.id, approved=True, comment="最终章节通过")
+
+        self.assertIn("draft_chapter_pair", fake_graph.as_nodes)
+        self.assertNotIn("review_chapter_pair", fake_graph.as_nodes)
+        self.assertEqual(fake_graph.values["batch_index"], 0)
+        self.assertEqual(fake_graph.values["total_chapters"], 1)
+        self.assertEqual(fake_graph.values["completed_chapters"], [])
+        self.assertEqual(
+            fake_graph.values["current_chapter_pair"],
+            [item.model_dump(mode="json") for item in task.pending_review.chapter_pair],
+        )
+
+    def test_final_chapter_resume_keeps_rehydrated_checkpoint_after_db_sync(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+                target_words=1500,
+                target_chapter_count=1,
+            )
+        )
+
+        service.workflow_engine.start(service._initial_state(store.get(task.id)), config=service._config(task.id))
+        service.workflow_engine.resume(
+            Command(resume={"approved": True, "comment": "总纲通过"}),
+            config=service._config(task.id),
+        )
+        self.assertEqual(service.workflow_engine.get_state(service._config(task.id)).next, ("review_outline",))
+
+        values = service._graph_state_values(task.id)
+        task = store.get(task.id)
+        task.normalized_spec = values["normalized_spec"]
+        task.story_plan = StoryPlan.model_validate(values["story_plan"])
+        task.pending_review = ReviewPayload(
+            type="chapter_pair_review",
+            version="v1",
+            summary="请审核章节。",
+            batch_index=0,
+            chapter_pair=[
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "章节摘要",
+                    "content": "服务层已生成正文",
+                },
+            ],
+            completed_count=0,
+            total_chapters=1,
+            chapter_pair_revision_count=0,
+        )
+        task.status = TaskStatus.WAITING_CHAPTER_REVIEW
+        task.current_stage = "waiting_chapter_review"
+        task.current_unit = "chapter-pair-0"
+        store.save(task)
+        expected_chapter_pair = [
+            item.model_dump(mode="json")
+            for item in task.pending_review.chapter_pair or []
+        ]
+        service._ensure_novel_project_seeded(task)
+        update_project_status(
+            task.id,
+            status=TaskStatus.DRAFTING.value,
+            completed_chapter_count=1,
+            next_chapter_number=2,
+            active_batch_no=None,
+            active_continue_request_id="",
+            current_generating_chapter_number=None,
+        )
+
+        service._resume_task_sync(task.id, approved=True, comment="最终章节通过")
+
+        self.assertEqual(service.engine.generated_chapter_calls, [])
+        self.assertEqual(len(service.engine.verification_calls), 1)
+        self.assertEqual(service.engine.verification_calls[0], expected_chapter_pair)
 
     def test_get_review_syncs_stale_chapter_review_to_verification_review_when_project_already_advanced(self) -> None:
         tmp_dir, store, service = self._build_service()

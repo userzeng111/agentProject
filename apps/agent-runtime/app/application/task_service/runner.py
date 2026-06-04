@@ -131,22 +131,10 @@ class TaskServiceRunnerMixin:
                 exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
                 try:
                     with performance_span(logger, "task_service_rehydrate_resume_state", task_id=task_id):
-                        self._rehydrate_resume_state_if_needed(task, action_model_id)
-                    # 若已有 checkpoint 但未停留在审核中断节点，强制校准 as_node，
-                    # 确保 Command(resume=...) 被正确的审核中断节点消费，避免误入旧生成节点
+                        rehydrated = self._rehydrate_resume_state_if_needed(task, action_model_id)
                     with performance_span(logger, "task_service_graph_state_values", task_id=task_id):
                         values = self._graph_state_values(task_id)
-                    if values:
-                        review_type = task.pending_review.type if task.pending_review else None
-                        as_node_map = {
-                            "outline_review": "review_outline",
-                            "chapter_pair_review": "review_chapter_pair",
-                            "verification_review": "review_verification",
-                        }
-                        as_node = as_node_map.get(review_type)
-                        if as_node and hasattr(self.workflow_engine, "update_state"):
-                            with performance_span(logger, "task_service_checkpoint_update_state", task_id=task_id):
-                                self.workflow_engine.update_state(self._config(task_id), {}, as_node=as_node)
+                    if values and not rehydrated:
                         # checkpoint 与数据库状态同步：以数据库状态为准
                         with performance_span(logger, "task_service_sync_checkpoint_with_db", task_id=task_id):
                             self._sync_checkpoint_with_db(task_id)
@@ -181,6 +169,16 @@ class TaskServiceRunnerMixin:
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             progress = self._progress_value(task_id, event_type, payload)
             status = TaskStatus.DRAFTING if stage == "drafting" else None
+            if event_type == "model.thinking":
+                self.store.broadcast_event(
+                    task_id,
+                    stage=stage,
+                    message=message,
+                    event_type=event_type,
+                    unit_id=unit_id,
+                    payload=payload,
+                )
+                return
             self.store.mark_stage(
                 task_id,
                 status=status,

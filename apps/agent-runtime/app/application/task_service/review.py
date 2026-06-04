@@ -6,7 +6,6 @@ from app.observability import get_logger
 from app.domain.models import (
     ChapterDraft,
     OutlineBatchInfo,
-    ReviewPayload,
     TaskRecord,
     TaskStatus,
 )
@@ -75,7 +74,13 @@ class TaskServiceReviewMixin:
 
             # 章节计划批次通过
             batch_plans = outline_batch.current_batch_plans if outline_batch else []
-            story_plan.chapter_plan.extend(batch_plans)
+            plans_by_number = {plan.number: plan for plan in batch_plans}
+            merged_chapter_plan = [
+                plans_by_number.pop(plan.number, plan)
+                for plan in story_plan.chapter_plan
+            ]
+            merged_chapter_plan.extend(plans_by_number.values())
+            story_plan.chapter_plan = merged_chapter_plan
             completed = len(story_plan.chapter_plan)
             task.story_plan = story_plan
 
@@ -209,21 +214,36 @@ class TaskServiceReviewMixin:
                 if planned_total > 0 and completed_count >= planned_total:
                     update_project_status(
                         task_id,
-                        status=TaskStatus.WAITING_VERIFICATION_REVIEW.value,
+                        status=TaskStatus.DRAFTING.value,
                         completed_chapter_count=completed_count,
                         next_chapter_number=next_chapter_number,
+                        active_batch_no=None,
+                        active_continue_request_id="",
                         current_generating_chapter_number=None,
                     )
                     note = comment.strip() or "当前批次审核通过，全部章节已完成，等待全文验证。"
-                    task.pending_review = ReviewPayload(
-                        type="verification_review",
-                        version="v1",
-                        summary="请审核全文一致性验证报告。",
-                        verification_report={"overall_score": 100, "issues": []},
+                    snapshot = self.store.mark_stage(
+                        task_id,
+                        status=TaskStatus.DRAFTING,
+                        stage="verification",
+                        progress=max(task.progress, 90),
+                        message=note,
+                        event_type="review.submitted",
+                        unit_id=f"chapter-pair-{task.pending_review.batch_index or 0}",
+                        payload={
+                            "summary": "章节审核已通过，正在执行全文验证。",
+                            "display_level": "public",
+                            "completed_chapter_count": completed_count,
+                            "next_chapter_number": next_chapter_number,
+                        },
                     )
-                    self.store.save(task)
-                    snapshot = self.store.set_waiting_verification_review(task_id, task.pending_review)
-                    return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
+                    snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
+                    snapshot = self._sync_supervisor_plan(task_id)
+                    with self._run_lock:
+                        if task_id in self._active_runs:
+                            raise ValueError("任务正在运行中，请勿重复提交。")
+                    self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
+                    return snapshot
                 update_project_status(
                     task_id,
                     status=TaskStatus.READY_FOR_BATCH.value,

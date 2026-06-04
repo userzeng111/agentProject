@@ -967,6 +967,41 @@ class TaskServiceRecoveryMixin:
             return payload.model_dump(mode="json")
         return None
 
+    def _chapter_pair_resume_state_is_stale(self, task: TaskRecord, values: dict[str, Any]) -> bool:
+        review = task.pending_review
+        if review is None or review.type != "chapter_pair_review":
+            return False
+        expected_pair = [
+            item.model_dump(mode="json") if hasattr(item, "model_dump") else dict(item)
+            for item in (review.chapter_pair or [])
+        ]
+        current_pair = values.get("current_chapter_pair")
+        if not isinstance(current_pair, list) or current_pair != expected_pair:
+            return True
+        expected_batch_index = int(review.batch_index or 0)
+        try:
+            current_batch_index = int(values.get("batch_index") or 0)
+        except (TypeError, ValueError):
+            return True
+        if current_batch_index != expected_batch_index:
+            return True
+        expected_total = int(review.total_chapters or (len(task.story_plan.chapter_plan) if task.story_plan else 0))
+        try:
+            current_total = int(values.get("total_chapters") or 0)
+        except (TypeError, ValueError):
+            return True
+        if current_total != expected_total:
+            return True
+        expected_completed = int(review.completed_count or 0)
+        try:
+            current_completed_count = int(values.get("completed_count") or 0)
+        except (TypeError, ValueError):
+            return True
+        if current_completed_count != expected_completed:
+            return True
+        completed_chapters = values.get("completed_chapters")
+        return not isinstance(completed_chapters, list) or len(completed_chapters) != expected_completed
+
     def _load_draft_seed_map(self, task_id: str, chapter_numbers: list[int]) -> dict[int, str]:
         draft_seed_map: dict[int, str] = {}
         for chapter_number in chapter_numbers:
@@ -1163,10 +1198,10 @@ class TaskServiceRecoveryMixin:
 
         return None
 
-    def _rehydrate_resume_state_if_needed(self, task: TaskRecord, action_model_id: str | None = None) -> None:
+    def _rehydrate_resume_state_if_needed(self, task: TaskRecord, action_model_id: str | None = None) -> bool:
         values = self._graph_state_values(task.id)
         if not hasattr(self.workflow_engine, "update_state"):
-            return
+            return False
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
         patch: dict[str, Any] = {}
         input_payload = values.get("input_payload")
@@ -1177,10 +1212,18 @@ class TaskServiceRecoveryMixin:
             patch["normalized_spec"] = self._with_model_id(normalized_spec, resolved_model_id)
         if patch:
             self.workflow_engine.update_state(self._config(task.id), patch)
+            values = {**values, **patch}
+        if self._chapter_pair_resume_state_is_stale(task, values):
+            seeded = self._resume_seed_state(task, action_model_id)
+            if seeded is not None:
+                seed_values, as_node = seeded
+                self.workflow_engine.update_state(self._config(task.id), seed_values, as_node=as_node)
+                return True
         if values.get("input_payload"):
-            return
+            return False
         seeded = self._resume_seed_state(task, action_model_id)
         if seeded is None:
-            return
+            return False
         seed_values, as_node = seeded
         self.workflow_engine.update_state(self._config(task.id), seed_values, as_node=as_node)
+        return True

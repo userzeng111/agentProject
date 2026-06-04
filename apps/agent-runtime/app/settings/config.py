@@ -66,6 +66,10 @@ class Settings(BaseSettings):
         default="",
         validation_alias=AliasChoices("PROVIDER_PROMPT_CACHE_TTL"),
     )
+    verification_max_tokens: int = Field(
+        default=4096,
+        validation_alias=AliasChoices("VERIFICATION_MAX_TOKENS"),
+    )
     # 章节批次并行草稿配置。硬上限在 StoryEngine 内再次限制，避免配置过大压满本机或上游网关。
     chapter_parallel_draft_enabled: bool = Field(
         default=True,

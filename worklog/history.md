@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：全流程 Agent 创作耗时测试
+  路径：`worklog/archive/backend-performance/20260604-01-全流程Agent创作耗时测试.md`
+  摘要：多轮真实全流程测试定位并优化 LLM、验证 repair、TaskStore 写放大和重复正文生成等耗时问题。
+
 - 标题：rebuild 分支性能、数据库与异步 API 分析
   路径：`worklog/archive/backend-performance/20260603-01-rebuild性能数据库异步化分析.md`
   摘要：完成 rebuild 分支后端性能、数据库连接参数与 SQL 日志、可观测性、安全漏洞修复和第二批性能埋点，并通过后端全量测试与接口 smoke 验证。

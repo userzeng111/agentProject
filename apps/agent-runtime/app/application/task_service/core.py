@@ -244,7 +244,7 @@ class TaskServiceCoreMixin:
         return self.store.add_source(task_id, source)
 
     def get_task(self, task_id: str) -> TaskRecord:
-        return self.recover_task(task_id)
+        return self.store.get(task_id)
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
@@ -563,6 +563,21 @@ class TaskServiceCoreMixin:
                 "mode": task.mode.value,
                 "creative_mode": task.creative_mode.value if task.creative_mode else "",
                 "novel_size": task.novel_size.value if task.novel_size else "",
+                "target_chapter_count": (
+                    task.target_chapter_count
+                    if task.target_chapter_count is not None
+                    else task.input.target_chapter_count
+                ),
+                "chapter_count_min": (
+                    task.chapter_count_min
+                    if task.chapter_count_min is not None
+                    else task.input.chapter_count_min
+                ),
+                "chapter_count_max": (
+                    task.chapter_count_max
+                    if task.chapter_count_max is not None
+                    else task.input.chapter_count_max
+                ),
                 "chapter_word_min": task.chapter_word_min or task.input.target_words,
                 "model_id": resolved_model_id,
                 "prompt": task.input.prompt,

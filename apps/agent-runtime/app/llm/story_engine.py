@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar, Token
 import hashlib
 import json
+import secrets
 import threading
 import time
 from app.observability import get_logger
@@ -42,6 +43,23 @@ _STREAM_JSON_REPAIR_PROMPT = (
     "必须保留原任务要求的字段，不要省略正文内容。"
     "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
 )
+
+_VERIFICATION_TRUNCATED_RETRY_PROMPT = (
+    "上一次全文验证响应被输出预算截断，只产生了模型思考过程，没有返回 JSON。"
+    "请停止分析，直接输出一个极短 JSON 对象。"
+    "必须包含 issues、overall_score、summary 三个字段。"
+    "issues 最多 3 条；description、suggestion、summary 都必须简短。"
+    "不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
+)
+
+_VERIFICATION_JSON_REPAIR_PROMPT = (
+    "上一次全文验证响应不是可解析 JSON。"
+    "请直接重写一个极短 JSON 对象，必须包含 issues、overall_score、summary 三个字段。"
+    "issues 最多 3 条；无法确认严重问题时 issues 返回空数组。"
+    "不要复述正文，不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
+)
+
+_TRUNCATED_FINISH_REASONS = {"length", "max_tokens"}
 
 _progress_callback_var: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
     "story_engine_progress_callback",
@@ -121,12 +139,18 @@ class StoryEngine(BaseAgent):
             [
                 (
                     "system",
-                    "你是一个中文小说章节起草助手，要输出严格 JSON，不要输出额外解释。",
+                    "你是一个中文小说章节起草助手，必须按指定章节分区协议输出，不要输出额外解释。",
                 ),
                 (
                     "human",
-                    "请只生成当前章节，并严格返回 JSON，结构必须包含："
-                    "number(int), title(string), summary(string), content(string)。\n"
+                    "请只生成当前章节，并严格按以下分区协议返回：\n"
+                    "{chapter_meta_boundary}\n"
+                    "{{\"number\":{chapter_number},\"title\":\"章节标题\",\"summary\":\"不超过80字摘要\"}}\n"
+                    "{chapter_content_boundary}\n"
+                    "正文原文，不要 JSON 转义；不要用 Markdown 代码围栏包裹整个响应。\n"
+                    "{chapter_end_boundary}\n"
+                    "元数据 JSON 只允许包含 number、title、summary 三个字段，不得包含 content 字段。\n"
+                    "正文中不要输出任何边界行。\n"
                     "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n作品标题：{title}\n一句话梗概：{logline}\n"
                     "单章字数下限：{chapter_word_min}\n当前章节建议字数：{chapter_word_range}\n"
                     "总章节规划：{chapter_titles}\n"
@@ -209,11 +233,14 @@ class StoryEngine(BaseAgent):
             [
                 (
                     "system",
-                    "你是一个中文小说质量审核助手，要输出严格 JSON，不要输出额外解释。",
+                    "你是一个中文小说质量审核助手，要输出严格 JSON，不要输出额外解释或分析过程。",
                 ),
                 (
                     "human",
                     "请对以下小说全文进行一致性验证，检查人物设定、时间线、世界观、情节逻辑等维度。\n"
+                    "只报告影响主线理解的问题，忽略措辞、局部润色和不影响阅读的小瑕疵。\n"
+                    "最多 5 个问题，按严重程度排序；不要逐章复述，不要输出分析过程。\n"
+                    "每条 description 不超过 60 个字，每条 suggestion 不超过 60 个字，summary 不超过 80 个字。\n"
                     "输出 JSON 必须包含：\n"
                     "issues([{{severity:string,location:string,description:string,suggestion:string}}]),\n"
                     "overall_score(int,0-100), summary(string)。\n\n"
@@ -349,6 +376,16 @@ class StoryEngine(BaseAgent):
         model: str | None = None,
     ) -> int | None:
         return self._generation_max_tokens(model or spec.get("model_id") or spec.get("model"))
+
+    def _verification_max_tokens(self) -> int:
+        return self._positive_int(self.settings.verification_max_tokens, default=4096)
+
+    def _verification_retry_max_tokens(self, model: str | None, base_max_tokens: int) -> int | None:
+        model_max_tokens = self._generation_max_tokens(model)
+        retry_max_tokens = max(base_max_tokens * 2, base_max_tokens + 2048)
+        if model_max_tokens is not None:
+            retry_max_tokens = min(retry_max_tokens, model_max_tokens)
+        return retry_max_tokens if retry_max_tokens > base_max_tokens else None
 
     def set_runtime_default_model(self, model_id: str) -> None:
         """设置运行时默认模型覆盖。"""
@@ -542,6 +579,7 @@ class StoryEngine(BaseAgent):
                         },
                     }
                 )
+            chapter_boundaries = self._chapter_response_boundaries()
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
                 mode=self._escape_user_input(spec["mode"]),
@@ -562,6 +600,9 @@ class StoryEngine(BaseAgent):
                 style_requirements=self._escape_user_input(self._style_requirements(spec)),
                 context_memory=self._escape_user_input(self._context_memory(context_packet)),
                 reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
+                chapter_meta_boundary=chapter_boundaries["meta"],
+                chapter_content_boundary=chapter_boundaries["content"],
+                chapter_end_boundary=chapter_boundaries["end"],
             )
             request_messages = self._conversation_request_messages(
                 conversation_history=conversation_history,
@@ -575,6 +616,10 @@ class StoryEngine(BaseAgent):
                 exchange_callback=active_exchange_callback,
                 progress_callback=active_progress_callback,
                 max_tokens=chapter_max_tokens,
+                response_parser=lambda raw, boundaries=chapter_boundaries: self._parse_chapter_response(
+                    raw,
+                    boundaries=boundaries,
+                ),
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(chapter_payload))
             chapters.append(chapter_draft)
@@ -685,6 +730,7 @@ class StoryEngine(BaseAgent):
                 },
             })
 
+            chapter_boundaries = self._chapter_response_boundaries()
             chapter_request_messages = self._render_skill_prompt(
                 "chapter-writer",
                 mode=self._escape_user_input(spec["mode"]),
@@ -705,6 +751,9 @@ class StoryEngine(BaseAgent):
                 style_requirements=self._escape_user_input(self._style_requirements(spec)),
                 context_memory=self._escape_user_input(self._context_memory(context_packet)),
                 reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
+                chapter_meta_boundary=chapter_boundaries["meta"],
+                chapter_content_boundary=chapter_boundaries["content"],
+                chapter_end_boundary=chapter_boundaries["end"],
             )
 
             request_messages = self._conversation_request_messages(
@@ -719,6 +768,10 @@ class StoryEngine(BaseAgent):
                 exchange_callback=emit_exchange,
                 progress_callback=emit_progress,
                 max_tokens=chapter_max_tokens,
+                response_parser=lambda raw, boundaries=chapter_boundaries: self._parse_chapter_response(
+                    raw,
+                    boundaries=boundaries,
+                ),
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(payload))
 
@@ -856,6 +909,9 @@ class StoryEngine(BaseAgent):
             full_text=full_text,
         )
 
+        verification_max_tokens = self._verification_max_tokens()
+        verification_retry_max_tokens = self._verification_retry_max_tokens(resolved_model, verification_max_tokens)
+
         self._require_gateway_client()
         payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
@@ -864,6 +920,10 @@ class StoryEngine(BaseAgent):
             exchange_label="full-story-verification",
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
+            max_tokens=verification_max_tokens,
+            repair_prompt=_VERIFICATION_JSON_REPAIR_PROMPT,
+            empty_truncated_retry_prompt=_VERIFICATION_TRUNCATED_RETRY_PROMPT,
+            empty_truncated_retry_max_tokens=verification_retry_max_tokens,
         )
         return payload
 
@@ -959,6 +1019,40 @@ class StoryEngine(BaseAgent):
         }
         return [dict(item) for item in request_messages] + [assistant_message]
 
+    def _chapter_response_boundaries(self) -> dict[str, str]:
+        suffix = secrets.token_hex(6)
+        return {
+            "meta": f"---CHAPTER_META_JSON_BOUNDARY_{suffix}---",
+            "content": f"---CHAPTER_CONTENT_BOUNDARY_{suffix}---",
+            "end": f"---CHAPTER_END_BOUNDARY_{suffix}---",
+        }
+
+    def _parse_chapter_response(self, raw: str, *, boundaries: dict[str, str]) -> dict[str, Any]:
+        text = raw.strip()
+        meta_boundary = boundaries["meta"]
+        content_boundary = boundaries["content"]
+        end_boundary = boundaries["end"]
+        if meta_boundary not in text and content_boundary not in text and end_boundary not in text:
+            return self._strip_and_parse_json(raw)
+
+        meta_start = text.find(meta_boundary)
+        content_start = text.find(content_boundary, meta_start + len(meta_boundary))
+        if meta_start < 0 or content_start < 0:
+            raise GatewayClientError("章节分区响应缺少必要边界，无法解析。")
+        end_start = text.find(end_boundary, content_start + len(content_boundary))
+        if end_start < 0:
+            end_start = len(text)
+
+        meta_raw = text[meta_start + len(meta_boundary):content_start].strip()
+        content = text[content_start + len(content_boundary):end_start].strip()
+        if not meta_raw:
+            raise GatewayClientError("章节分区响应缺少元数据 JSON。")
+        payload = self._strip_and_parse_json(meta_raw)
+        if not isinstance(payload, dict):
+            raise GatewayClientError("章节分区元数据必须是 JSON 对象。")
+        payload["content"] = content
+        return payload
+
     def _complete_json_with_cache(
         self,
         request_messages: list[dict[str, str]],
@@ -1015,6 +1109,10 @@ class StoryEngine(BaseAgent):
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         max_tokens: int | None = None,
+        response_parser: Callable[[str], Any] | None = None,
+        repair_prompt: str = _STREAM_JSON_REPAIR_PROMPT,
+        empty_truncated_retry_prompt: str | None = None,
+        empty_truncated_retry_max_tokens: int | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         """流式调用 LLM，实时发射思考链事件，最终解析 JSON。
 
@@ -1073,38 +1171,78 @@ class StoryEngine(BaseAgent):
 
         # 解析 JSON
         parse_started = time.perf_counter()
-        try:
-            payload = self._strip_and_parse_json(full_content)
-        except (GatewayClientError, json.JSONDecodeError) as exc:
-            if exchange_callback is not None:
-                exchange_callback(
-                    {
-                        "stage": stage,
-                        "exchange_label": exchange_label,
-                        "model": model,
-                        "response_parse_failed": True,
-                        "request_messages": request_messages,
-                        "raw_response": full_content,
-                        "finish_reason": finish_reason,
-                        "parse_error": str(exc),
-                        "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
-                    }
-                )
-            repair_messages = [dict(item) for item in request_messages] + [
-                {"role": "assistant", "content": full_content},
-                {"role": "user", "content": _STREAM_JSON_REPAIR_PROMPT},
+        parser = response_parser or self._strip_and_parse_json
+        parse_request_messages = request_messages
+        parse_exchange_label = exchange_label
+        if self._should_retry_empty_truncated_response(
+            full_content,
+            finish_reason,
+            max_tokens=max_tokens,
+            retry_max_tokens=empty_truncated_retry_max_tokens,
+            retry_prompt=empty_truncated_retry_prompt,
+        ):
+            retry_messages = [dict(item) for item in request_messages] + [
+                {"role": "user", "content": empty_truncated_retry_prompt or ""},
             ]
+            retry_max_tokens = empty_truncated_retry_max_tokens
+            logger.warning(
+                "流式 JSON 响应被截断且正文为空，使用更高预算重试: stage=%s exchange_label=%s finish_reason=%s max_tokens=%s retry_max_tokens=%s",
+                stage,
+                exchange_label,
+                finish_reason,
+                max_tokens,
+                retry_max_tokens,
+            )
+            full_content, finish_reason = self._call_llm_stream_with_metadata(
+                retry_messages,
+                model,
+                progress_callback=active_progress,
+                stage=stage,
+                unit_id=f"{exchange_label}-retry",
+                max_tokens=retry_max_tokens,
+            )
+            parse_request_messages = retry_messages
+            parse_exchange_label = f"{exchange_label}-retry"
+        try:
+            payload = parser(full_content)
+        except (GatewayClientError, json.JSONDecodeError) as exc:
+            self._emit_parse_failed_exchange(
+                callback=exchange_callback,
+                stage=stage,
+                exchange_label=parse_exchange_label,
+                model=model,
+                request_messages=parse_request_messages,
+                raw_response=full_content,
+                finish_reason=finish_reason,
+                parse_error=str(exc),
+            )
+            repair_messages = [dict(item) for item in parse_request_messages] + [
+                {"role": "assistant", "content": full_content},
+                {"role": "user", "content": repair_prompt},
+            ]
+            repaired_content = ""
+            repair_finish_reason: str | None = None
             try:
-                repaired_content, _ = self._call_llm_stream_with_metadata(
+                repaired_content, repair_finish_reason = self._call_llm_stream_with_metadata(
                     repair_messages,
                     model,
                     progress_callback=active_progress,
                     stage=stage,
-                    unit_id=f"{exchange_label}-repair",
+                    unit_id=f"{parse_exchange_label}-repair",
                     max_tokens=max_tokens,
                 )
-                payload = self._strip_and_parse_json(repaired_content)
+                payload = parser(repaired_content)
             except (GatewayClientError, json.JSONDecodeError) as repair_exc:
+                self._emit_parse_failed_exchange(
+                    callback=exchange_callback,
+                    stage=stage,
+                    exchange_label=f"{parse_exchange_label}-repair",
+                    model=model,
+                    request_messages=repair_messages,
+                    raw_response=repaired_content,
+                    finish_reason=repair_finish_reason,
+                    parse_error=str(repair_exc),
+                )
                 raise exc from repair_exc
         parse_duration_ms = (time.perf_counter() - parse_started) * 1000
 
@@ -1123,6 +1261,24 @@ class StoryEngine(BaseAgent):
             parse_duration_ms=parse_duration_ms,
         )
         return payload, conversation_history
+
+    @staticmethod
+    def _should_retry_empty_truncated_response(
+        content: str,
+        finish_reason: str | None,
+        *,
+        max_tokens: int | None,
+        retry_max_tokens: int | None,
+        retry_prompt: str | None,
+    ) -> bool:
+        if not retry_prompt or not retry_max_tokens:
+            return False
+        if content.strip():
+            return False
+        normalized_finish_reason = (finish_reason or "").strip().lower()
+        if normalized_finish_reason not in _TRUNCATED_FINISH_REASONS:
+            return False
+        return max_tokens is None or retry_max_tokens > max_tokens
 
     def _build_story_plan_with_retry(
         self,
@@ -1184,6 +1340,34 @@ class StoryEngine(BaseAgent):
                 "response_payload": response_payload,
                 "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
                 "parse_duration_ms": parse_duration_ms,
+            }
+        )
+
+    def _emit_parse_failed_exchange(
+        self,
+        *,
+        callback: Callable[[dict[str, Any]], None] | None,
+        stage: str,
+        exchange_label: str,
+        model: str,
+        request_messages: list[dict[str, str]],
+        raw_response: str,
+        finish_reason: str | None,
+        parse_error: str,
+    ) -> None:
+        if callback is None:
+            return
+        callback(
+            {
+                "stage": stage,
+                "exchange_label": exchange_label,
+                "model": model,
+                "response_parse_failed": True,
+                "request_messages": request_messages,
+                "raw_response": raw_response,
+                "finish_reason": finish_reason,
+                "parse_error": parse_error,
+                "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
             }
         )
 

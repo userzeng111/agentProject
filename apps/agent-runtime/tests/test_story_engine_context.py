@@ -118,6 +118,93 @@ class StreamInvalidThenRepairGateway(StreamGatewayBase):
         yield StreamChunk(finish_reason="stop", model=model or "")
 
 
+class StreamReasoningOnlyLengthThenSuccessGateway(StreamGatewayBase):
+    def __init__(self, repaired_payload: dict) -> None:
+        self.repaired_payload = repaired_payload
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if len(self.calls) == 1:
+            yield StreamChunk(reasoning_content="先详细分析一致性问题", model=model or "")
+            yield StreamChunk(finish_reason="length", model=model or "")
+            return
+        yield StreamChunk(content=json.dumps(self.repaired_payload, ensure_ascii=False), model=model or "")
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
+class StreamInvalidThenInvalidRepairGateway(StreamGatewayBase):
+    def __init__(self, first_raw: str, repair_raw: str) -> None:
+        self.first_raw = first_raw
+        self.repair_raw = repair_raw
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if len(self.calls) == 1:
+            yield StreamChunk(content=self.first_raw, model=model or "")
+            yield StreamChunk(finish_reason="stop", model=model or "")
+            return
+        yield StreamChunk(content=self.repair_raw, model=model or "")
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
+class BoundaryChapterGateway(StreamGatewayBase):
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        prompt = messages[-1]["content"]
+        match = re.search(r"---CHAPTER_META_JSON_BOUNDARY_([a-f0-9]{12})---", prompt)
+        if match is None:
+            yield StreamChunk(
+                content='{"number":3,"title":"初次改写","summary":"摘要","content":"最终写下一行简洁的字："钥匙出现在玄关托盘里。"."}',
+                model=model or "",
+            )
+            return
+        suffix = match.group(1)
+        yield StreamChunk(
+            content=(
+                f"---CHAPTER_META_JSON_BOUNDARY_{suffix}---\n"
+                '{"number":3,"title":"初次改写","summary":"主角测试账簿改写一件小事。"}\n'
+                f"---CHAPTER_CONTENT_BOUNDARY_{suffix}---\n"
+                '最终写下一行简洁的字："钥匙出现在玄关托盘里。"\n\n'
+                '页面多了一行字："代价：一段记忆。"\n'
+                "```text\n账簿仍保持沉默。\n```\n"
+                f"---CHAPTER_END_BOUNDARY_{suffix}---"
+            ),
+            model=model or "",
+        )
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
+class BoundaryWithoutEndChapterGateway(StreamGatewayBase):
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        prompt = messages[-1]["content"]
+        match = re.search(r"---CHAPTER_META_JSON_BOUNDARY_([a-f0-9]{12})---", prompt)
+        if match is None:
+            yield StreamChunk(content="{}", model=model or "")
+            yield StreamChunk(finish_reason="stop", model=model or "")
+            return
+        suffix = match.group(1)
+        yield StreamChunk(
+            content=(
+                f"---CHAPTER_META_JSON_BOUNDARY_{suffix}---\n"
+                '{"number":3,"title":"初次改写","summary":"主角测试账簿改写一件小事。"}\n'
+                f"---CHAPTER_CONTENT_BOUNDARY_{suffix}---\n"
+                '最终写下一行简洁的字："钥匙出现在玄关托盘里。"\n\n'
+                '页面多了一行字："代价：一段记忆。"\n'
+            ),
+            model=model or "",
+        )
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
 class ConcurrentChapterGateway(StreamGatewayBase):
     def __init__(self, delay_seconds: float = 0.05) -> None:
         self.delay_seconds = delay_seconds
@@ -484,12 +571,15 @@ class StoryEngineContextTests(unittest.TestCase):
                     max_tokens=10000,
                 )
 
-            self.assertEqual(len(events), 1)
+            self.assertEqual(len(events), 2)
             diagnostic = events[0]
             self.assertTrue(diagnostic["response_parse_failed"])
             self.assertEqual(diagnostic["raw_response"], raw_response)
             self.assertEqual(diagnostic["finish_reason"], "length")
             self.assertEqual(diagnostic["exchange_label"], "chapter-05")
+            repair_diagnostic = events[1]
+            self.assertTrue(repair_diagnostic["response_parse_failed"])
+            self.assertEqual(repair_diagnostic["exchange_label"], "chapter-05-repair")
 
     def test_stream_json_parse_failure_repairs_with_second_complete_json_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -528,6 +618,134 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
             self.assertTrue(events[0]["response_parse_failed"])
             self.assertEqual(events[1]["response_payload"], repaired)
+
+    def test_stream_json_parse_failure_emits_repair_raw_response_diagnostic_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamInvalidThenInvalidRepairGateway(
+                first_raw="not-json",
+                repair_raw="still-not-json",
+            )
+            engine.gateway_client = gateway
+            events: list[dict] = []
+
+            with self.assertRaisesRegex(GatewayClientError, "模型返回的 JSON 无法解析"):
+                engine._complete_stream_json_with_cache(  # noqa: SLF001
+                    request_messages=[
+                        {"role": "system", "content": "你是章节起草助手。"},
+                        {"role": "user", "content": "当前章节序号：5\n请输出 JSON。"},
+                    ],
+                    model="mimo-v2.5-pro",
+                    stage="drafting",
+                    exchange_label="chapter-05",
+                    exchange_callback=events.append,
+                    progress_callback=None,
+                    max_tokens=10000,
+                )
+
+            failed_events = [event for event in events if event.get("response_parse_failed")]
+            self.assertEqual([event["exchange_label"] for event in failed_events], ["chapter-05", "chapter-05-repair"])
+            self.assertEqual(failed_events[0]["raw_response"], gateway.first_raw)
+            self.assertEqual(failed_events[1]["raw_response"], gateway.repair_raw)
+
+    def test_generate_chapter_pair_accepts_boundary_protocol_for_unescaped_quote_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = BoundaryChapterGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "short_story",
+                    "creative_mode": "original",
+                    "novel_size": "short",
+                    "prompt": "写一章悬疑短篇。",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "model_id": "mimo-v2.5-pro",
+                    "chapter_word_min": 600,
+                    "chapter_word_max": 780,
+                    "chapter_word_range_text": "600 到 780",
+                },
+                story_plan={
+                    "working_title": "账簿午夜",
+                    "logline": "旧书店账簿改写现实。",
+                    "planned_chapter_count": 3,
+                    "chapter_plan": [
+                        {"number": 3, "title": "初次改写", "goal": "主角测试账簿。"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0].number, 3)
+            self.assertEqual(drafts[0].title, "初次改写")
+            self.assertIn('"钥匙出现在玄关托盘里。"', drafts[0].content)
+            self.assertIn('"代价：一段记忆。"', drafts[0].content)
+            self.assertIn("```text", drafts[0].content)
+            self.assertEqual(len(gateway.calls), 1)
+            self.assertIn("---CHAPTER_META_JSON_BOUNDARY_", gateway.calls[0]["messages"][-1]["content"])
+
+    def test_generate_chapter_pair_accepts_boundary_protocol_without_end_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = BoundaryWithoutEndChapterGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "short_story",
+                    "creative_mode": "original",
+                    "novel_size": "short",
+                    "prompt": "写一章悬疑短篇。",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "model_id": "mimo-v2.5-pro",
+                    "chapter_word_min": 600,
+                    "chapter_word_max": 780,
+                    "chapter_word_range_text": "600 到 780",
+                },
+                story_plan={
+                    "working_title": "账簿午夜",
+                    "logline": "旧书店账簿改写现实。",
+                    "planned_chapter_count": 3,
+                    "chapter_plan": [
+                        {"number": 3, "title": "初次改写", "goal": "主角测试账簿。"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0].number, 3)
+            self.assertIn('"钥匙出现在玄关托盘里。"', drafts[0].content)
+            self.assertIn('"代价：一段记忆。"', drafts[0].content)
+            self.assertEqual(len(gateway.calls), 1)
 
     def test_stream_usage_emits_provider_prompt_cache_progress_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -690,6 +908,161 @@ class StoryEngineContextTests(unittest.TestCase):
 
             rendered_prompt = fake_gateway.calls[0]["messages"][-1]["content"]
             self.assertIn(tail_marker, rendered_prompt)
+
+    def test_verify_full_story_uses_independent_verification_max_tokens_and_tight_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "models": {
+                            "mimo-v2.5-pro": {
+                                "max_input_tokens": 200000,
+                                "max_output_tokens": 10000,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "overall_score": 96,
+                    "issues": [],
+                    "summary": "验证通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                    {"number": 2, "title": "第二章", "content": "第二章正文"},
+                ],
+                story_plan={
+                    "working_title": "独立预算验证",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章"},
+                        {"number": 2, "title": "第二章"},
+                    ],
+                },
+                spec={"mode": "long_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            call = gateway.stream_calls[0]
+            self.assertEqual(call["kwargs"].get("max_tokens"), 4096)
+            self.assertNotEqual(call["kwargs"].get("max_tokens"), 10000)
+            rendered_prompt = call["messages"][-1]["content"]
+            self.assertIn("最多 5 个问题", rendered_prompt)
+            self.assertIn("description 不超过 60 个字", rendered_prompt)
+            self.assertIn("suggestion 不超过 60 个字", rendered_prompt)
+            self.assertIn("summary 不超过 80 个字", rendered_prompt)
+            self.assertIn("只报告影响主线理解的问题", rendered_prompt)
+            self.assertIn("不要逐章复述", rendered_prompt)
+            self.assertIn("不要输出分析过程", rendered_prompt)
+
+    def test_verify_full_story_uses_configured_verification_max_tokens_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    VERIFICATION_MAX_TOKENS=1600,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "overall_score": 98,
+                    "issues": [],
+                    "summary": "验证通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                ],
+                story_plan={
+                    "working_title": "覆盖预算验证",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1600)
+
+    def test_verify_full_story_retries_reasoning_only_length_without_generic_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "models": {
+                            "mimo-v2.5-pro": {
+                                "max_input_tokens": 200000,
+                                "max_output_tokens": 10000,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            payload = {
+                "overall_score": 95,
+                "issues": [],
+                "summary": "验证通过",
+            }
+            gateway = StreamReasoningOnlyLengthThenSuccessGateway(payload)
+            engine.gateway_client = gateway
+
+            result = engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                ],
+                story_plan={
+                    "working_title": "验证重试",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(result, payload)
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 4096)
+            self.assertEqual(gateway.calls[1]["kwargs"].get("max_tokens"), 8192)
+            self.assertNotIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("不要输出分析过程", gateway.calls[1]["messages"][-1]["content"])
 
     def test_generate_draft_reuses_previous_turns_as_message_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

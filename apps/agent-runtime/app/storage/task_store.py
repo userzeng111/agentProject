@@ -544,6 +544,33 @@ class TaskLogStore:
                 self._write_trace(target)
             return target
 
+    def broadcast_event(
+        self,
+        task_id: str,
+        *,
+        stage: str,
+        message: str,
+        event_type: str = "task.updated",
+        unit_id: str | None = None,
+        md_ref: str | None = None,
+        json_ref: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        """只向实时订阅者广播事件，不写入任务事件列表或文件。"""
+        task = self.get(task_id)
+        event = TaskEvent(
+            task_id=task.id,
+            stage=stage,
+            message=message,
+            event_type=event_type,
+            unit_id=unit_id,
+            md_ref=md_ref,
+            json_ref=json_ref,
+            payload=payload or {},
+        )
+        with performance_span(logger, "task_store_broadcast_transient_event", task_id=task.id, event_type=event_type):
+            self._broadcast_event(task.id, event)
+
     def subscribe(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
         self._subscribers.setdefault(task_id, []).append(queue)
