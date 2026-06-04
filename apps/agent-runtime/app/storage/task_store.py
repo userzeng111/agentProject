@@ -24,6 +24,7 @@ from app.domain.models import (
     TaskStatus,
     utc_now,
 )
+from app.observability.performance import performance_span
 
 
 class TaskNotFoundError(Exception):
@@ -72,25 +73,29 @@ class TaskLogStore:
         return self.save(task)
 
     def save(self, task: TaskRecord) -> TaskRecord:
-        task.updated_at = utc_now()
-        with self._lock:
-            self._tasks[task.id] = task
-        before_storage_state = task.storage_state
-        self._write_task_files(task)
-        self._sync_to_db(task)
-        self._archive_completed_task(task)
-        if task.storage_state != before_storage_state:
+        with performance_span(logger, "task_store_save", task_id=task.id, task_status=task.status.value):
+            task.updated_at = utc_now()
+            with self._lock:
+                self._tasks[task.id] = task
+            before_storage_state = task.storage_state
+            with performance_span(logger, "task_store_write_task_files", task_id=task.id):
+                self._write_task_files(task)
             self._sync_to_db(task)
-        self._write_index()
-        return task
+            self._archive_completed_task(task)
+            if task.storage_state != before_storage_state:
+                self._sync_to_db(task)
+            with performance_span(logger, "task_store_write_index", task_id=task.id):
+                self._write_index()
+            return task
 
     def _sync_to_db(self, task: TaskRecord) -> None:
         """将任务索引元数据同步写入 SQLite。"""
-        try:
-            from app.storage.db_repository import upsert_task_index
-            upsert_task_index(task)
-        except Exception:
-            logger.exception("任务 %s 数据库索引同步失败", task.id)
+        with performance_span(logger, "task_store_sync_to_db", task_id=task.id):
+            try:
+                from app.storage.db_repository import upsert_task_index
+                upsert_task_index(task)
+            except Exception:
+                logger.exception("任务 %s 数据库索引同步失败", task.id)
 
     def get(self, task_id: str) -> TaskRecord:
         with self._lock:
@@ -515,25 +520,29 @@ class TaskLogStore:
         payload: dict[str, Any] | None = None,
         task: TaskRecord | None = None,
     ) -> TaskRecord:
-        target = task or self.get(task_id)
-        event = TaskEvent(
-            task_id=target.id,
-            stage=stage,
-            message=message,
-            event_type=event_type,
-            unit_id=unit_id,
-            md_ref=md_ref,
-            json_ref=json_ref,
-            payload=payload or {},
-        )
-        target.events.append(event)
-        target.updated_at = utc_now()
-        with self._lock:
-            self._tasks[target.id] = target
-        self._broadcast_event(target.id, event)
-        self._write_events(target)
-        self._write_trace(target)
-        return target
+        with performance_span(logger, "task_store_append_event", task_id=task_id, event_type=event_type):
+            target = task or self.get(task_id)
+            event = TaskEvent(
+                task_id=target.id,
+                stage=stage,
+                message=message,
+                event_type=event_type,
+                unit_id=unit_id,
+                md_ref=md_ref,
+                json_ref=json_ref,
+                payload=payload or {},
+            )
+            target.events.append(event)
+            target.updated_at = utc_now()
+            with self._lock:
+                self._tasks[target.id] = target
+            with performance_span(logger, "task_store_broadcast_event", task_id=target.id):
+                self._broadcast_event(target.id, event)
+            with performance_span(logger, "task_store_write_events", task_id=target.id):
+                self._write_events(target)
+            with performance_span(logger, "task_store_write_trace", task_id=target.id):
+                self._write_trace(target)
+            return target
 
     def subscribe(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
@@ -725,44 +734,45 @@ class TaskLogStore:
     def _archive_completed_task(self, task: TaskRecord) -> None:
         if task.status is not TaskStatus.COMPLETED or task.storage_state == "archive":
             return
-        source_dir = self.runs_dir / task.id
-        target_dir = self.archive_dir / task.id
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-        if target_dir.exists():
-            backup_dir = target_dir.with_suffix(".backup")
-            shutil.move(str(target_dir), str(backup_dir))
-            try:
-                shutil.rmtree(backup_dir)
-            except Exception as exc:
-                logger.warning("清理旧归档备份失败: %s", exc)
-        if source_dir.exists():
-            # 原子归档：先复制到临时目录，再原子移动到目标
-            tmp_target = self.archive_dir / f".{task.id}.tmp"
-            shutil.copytree(str(source_dir), str(tmp_target), dirs_exist_ok=True)
-            try:
-                shutil.move(str(tmp_target), str(target_dir))
-            except Exception:
-                # 移动失败时清理临时目录
+        with performance_span(logger, "task_store_archive_completed", task_id=task.id):
+            source_dir = self.runs_dir / task.id
+            target_dir = self.archive_dir / task.id
+            target_dir.parent.mkdir(parents=True, exist_ok=True)
+            if target_dir.exists():
+                backup_dir = target_dir.with_suffix(".backup")
+                shutil.move(str(target_dir), str(backup_dir))
                 try:
-                    shutil.rmtree(str(tmp_target))
-                except OSError:
-                    pass
-                raise
-            try:
-                shutil.rmtree(str(source_dir))
-            except Exception as exc:
-                logger.warning("归档后清理源目录失败: %s", exc)
-        task.storage_state = "archive"
-        run_prefix = f"tasklog/runs/{task.id}/"
-        archive_prefix = f"tasklog/archive/{task.id}/"
-        for event in task.events:
-            if event.md_ref and event.md_ref.startswith(run_prefix):
-                event.md_ref = event.md_ref.replace(run_prefix, archive_prefix, 1)
-            if event.json_ref and event.json_ref.startswith(run_prefix):
-                event.json_ref = event.json_ref.replace(run_prefix, archive_prefix, 1)
-        with self._lock:
-            self._tasks[task.id] = task
-        self._write_task_files(task)
+                    shutil.rmtree(backup_dir)
+                except Exception as exc:
+                    logger.warning("清理旧归档备份失败: %s", exc)
+            if source_dir.exists():
+                # 原子归档：先复制到临时目录，再原子移动到目标
+                tmp_target = self.archive_dir / f".{task.id}.tmp"
+                shutil.copytree(str(source_dir), str(tmp_target), dirs_exist_ok=True)
+                try:
+                    shutil.move(str(tmp_target), str(target_dir))
+                except Exception:
+                    # 移动失败时清理临时目录
+                    try:
+                        shutil.rmtree(str(tmp_target))
+                    except OSError:
+                        pass
+                    raise
+                try:
+                    shutil.rmtree(str(source_dir))
+                except Exception as exc:
+                    logger.warning("归档后清理源目录失败: %s", exc)
+            task.storage_state = "archive"
+            run_prefix = f"tasklog/runs/{task.id}/"
+            archive_prefix = f"tasklog/archive/{task.id}/"
+            for event in task.events:
+                if event.md_ref and event.md_ref.startswith(run_prefix):
+                    event.md_ref = event.md_ref.replace(run_prefix, archive_prefix, 1)
+                if event.json_ref and event.json_ref.startswith(run_prefix):
+                    event.json_ref = event.json_ref.replace(run_prefix, archive_prefix, 1)
+            with self._lock:
+                self._tasks[task.id] = task
+            self._write_task_files(task)
 
     def _write_index(self) -> None:
         with self._lock:
@@ -924,24 +934,31 @@ class TaskLogStore:
 
     def _atomic_write_text(self, path: Path, content: str) -> None:
         """使用临时文件 + rename 实现原子写入。"""
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(content)
-                f.flush()
-                os.fsync(fd)
-            os.replace(tmp_path, path)
-        except Exception:
+        content_bytes = len(content.encode("utf-8"))
+        with performance_span(
+            logger,
+            "task_store_write_file",
+            path_name=path.name,
+            bytes=content_bytes,
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+            )
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(fd)
+                os.replace(tmp_path, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
     def _write_json(self, path: Path, payload: Any) -> None:
         data = json.dumps(payload, ensure_ascii=False, indent=2)

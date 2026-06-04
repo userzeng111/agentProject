@@ -92,6 +92,32 @@ class StreamSuccessWithUsageGateway(StreamGatewayBase):
         yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False), model=model or "")
 
 
+class StreamInvalidJsonGateway(StreamGatewayBase):
+    def __init__(self, raw_response: str, finish_reason: str | None = None) -> None:
+        self.raw_response = raw_response
+        self.finish_reason = finish_reason
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        yield StreamChunk(content=self.raw_response, model=model or "")
+        if self.finish_reason:
+            yield StreamChunk(finish_reason=self.finish_reason, model=model or "")
+
+
+class StreamInvalidThenRepairGateway(StreamGatewayBase):
+    def __init__(self, repaired_payload: dict) -> None:
+        self.repaired_payload = repaired_payload
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if len(self.calls) == 1:
+            yield StreamChunk(content="not-json", model=model or "")
+            yield StreamChunk(finish_reason="length", model=model or "")
+            return
+        yield StreamChunk(content=json.dumps(self.repaired_payload, ensure_ascii=False), model=model or "")
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
 class ConcurrentChapterGateway(StreamGatewayBase):
     def __init__(self, delay_seconds: float = 0.05) -> None:
         self.delay_seconds = delay_seconds
@@ -364,6 +390,144 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIsNotNone(max_tokens)
             self.assertLess(max_tokens, 32768)
             self.assertGreaterEqual(max_tokens, 4096)
+
+    def test_generate_chapter_pair_uses_configured_generation_max_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "models": {
+                            "mimo-v2.5-pro": {
+                                "max_input_tokens": 200000,
+                                "max_output_tokens": 10000,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角重开玄脉。",
+                    "content": "第一章正文",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "玄幻大陆废材逆袭",
+                    "genre": "玄幻",
+                    "style": "热血逆袭",
+                    "chapter_word_min": 1800,
+                    "chapter_word_max": 2340,
+                    "model_id": "mimo-v2.5-pro",
+                },
+                story_plan={
+                    "working_title": "玄脉逆天",
+                    "logline": "废材少年重开玄脉。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "开篇"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 10000)
+
+    def test_stream_json_parse_failure_emits_raw_response_diagnostic_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            raw_response = "not-json"
+            engine.gateway_client = StreamInvalidJsonGateway(raw_response, finish_reason="length")
+            events: list[dict] = []
+
+            with self.assertRaisesRegex(GatewayClientError, "模型返回的 JSON 无法解析"):
+                engine._complete_stream_json_with_cache(  # noqa: SLF001
+                    request_messages=[
+                        {"role": "system", "content": "你是章节起草助手。"},
+                        {"role": "user", "content": "当前章节序号：5\n请输出 JSON。"},
+                    ],
+                    model="mimo-v2.5-pro",
+                    stage="drafting",
+                    exchange_label="chapter-05",
+                    exchange_callback=events.append,
+                    progress_callback=None,
+                    max_tokens=10000,
+                )
+
+            self.assertEqual(len(events), 1)
+            diagnostic = events[0]
+            self.assertTrue(diagnostic["response_parse_failed"])
+            self.assertEqual(diagnostic["raw_response"], raw_response)
+            self.assertEqual(diagnostic["finish_reason"], "length")
+            self.assertEqual(diagnostic["exchange_label"], "chapter-05")
+
+    def test_stream_json_parse_failure_repairs_with_second_complete_json_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            repaired = {
+                "number": 5,
+                "title": "大师之谬",
+                "summary": "重新输出完整摘要。",
+                "content": "完整正文。",
+            }
+            gateway = StreamInvalidThenRepairGateway(repaired)
+            engine.gateway_client = gateway
+            events: list[dict] = []
+
+            payload, _ = engine._complete_stream_json_with_cache(  # noqa: SLF001
+                request_messages=[
+                    {"role": "system", "content": "你是章节起草助手。"},
+                    {"role": "user", "content": "当前章节序号：5\n请输出 JSON。"},
+                ],
+                model="mimo-v2.5-pro",
+                stage="drafting",
+                exchange_label="chapter-05",
+                exchange_callback=events.append,
+                progress_callback=None,
+                max_tokens=10000,
+            )
+
+            self.assertEqual(payload, repaired)
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
+            self.assertTrue(events[0]["response_parse_failed"])
+            self.assertEqual(events[1]["response_payload"], repaired)
 
     def test_stream_usage_emits_provider_prompt_cache_progress_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

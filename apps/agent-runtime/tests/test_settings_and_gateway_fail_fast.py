@@ -10,6 +10,7 @@ from pathlib import Path
 
 from app.application.task_service import TaskService
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
+from app.llm.protocols import AnthropicAdapter, OpenAIAdapter
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.settings import config as settings_config
@@ -62,6 +63,114 @@ class TimeoutCaptureGatewayClient(OpenAICompatibleGatewayClient):
 
 
 class SettingsAndGatewayFailFastTests(unittest.TestCase):
+    def test_gateway_normalizes_root_base_url_for_openai_protocol(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+        )
+
+        self.assertEqual(
+            client._build_url("/chat/completions", "openai"),
+            "https://gateway.example.com/v1/chat/completions",
+        )
+        self.assertEqual(
+            client._build_url("/models", "openai"),
+            "https://gateway.example.com/v1/models",
+        )
+
+    def test_gateway_does_not_duplicate_v1_base_url(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com/v1",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+        )
+
+        self.assertEqual(
+            client._build_url("/chat/completions", "openai"),
+            "https://gateway.example.com/v1/chat/completions",
+        )
+
+    def test_gateway_preserves_custom_base_path(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com/custom",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+        )
+
+        self.assertEqual(
+            client._build_url("/chat/completions", "openai"),
+            "https://gateway.example.com/custom/chat/completions",
+        )
+
+    def test_gateway_normalizes_root_base_url_for_anthropic_protocol(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="claude-sonnet-4-6",
+            default_protocol="anthropic",
+            anthropic_version="2023-06-01",
+        )
+
+        self.assertEqual(
+            client._build_url("/messages", "anthropic"),
+            "https://gateway.example.com/v1/messages",
+        )
+        headers = client._headers_for_protocol("anthropic")
+        self.assertEqual(headers["x-api-key"], "test-key")
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
+        self.assertEqual(headers["Authorization"], "Bearer test-key")
+
+    def test_gateway_uses_injected_default_protocol_without_global_settings(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="unknown-model",
+            default_protocol="anthropic",
+        )
+
+        self.assertIsInstance(client._get_adapter("unknown-model"), AnthropicAdapter)
+
+    def test_gateway_model_protocol_overrides_take_precedence(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+            protocol_overrides={"K2.6": "anthropic"},
+        )
+
+        self.assertIsInstance(client._get_adapter("K2.6"), AnthropicAdapter)
+        self.assertIsInstance(client._get_adapter("mimo-v2.5-pro"), OpenAIAdapter)
+
+    def test_settings_accept_anthropic_key_alias_without_forcing_protocol(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            ANTHROPIC_AUTH_TOKEN="alias-key",
+            LLM_BASE_URL="https://gateway.example.com",
+            DEFAULT_PROTOCOL="openai",
+        )
+
+        self.assertEqual(settings.openai_api_key, "alias-key")
+        self.assertEqual(settings.default_protocol, "openai")
+
+    def test_story_engine_passes_injected_protocol_to_gateway(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                LLM_API_KEY="test-key",
+                LLM_BASE_URL="https://gateway.example.com",
+                DEFAULT_PROTOCOL="anthropic",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+
+            engine = StoryEngine(settings)
+
+            self.assertIsInstance(engine.gateway_client._get_adapter("unknown-model"), AnthropicAdapter)
+
     def test_complete_json_extracts_json_from_fenced_response_with_extra_text(self) -> None:
         client = StubRawGatewayClient(
             "下面是结果：\n```json\n{\"working_title\":\"雨夜监控室\",\"chapter_plan\":[]}\n```\n请查收。"
@@ -157,6 +266,65 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             self.assertEqual(persisted["creative_mode"], "original")
             self.assertEqual(persisted["novel_size"], "short")
             self.assertEqual(persisted["chapter_word_min"], 1800)
+
+    def test_exchange_callback_redacts_raw_parse_failure_diagnostic_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="mimo-v2.5-pro",
+                LLM_DIAGNOSTIC_RAW_RESPONSE_MAX_CHARS=12,
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+
+            class GatewayWithMimo:
+                def list_models(self):
+                    return [{"id": "mimo-v2.5-pro", "object": "model", "owned_by": "mimo"}]
+
+            engine.gateway_client = GatewayWithMimo()
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+            task = store.create_task(
+                TaskCreateRequest(
+                    prompt="继续写同人小说",
+                    creative_mode=CreativeMode.FANFIC,
+                    novel_size=NovelSize.MEDIUM,
+                    chapter_word_min=1800,
+                    model_id="mimo-v2.5-pro",
+                )
+            )
+            callback = service._build_exchange_callback(task.id)
+            raw_response = '```json\n{"number":5,"content":"未完成'
+
+            callback(
+                {
+                    "stage": "drafting",
+                    "exchange_label": "chapter-05",
+                    "model": "mimo-v2.5-pro",
+                    "response_parse_failed": True,
+                    "raw_response": raw_response,
+                    "finish_reason": "length",
+                    "parse_error": "模型返回的 JSON 无法解析",
+                    "request_messages": [{"role": "user", "content": "生成第 5 章"}],
+                    "prompt_diagnostics": {"message_count": 1},
+                }
+            )
+
+            diagnostic = store.read_json(task.id, "context/drafting/chapter-05-raw-response.json")
+            self.assertNotIn("raw_response", diagnostic)
+            self.assertNotIn("request_messages", diagnostic)
+            self.assertEqual(diagnostic["raw_response_preview"], raw_response[:12])
+            self.assertTrue(diagnostic["raw_response_truncated"])
+            self.assertEqual(diagnostic["request_message_count"], 1)
+            self.assertEqual(diagnostic["finish_reason"], "length")
+            self.assertEqual(diagnostic["parse_error"], "模型返回的 JSON 无法解析")
+            latest_event = store.get(task.id).events[-1]
+            self.assertEqual(latest_event.event_type, "model.response.parse_failed")
+            self.assertEqual(
+                latest_event.json_ref,
+                f"tasklog/runs/{task.id}/context/drafting/chapter-05-raw-response.json",
+            )
 
     def test_task_index_persists_new_input_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

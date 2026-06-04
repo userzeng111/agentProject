@@ -6,6 +6,13 @@ from app.application.task_service import TaskService
 from app.domain.models import TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
+from app.storage.database import get_session
+from app.storage.db_models import (
+    NovelChapterPlanBatchModel,
+    NovelGenerationBatchModel,
+    NovelOutlineChapterModel,
+    NovelProjectModel,
+)
 from app.storage.task_store import TaskLogStore
 
 
@@ -163,6 +170,59 @@ class TaskServiceCancellationTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"cancelled": True})
+
+    def test_delete_task_removes_all_database_associations(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一个删除时需要清理数据库关联的任务",
+                model_id="gpt-5.4",
+            )
+        )
+
+        with get_session() as session:
+            session.add(
+                NovelProjectModel(
+                    task_id=task.id,
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                )
+            )
+            session.add(
+                NovelGenerationBatchModel(
+                    task_id=task.id,
+                    batch_no=1,
+                    continue_request_id="continue-1",
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                )
+            )
+            session.add(
+                NovelChapterPlanBatchModel(
+                    task_id=task.id,
+                    batch_no=1,
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                )
+            )
+            session.add(
+                NovelOutlineChapterModel(
+                    task_id=task.id,
+                    chapter_number=1,
+                    updated_at=task.updated_at,
+                )
+            )
+            session.commit()
+
+        service.delete_task(task.id)
+
+        with get_session() as session:
+            self.assertEqual(session.query(NovelProjectModel).filter_by(task_id=task.id).count(), 0)
+            self.assertEqual(session.query(NovelGenerationBatchModel).filter_by(task_id=task.id).count(), 0)
+            self.assertEqual(session.query(NovelChapterPlanBatchModel).filter_by(task_id=task.id).count(), 0)
+            self.assertEqual(session.query(NovelOutlineChapterModel).filter_by(task_id=task.id).count(), 0)
 
 
 if __name__ == "__main__":

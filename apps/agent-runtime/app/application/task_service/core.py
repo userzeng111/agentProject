@@ -34,6 +34,8 @@ from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import (
     StoryEngine,
 )
+from app.observability import RequestContext, request_id_var
+from app.observability.performance import log_performance, performance_span
 from app.rag.service import RagService
 from app.storage.db_repository import get_novel_project, update_project_status
 from app.storage.task_store import TaskLogStore
@@ -108,7 +110,9 @@ class TaskServiceCoreMixin:
 
         # 初始化 SQLite 业务数据库
         from app.storage.database import init_db
-        init_db(str(Path(self.store.root_dir) / "data.db"))
+        configured_db_path = getattr(self.engine.settings, "database_path", None)
+        db_path = Path(configured_db_path) if configured_db_path else Path(self.store.root_dir) / "data.db"
+        init_db(str(db_path), settings=self.engine.settings)
 
         # 启动时同步运行时默认模型到 StoryEngine
         runtime_default = self.model_catalog._effective_default_model()
@@ -286,22 +290,19 @@ class TaskServiceCoreMixin:
                 if task_id in self._stop_requested:
                     raise ValueError("任务正在取消中，请等待后台线程结束后再删除。")
                 raise ValueError("任务正在运行中，请先取消后再删除。")
-        result = self.store.delete_task(task_id)
         # 级联清理数据库关联记录
         self._delete_db_associations(task_id)
+        result = self.store.delete_task(task_id)
         return result
 
     def _delete_db_associations(self, task_id: str) -> None:
-        """删除任务的数据库关联记录（agent_run、novel_generation_batch、novel_project）。"""
+        """删除任务的数据库关联记录。"""
         try:
-            from app.storage.database import get_session
-            with get_session() as session:
-                session.execute("DELETE FROM agent_run WHERE task_id = :tid", {"tid": task_id})
-                session.execute("DELETE FROM novel_generation_batch WHERE task_id = :tid", {"tid": task_id})
-                session.execute("DELETE FROM novel_project WHERE task_id = :tid", {"tid": task_id})
-                session.commit()
+            from app.storage.db_repository import delete_task_associations
+            delete_task_associations(task_id)
         except Exception as exc:
-            logger.warning("删除任务 %s 的数据库关联记录失败: %s", task_id, exc)
+            logger.exception("删除任务 %s 的数据库关联记录失败", task_id)
+            raise RuntimeError(f"删除任务 {task_id} 的数据库关联记录失败") from exc
 
     def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
         with self._run_lock:
@@ -752,18 +753,51 @@ class TaskServiceCoreMixin:
         return WorkflowCallbacks(**guarded)
 
     def _start_background(self, task_id: str, target, *args: Any) -> None:
+        try:
+            parent_request_id = request_id_var.get()
+        except LookupError:
+            parent_request_id = None
+        target_name = getattr(target, "__name__", target.__class__.__name__)
+
         def runner() -> None:
-            try:
-                target(*args)
-            except Exception as exc:
-                # 尝试标记任务为失败，防止永久卡在运行状态
+            thread_name = threading.current_thread().name
+            with RequestContext(request_id=parent_request_id, task_id=task_id):
+                log_performance(
+                    logger,
+                    "background_task_start",
+                    request_id=parent_request_id,
+                    task_id=task_id,
+                    target=target_name,
+                    thread_name=thread_name,
+                )
                 try:
-                    self._mark_failed_unless_stable(task_id, f"后台任务异常：{exc}")
-                except Exception:
-                    logger.exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
-            finally:
-                # 兜底清理，防止 _active_runs 泄漏
-                self._leave_active_run(task_id)
+                    with performance_span(
+                        logger,
+                        "background_task_end",
+                        request_id=parent_request_id,
+                        task_id=task_id,
+                        target=target_name,
+                        thread_name=thread_name,
+                    ):
+                        target(*args)
+                except Exception as exc:
+                    log_performance(
+                        logger,
+                        "background_task_failed",
+                        level=40,
+                        request_id=parent_request_id,
+                        task_id=task_id,
+                        target=target_name,
+                        error_type=type(exc).__name__,
+                    )
+                    # 尝试标记任务为失败，防止永久卡在运行状态
+                    try:
+                        self._mark_failed_unless_stable(task_id, f"后台任务异常：{exc}")
+                    except Exception:
+                        logger.exception("后台任务异常且 set_failed 也失败，task_id=%s", task_id)
+                finally:
+                    # 兜底清理，防止 _active_runs 泄漏
+                    self._leave_active_run(task_id)
 
         t = threading.Thread(
             target=runner,

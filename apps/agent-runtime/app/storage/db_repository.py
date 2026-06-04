@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from app.observability import get_logger
 from pathlib import Path
+from typing import Any
 
 from app.domain.models import StoryPlan, TaskRecord, utc_now
 from app.storage.database import get_session
@@ -61,6 +62,17 @@ def delete_task_index(task_id: str) -> None:
         if row is not None:
             session.delete(row)
             session.commit()
+
+
+def delete_task_associations(task_id: str) -> None:
+    """在单一事务中清理任务关联数据库记录。"""
+    with get_session() as session:
+        session.query(NovelOutlineChapterModel).filter_by(task_id=task_id).delete(synchronize_session=False)
+        session.query(NovelChapterPlanBatchModel).filter_by(task_id=task_id).delete(synchronize_session=False)
+        session.query(NovelGenerationBatchModel).filter_by(task_id=task_id).delete(synchronize_session=False)
+        session.query(NovelProjectModel).filter_by(task_id=task_id).delete(synchronize_session=False)
+        session.query(TaskIndexModel).filter_by(id=task_id).delete(synchronize_session=False)
+        session.commit()
 
 
 def get_novel_project(task_id: str) -> NovelProjectModel | None:

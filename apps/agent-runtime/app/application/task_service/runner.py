@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.observability import get_logger
+import hashlib
 from typing import Any
 
 from langgraph.types import Command
@@ -18,6 +19,7 @@ from app.llm.story_engine import (
     set_exchange_callback,
     set_progress_callback,
 )
+from app.observability.performance import performance_span
 
 logger = get_logger(__name__)
 
@@ -35,50 +37,55 @@ class TaskServiceRunnerMixin:
     def _run_task_sync(self, task_id: str, action_model_id: str | None = None) -> TaskRecord:
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
-        task = self.store.get(task_id)
-        if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED, TaskStatus.PLANNING}:
-            raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
         try:
-            if self._is_stop_requested(task_id):
-                return self.store.get(task_id)
-            self.store.mark_stage(
-                task_id,
-                status=TaskStatus.PLANNING,
-                stage="planning",
-                progress=max(task.progress, 20),
-                message="开始执行 LangGraph 工作流，正在生成大纲。",
-                event_type="outline.generating",
-            )
-            self._emit_trace_summary(
-                task_id,
-                kind="outline",
-                title="开始生成大纲",
-                detail="正在结合提示词、风格和参考文本收敛故事骨架。",
-            )
-            initial_state = self._initial_state(task, action_model_id)
-            initial_payload = initial_state["input_payload"]
-            normalized_spec = build_normalized_spec(
-                initial_payload,
-                novel_skill_service=self.novel_skill_service,
-                style_profile_service=self.style_profile_service,
-            )
-            self.store.update_normalized_spec(task_id, self._persistable_normalized_spec(task, normalized_spec))
-            self._emit_trace_summary(
-                task_id,
-                kind="spec",
-                title="创作要求已标准化",
-                detail="已整理用户诉求、方法论、风格、字数和参考材料，开始生成大纲。",
-            )
-            progress_token = set_progress_callback(self._build_progress_callback(task_id))
-            exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
-            try:
-                result = self.workflow_engine.start(initial_state, config=self._config(task_id))
-            finally:
-                reset_progress_callback(progress_token)
-                reset_exchange_callback(exchange_token)
-            if self._is_stop_requested(task_id):
-                return self.store.get(task_id)
-            return self._sync_result(task_id, result)
+            with performance_span(logger, "task_service_run", task_id=task_id):
+                task = self.store.get(task_id)
+                if task.status not in {TaskStatus.CREATED, TaskStatus.SOURCES_INGESTED, TaskStatus.PLANNING}:
+                    raise ValueError("只有新建任务或已上传素材的任务才能开始生成。")
+                if self._is_stop_requested(task_id):
+                    return self.store.get(task_id)
+                self.store.mark_stage(
+                    task_id,
+                    status=TaskStatus.PLANNING,
+                    stage="planning",
+                    progress=max(task.progress, 20),
+                    message="开始执行 LangGraph 工作流，正在生成大纲。",
+                    event_type="outline.generating",
+                )
+                self._emit_trace_summary(
+                    task_id,
+                    kind="outline",
+                    title="开始生成大纲",
+                    detail="正在结合提示词、风格和参考文本收敛故事骨架。",
+                )
+                initial_state = self._initial_state(task, action_model_id)
+                initial_payload = initial_state["input_payload"]
+                with performance_span(logger, "task_service_build_normalized_spec", task_id=task_id):
+                    normalized_spec = build_normalized_spec(
+                        initial_payload,
+                        novel_skill_service=self.novel_skill_service,
+                        style_profile_service=self.style_profile_service,
+                    )
+                with performance_span(logger, "task_service_update_normalized_spec", task_id=task_id):
+                    self.store.update_normalized_spec(task_id, self._persistable_normalized_spec(task, normalized_spec))
+                self._emit_trace_summary(
+                    task_id,
+                    kind="spec",
+                    title="创作要求已标准化",
+                    detail="已整理用户诉求、方法论、风格、字数和参考材料，开始生成大纲。",
+                )
+                progress_token = set_progress_callback(self._build_progress_callback(task_id))
+                exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
+                try:
+                    with performance_span(logger, "task_service_workflow_start", task_id=task_id):
+                        result = self.workflow_engine.start(initial_state, config=self._config(task_id))
+                finally:
+                    reset_progress_callback(progress_token)
+                    reset_exchange_callback(exchange_token)
+                if self._is_stop_requested(task_id):
+                    return self.store.get(task_id)
+                with performance_span(logger, "task_service_sync_result", task_id=task_id):
+                    return self._sync_result(task_id, result)
         except Exception as exc:
             self._mark_failed_unless_stable(task_id, f"运行失败：{exc}")
             raise
@@ -88,66 +95,73 @@ class TaskServiceRunnerMixin:
     def _resume_task_sync(self, task_id: str, approved: bool, comment: str, action_model_id: str | None = None) -> TaskRecord:
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
-        task = self.store.get(task_id)
-        valid_statuses = {
-            TaskStatus.WAITING_OUTLINE_REVIEW,
-            TaskStatus.WAITING_MANUAL_ACTION,
-            TaskStatus.WAITING_CHAPTER_REVIEW,
-            TaskStatus.WAITING_VERIFICATION_REVIEW,
-            TaskStatus.PLANNING,
-            TaskStatus.DRAFTING,
-        }
-        if task.pending_review is None or task.status not in valid_statuses:
-            raise ValueError("当前任务没有待恢复的审核节点。")
         try:
-            if self._is_stop_requested(task_id):
-                return self.store.get(task_id)
-            if approved:
-                self.store.mark_stage(
-                    task_id,
-                    status=TaskStatus.DRAFTING,
-                    stage="drafting",
-                    progress=max(task.progress, 60),
-                    message="收到人工审核结果，继续执行工作流。",
-                    event_type="draft.generating",
-                    unit_id=task.current_unit,
-                )
-            else:
-                self.store.append_event(
-                    task_id,
-                    stage="review_decision",
-                    message="收到人工审核结果（驳回），准备修订。",
-                    event_type="task.review.rejected",
-                )
-            progress_token = set_progress_callback(self._build_progress_callback(task_id))
-            exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
-            try:
-                self._rehydrate_resume_state_if_needed(task, action_model_id)
-                # 若已有 checkpoint 但未停留在审核中断节点，强制校准 as_node，
-                # 确保 Command(resume=...) 被正确的审核中断节点消费，避免误入旧生成节点
-                values = self._graph_state_values(task_id)
-                if values:
-                    review_type = task.pending_review.type if task.pending_review else None
-                    as_node_map = {
-                        "outline_review": "review_outline",
-                        "chapter_pair_review": "review_chapter_pair",
-                        "verification_review": "review_verification",
-                    }
-                    as_node = as_node_map.get(review_type)
-                    if as_node and hasattr(self.workflow_engine, "update_state"):
-                        self.workflow_engine.update_state(self._config(task_id), {}, as_node=as_node)
-                    # checkpoint 与数据库状态同步：以数据库状态为准
-                    self._sync_checkpoint_with_db(task_id)
-                result = self.workflow_engine.resume(
-                    Command(resume={"approved": approved, "comment": comment}),
-                    config=self._config(task_id),
-                )
-            finally:
-                reset_progress_callback(progress_token)
-                reset_exchange_callback(exchange_token)
-            if self._is_stop_requested(task_id):
-                return self.store.get(task_id)
-            return self._sync_result(task_id, result, review_comment=comment)
+            with performance_span(logger, "task_service_resume", task_id=task_id, approved=approved):
+                task = self.store.get(task_id)
+                valid_statuses = {
+                    TaskStatus.WAITING_OUTLINE_REVIEW,
+                    TaskStatus.WAITING_MANUAL_ACTION,
+                    TaskStatus.WAITING_CHAPTER_REVIEW,
+                    TaskStatus.WAITING_VERIFICATION_REVIEW,
+                    TaskStatus.PLANNING,
+                    TaskStatus.DRAFTING,
+                }
+                if task.pending_review is None or task.status not in valid_statuses:
+                    raise ValueError("当前任务没有待恢复的审核节点。")
+                if self._is_stop_requested(task_id):
+                    return self.store.get(task_id)
+                if approved:
+                    self.store.mark_stage(
+                        task_id,
+                        status=TaskStatus.DRAFTING,
+                        stage="drafting",
+                        progress=max(task.progress, 60),
+                        message="收到人工审核结果，继续执行工作流。",
+                        event_type="draft.generating",
+                        unit_id=task.current_unit,
+                    )
+                else:
+                    self.store.append_event(
+                        task_id,
+                        stage="review_decision",
+                        message="收到人工审核结果（驳回），准备修订。",
+                        event_type="task.review.rejected",
+                    )
+                progress_token = set_progress_callback(self._build_progress_callback(task_id))
+                exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
+                try:
+                    with performance_span(logger, "task_service_rehydrate_resume_state", task_id=task_id):
+                        self._rehydrate_resume_state_if_needed(task, action_model_id)
+                    # 若已有 checkpoint 但未停留在审核中断节点，强制校准 as_node，
+                    # 确保 Command(resume=...) 被正确的审核中断节点消费，避免误入旧生成节点
+                    with performance_span(logger, "task_service_graph_state_values", task_id=task_id):
+                        values = self._graph_state_values(task_id)
+                    if values:
+                        review_type = task.pending_review.type if task.pending_review else None
+                        as_node_map = {
+                            "outline_review": "review_outline",
+                            "chapter_pair_review": "review_chapter_pair",
+                            "verification_review": "review_verification",
+                        }
+                        as_node = as_node_map.get(review_type)
+                        if as_node and hasattr(self.workflow_engine, "update_state"):
+                            with performance_span(logger, "task_service_checkpoint_update_state", task_id=task_id):
+                                self.workflow_engine.update_state(self._config(task_id), {}, as_node=as_node)
+                        # checkpoint 与数据库状态同步：以数据库状态为准
+                        with performance_span(logger, "task_service_sync_checkpoint_with_db", task_id=task_id):
+                            self._sync_checkpoint_with_db(task_id)
+                    with performance_span(logger, "task_service_workflow_resume", task_id=task_id):
+                        result = self.workflow_engine.resume(
+                            Command(resume={"approved": approved, "comment": comment}),
+                            config=self._config(task_id),
+                        )
+                finally:
+                    reset_progress_callback(progress_token)
+                    reset_exchange_callback(exchange_token)
+                if self._is_stop_requested(task_id):
+                    return self.store.get(task_id)
+                with performance_span(logger, "task_service_sync_result", task_id=task_id):
+                    return self._sync_result(task_id, result, review_comment=comment)
         except Exception as exc:
             self._mark_failed_unless_stable(task_id, f"恢复执行失败：{exc}")
             raise
@@ -238,6 +252,71 @@ class TaskServiceRunnerMixin:
                 return
             stage = str(event.get("stage") or "unknown")
             exchange_label = str(event.get("exchange_label") or "exchange")
+            if bool(event.get("response_parse_failed")):
+                raw_response = str(event.get("raw_response") or "")
+                settings = getattr(self.engine, "settings", None)
+                max_chars = max(
+                    int(getattr(settings, "llm_diagnostic_raw_response_max_chars", 2000) or 0),
+                    0,
+                )
+                include_raw_response = bool(
+                    getattr(settings, "llm_diagnostic_raw_response_enabled", False)
+                )
+                include_request_messages = bool(
+                    getattr(settings, "llm_diagnostic_include_request_messages", False)
+                )
+                raw_preview = raw_response[:max_chars] if max_chars else ""
+                diagnostic_payload = {
+                    "task_id": task_id,
+                    "stage": stage,
+                    "exchange_label": exchange_label,
+                    "model": str(event.get("model") or self.engine.settings.default_chat_model),
+                    "finish_reason": event.get("finish_reason"),
+                    "parse_error": str(event.get("parse_error") or ""),
+                    "raw_response_preview": raw_preview,
+                    "raw_response_truncated": len(raw_response) > len(raw_preview),
+                    "raw_response_chars": len(raw_response),
+                    "raw_response_sha256": hashlib.sha256(raw_response.encode("utf-8")).hexdigest(),
+                    "request_message_count": (
+                        len(event.get("request_messages"))
+                        if isinstance(event.get("request_messages"), list)
+                        else 0
+                    ),
+                    "prompt_diagnostics": event.get("prompt_diagnostics") if isinstance(event.get("prompt_diagnostics"), dict) else {},
+                }
+                if include_raw_response:
+                    diagnostic_payload["raw_response"] = raw_response[:max_chars] if max_chars else raw_response
+                if include_request_messages:
+                    diagnostic_payload["request_messages"] = (
+                        event.get("request_messages")
+                        if isinstance(event.get("request_messages"), list)
+                        else []
+                    )
+                diagnostic_path = self.store.write_context_snapshot(
+                    task_id,
+                    stage=stage,
+                    snapshot_name=f"{exchange_label}-raw-response",
+                    payload=diagnostic_payload,
+                )
+                json_ref = f"tasklog/{self.store.get(task_id).storage_state}/{task_id}/{diagnostic_path}"
+                self.store.append_event(
+                    task_id,
+                    stage=stage,
+                    message=f"{stage} 阶段模型响应 JSON 解析失败：{exchange_label}",
+                    event_type="model.response.parse_failed",
+                    unit_id=exchange_label,
+                    json_ref=json_ref,
+                    payload={
+                        "summary": "模型响应 JSON 解析失败，已保存原始响应诊断。",
+                        "display_level": "public",
+                        "response_parse_failed": True,
+                        "finish_reason": event.get("finish_reason"),
+                        "parse_error": str(event.get("parse_error") or ""),
+                        "raw_response_chars": len(raw_response),
+                        "raw_response_sha256": diagnostic_payload["raw_response_sha256"],
+                    },
+                )
+                return
             history = event.get("conversation_history")
             if not isinstance(history, list):
                 return

@@ -22,6 +22,7 @@ from app.llm.gateway_client import (
     OpenAICompatibleGatewayClient,
     StreamInterruptedAfterStartError,
 )
+from app.llm.model_capabilities_config import resolve_generation_max_tokens
 from app.settings.config import Settings
 
 logger = get_logger(__name__)
@@ -32,6 +33,13 @@ _OUTLINE_RETRY_JSON_PROMPT = (
     "必须保留字段：working_title, logline, world_notes, character_notes, planned_chapter_count, chapter_plan。"
     "请压缩 world_notes 为最多 6 条短句，压缩 character_notes 为最多 6 条短句。"
     "chapter_plan 中每章只保留 number、title、goal 三个字段，不要扩写，不要附加额外说明。"
+    "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+)
+
+_STREAM_JSON_REPAIR_PROMPT = (
+    "上一次返回结果不是可解析的目标 JSON，可能不完整、被截断或包含 Markdown 代码围栏。"
+    "请基于当前任务重新输出一个完整、可解析的 JSON 对象。"
+    "必须保留原任务要求的字段，不要省略正文内容。"
     "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
 )
 
@@ -248,6 +256,11 @@ class StoryEngine(BaseAgent):
                 api_key=settings.openai_api_key,
                 model=settings.default_chat_model,
                 timeout=timeout_cfg,
+                default_protocol=settings.default_protocol,
+                protocol_overrides_resolver=lambda: settings.effective_protocol_overrides,
+                anthropic_base_url=settings.anthropic_base_url,
+                anthropic_version=settings.anthropic_version,
+                model_capabilities_settings=settings,
             )
         self._runtime_default_model: str | None = None
 
@@ -322,18 +335,20 @@ class StoryEngine(BaseAgent):
             return default
         return parsed if parsed > 0 else default
 
-    def _outline_generation_max_tokens(self, spec: dict[str, Any]) -> int:
-        chapter_count = self._positive_int(spec.get("target_chapter_count"), 0)
-        if chapter_count <= 0:
-            chapter_count = self._positive_int(spec.get("chapter_count_max"), 80)
-        return min(12000, max(4096, chapter_count * 96 + 2048))
+    def _generation_max_tokens(self, model: str | None) -> int | None:
+        return resolve_generation_max_tokens(model, settings=self.settings)
 
-    def _chapter_generation_max_tokens(self, spec: dict[str, Any], *, chapter_count: int = 1) -> int:
-        chapter_word_min = self._positive_int(spec.get("chapter_word_min"), self._positive_int(spec.get("target_words"), 1800))
-        chapter_word_max = self._positive_int(spec.get("chapter_word_max"), int(chapter_word_min * 1.3))
-        target_words = max(chapter_word_min, chapter_word_max)
-        effective_chapters = max(int(chapter_count or 1), 1)
-        return min(16000, max(4096, effective_chapters * (target_words * 2 + 2048)))
+    def _outline_generation_max_tokens(self, spec: dict[str, Any], model: str | None = None) -> int | None:
+        return self._generation_max_tokens(model or spec.get("model_id") or spec.get("model"))
+
+    def _chapter_generation_max_tokens(
+        self,
+        spec: dict[str, Any],
+        *,
+        chapter_count: int = 1,
+        model: str | None = None,
+    ) -> int | None:
+        return self._generation_max_tokens(model or spec.get("model_id") or spec.get("model"))
 
     def set_runtime_default_model(self, model_id: str) -> None:
         """设置运行时默认模型覆盖。"""
@@ -384,7 +399,7 @@ class StoryEngine(BaseAgent):
                 stage="planning",
                 exchange_label="outline-revision",
                 exchange_callback=active_exchange_callback,
-                max_tokens=self._outline_generation_max_tokens(spec),
+                max_tokens=self._outline_generation_max_tokens(spec, resolved_model),
             )
 
         # 首次生成
@@ -411,7 +426,7 @@ class StoryEngine(BaseAgent):
             stage="planning",
             exchange_label="outline",
             exchange_callback=active_exchange_callback,
-            max_tokens=self._outline_generation_max_tokens(spec),
+            max_tokens=self._outline_generation_max_tokens(spec, resolved_model),
         )
 
     def build_chapter_plan_batch(
@@ -455,7 +470,7 @@ class StoryEngine(BaseAgent):
             exchange_label="chapter-plan-batch",
             exchange_callback=active_exchange_callback,
             progress_callback=None,
-            max_tokens=min(12000, max(4096, batch_size * 128 + 1024)),
+            max_tokens=self._generation_max_tokens(resolved_model),
         )
         if not payload:
             raise RuntimeError("章节计划批次生成返回空响应")
@@ -502,7 +517,7 @@ class StoryEngine(BaseAgent):
         summary = story_plan["logline"]
         chapter_plan = story_plan["chapter_plan"]
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        chapter_max_tokens = self._chapter_generation_max_tokens(spec)
+        chapter_max_tokens = self._chapter_generation_max_tokens(spec, model=resolved_model)
 
         chapters: list[ChapterDraft] = []
         completed_summaries: list[str] = []
@@ -614,7 +629,7 @@ class StoryEngine(BaseAgent):
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        chapter_max_tokens = self._chapter_generation_max_tokens(spec)
+        chapter_max_tokens = self._chapter_generation_max_tokens(spec, model=resolved_model)
         batch_size = int(requested_batch_size or 0)
         if batch_size <= 0:
             batch_size = self._chapter_batch_size(
@@ -775,7 +790,11 @@ class StoryEngine(BaseAgent):
         title = story_plan.get("working_title", "")
         summary = story_plan.get("logline", "")
         chapter_word_range = self._chapter_word_range_text(spec, chapter_plan)
-        chapter_max_tokens = self._chapter_generation_max_tokens(spec, chapter_count=max(len(current_pair), 1))
+        chapter_max_tokens = self._chapter_generation_max_tokens(
+            spec,
+            chapter_count=max(len(current_pair), 1),
+            model=resolved_model,
+        )
         completed_summaries = [f"{ch['title']}:{ch['summary']}" for ch in completed_chapters]
         completed_text = "；".join(completed_summaries) if completed_summaries else "无"
 
@@ -1029,7 +1048,7 @@ class StoryEngine(BaseAgent):
 
         # 流式调用（委托 BaseAgent._call_llm_stream）
         try:
-            full_content = self._call_llm_stream(
+            full_content, finish_reason = self._call_llm_stream_with_metadata(
                 request_messages,
                 model,
                 progress_callback=active_progress,
@@ -1054,7 +1073,39 @@ class StoryEngine(BaseAgent):
 
         # 解析 JSON
         parse_started = time.perf_counter()
-        payload = self._strip_and_parse_json(full_content)
+        try:
+            payload = self._strip_and_parse_json(full_content)
+        except (GatewayClientError, json.JSONDecodeError) as exc:
+            if exchange_callback is not None:
+                exchange_callback(
+                    {
+                        "stage": stage,
+                        "exchange_label": exchange_label,
+                        "model": model,
+                        "response_parse_failed": True,
+                        "request_messages": request_messages,
+                        "raw_response": full_content,
+                        "finish_reason": finish_reason,
+                        "parse_error": str(exc),
+                        "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
+                    }
+                )
+            repair_messages = [dict(item) for item in request_messages] + [
+                {"role": "assistant", "content": full_content},
+                {"role": "user", "content": _STREAM_JSON_REPAIR_PROMPT},
+            ]
+            try:
+                repaired_content, _ = self._call_llm_stream_with_metadata(
+                    repair_messages,
+                    model,
+                    progress_callback=active_progress,
+                    stage=stage,
+                    unit_id=f"{exchange_label}-repair",
+                    max_tokens=max_tokens,
+                )
+                payload = self._strip_and_parse_json(repaired_content)
+            except (GatewayClientError, json.JSONDecodeError) as repair_exc:
+                raise exc from repair_exc
         parse_duration_ms = (time.perf_counter() - parse_started) * 1000
 
         self.response_cache.set(cache_key, payload)

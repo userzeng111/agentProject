@@ -21,6 +21,7 @@ def build_router(
     rag_rebuild_service=None,
     style_profile_service=None,
     novel_skill_service=None,
+    settings=None,
 ) -> APIRouter:
     router = APIRouter()
     active_style_service = novel_skill_service or style_profile_service
@@ -50,6 +51,20 @@ def build_router(
             raise ValueError("文件引用格式不完整。")
         return task_id, relative_path
 
+    async def _read_upload_text(file: UploadFile) -> str:
+        max_bytes = max(int(getattr(settings, "upload_max_bytes", 2 * 1024 * 1024) or 0), 1)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise HTTPException(status_code=413, detail=f"文件过大，最大允许 {max_bytes} 字节。")
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8")
+
     @router.get("/health")
     def health() -> dict[str, str]:
         return {"status": "ok"}
@@ -78,9 +93,15 @@ def build_router(
     @router.get("/settings/protocols")
     def get_protocol_settings():
         from app.settings.runtime_settings import get_model_protocol_overrides
+        default_protocol = getattr(settings, "default_protocol", "openai") if settings is not None else "openai"
+        effective_overrides = (
+            getattr(settings, "effective_protocol_overrides", None)
+            if settings is not None
+            else None
+        )
         return {
-            "default_protocol": "openai",
-            "overrides": get_model_protocol_overrides(),
+            "default_protocol": default_protocol,
+            "overrides": effective_overrides or get_model_protocol_overrides(),
         }
 
     @router.patch("/settings/protocols/{model_id}")
@@ -210,7 +231,7 @@ def build_router(
     @router.post("/tasks/{task_id}/assets")
     async def upload_asset(task_id: str, file: UploadFile = File(...)):
         try:
-            content = (await file.read()).decode("utf-8")
+            content = await _read_upload_text(file)
             return task_service.add_source(
                 task_id,
                 filename=file.filename or "reference.txt",
@@ -219,6 +240,8 @@ def build_router(
             )
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="当前 demo 仅支持 UTF-8 文本文件。") from exc
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.exception("上传资源失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc

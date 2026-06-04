@@ -67,6 +67,16 @@ class OpenAIAdapterTests(unittest.TestCase):
         self.assertEqual(parsed["reasoning_content"], "thinking")
         self.assertIsNone(parsed["finish_reason"])
 
+    def test_parse_stream_chunk_with_finish_reason_only(self):
+        chunk = {
+            "choices": [
+                {"delta": {}, "finish_reason": "length"}
+            ]
+        }
+        parsed = self.adapter.parse_stream_chunk(chunk)
+        self.assertEqual(parsed["content"], "")
+        self.assertEqual(parsed["finish_reason"], "length")
+
     def test_parse_stream_chunk_with_usage(self):
         chunk = {"usage": {"total_tokens": 42}}
         parsed = self.adapter.parse_stream_chunk(chunk)
@@ -171,6 +181,11 @@ class AnthropicAdapterTests(unittest.TestCase):
         chunk = {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
         parsed = self.adapter.parse_stream_chunk(chunk)
         self.assertEqual(parsed["finish_reason"], "end_turn")
+
+    def test_parse_stream_chunk_message_delta_max_tokens(self):
+        chunk = {"type": "message_delta", "delta": {"stop_reason": "max_tokens"}}
+        parsed = self.adapter.parse_stream_chunk(chunk)
+        self.assertEqual(parsed["finish_reason"], "max_tokens")
 
     def test_parse_stream_chunk_message_delta_with_usage(self):
         chunk = {

@@ -4,6 +4,8 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.llm.model_capabilities_config import DEFAULT_MODEL_CAPABILITIES_PATH
+
 
 DEFAULT_TASKLOG_ROOT = str(Path(__file__).resolve().parents[4] / "tasklog")
 RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -17,7 +19,11 @@ class Settings(BaseSettings):
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(
         default="https://api.lclaitech.com/v1",
-        validation_alias=AliasChoices("LLM_BASE_URL"),
+        validation_alias=AliasChoices("LLM_BASE_URL", "OPENAI_BASE_URL"),
+    )
+    anthropic_base_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("ANTHROPIC_BASE_URL"),
     )
     default_chat_model: str = Field(
         default="glm-5.1",
@@ -25,7 +31,7 @@ class Settings(BaseSettings):
     )
     openai_api_key: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("LLM_API_KEY"),
+        validation_alias=AliasChoices("LLM_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"),
     )
     # 自动审核配置
     auto_review: bool = Field(
@@ -83,9 +89,67 @@ class Settings(BaseSettings):
         default="openai",
         validation_alias=AliasChoices("DEFAULT_PROTOCOL"),
     )
+    anthropic_version: str = Field(
+        default="2023-06-01",
+        validation_alias=AliasChoices("ANTHROPIC_VERSION"),
+    )
     model_protocol_overrides: dict[str, str] = Field(
         default={},
         validation_alias=AliasChoices("MODEL_PROTOCOL_OVERRIDES"),
+    )
+    model_capabilities_path: str = Field(
+        default=str(DEFAULT_MODEL_CAPABILITIES_PATH),
+        validation_alias=AliasChoices("MODEL_CAPABILITIES_PATH"),
+    )
+    # 数据库配置
+    database_path: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("DATABASE_PATH", "DB_PATH"),
+    )
+    sqlite_busy_timeout_ms: int = Field(
+        default=5000,
+        validation_alias=AliasChoices("SQLITE_BUSY_TIMEOUT_MS"),
+    )
+    sqlite_connect_timeout_seconds: float = Field(
+        default=5.0,
+        validation_alias=AliasChoices("SQLITE_CONNECT_TIMEOUT_SECONDS"),
+    )
+    sqlite_journal_mode: str = Field(
+        default="WAL",
+        validation_alias=AliasChoices("SQLITE_JOURNAL_MODE"),
+    )
+    sqlite_foreign_keys: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("SQLITE_FOREIGN_KEYS"),
+    )
+    sqlite_synchronous: str = Field(
+        default="NORMAL",
+        validation_alias=AliasChoices("SQLITE_SYNCHRONOUS"),
+    )
+    db_sql_log_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("DB_SQL_LOG_ENABLED"),
+    )
+    db_slow_query_ms: float = Field(
+        default=100.0,
+        validation_alias=AliasChoices("DB_SLOW_QUERY_MS"),
+    )
+    # 上传与模型诊断落盘边界
+    upload_max_bytes: int = Field(
+        default=2 * 1024 * 1024,
+        validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
+    )
+    llm_diagnostic_raw_response_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("LLM_DIAGNOSTIC_RAW_RESPONSE_ENABLED"),
+    )
+    llm_diagnostic_raw_response_max_chars: int = Field(
+        default=2000,
+        validation_alias=AliasChoices("LLM_DIAGNOSTIC_RAW_RESPONSE_MAX_CHARS"),
+    )
+    llm_diagnostic_include_request_messages: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("LLM_DIAGNOSTIC_INCLUDE_REQUEST_MESSAGES"),
     )
     # LLM HTTP 超时配置（秒）
     llm_timeout_connect: float = Field(

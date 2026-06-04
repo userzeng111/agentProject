@@ -106,15 +106,39 @@ class BaseAgent:
 
         可选通过 progress_callback 透传思考链事件。
         """
+        content, _ = self._call_llm_stream_with_metadata(
+            messages,
+            model,
+            progress_callback=progress_callback,
+            stage=stage,
+            unit_id=unit_id,
+            max_tokens=max_tokens,
+        )
+        return content
+
+    def _call_llm_stream_with_metadata(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        *,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        stage: str = "",
+        unit_id: str = "",
+        max_tokens: int | None = None,
+    ) -> tuple[str, str | None]:
+        """流式调用 LLM，返回完整文本内容和终止原因。"""
         gc = self._require_gateway_client()
         full_content = ""
         full_reasoning = ""
+        finish_reason: str | None = None
         saw_stream_output = False
         request_kwargs: dict[str, Any] = {}
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
         try:
             for chunk in gc.complete_stream_sync(messages, model=model, **request_kwargs):
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
                 if chunk.usage and progress_callback:
                     progress_callback({
                         "event_type": "model.usage",
@@ -152,7 +176,7 @@ class BaseAgent:
                     "流式响应已开始后中断，已保留最近稳定阶段，请从恢复入口继续。"
                 ) from exc
             raise
-        return full_content
+        return full_content, finish_reason
 
     async def _call_llm_stream_async(
         self,

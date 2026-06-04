@@ -1,3 +1,6 @@
+import os
+import time
+from collections import defaultdict
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -16,12 +19,9 @@ from app.observability import TracingMiddleware, init_logging
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
 from app.services import ChatService
 from app.settings.config import get_settings
+from app.static_files import resolve_static_file
 from app.style_profiles import StyleProfileService
 from app.storage.task_store import TaskLogStore
-
-
-import time
-from collections import defaultdict
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -159,8 +159,6 @@ app.add_middleware(TracingMiddleware)
 # 缓存控制中间件
 app.add_middleware(CacheControlMiddleware)
 
-import os
-
 _default_origins = [
     settings.runtime_origin,
     "http://127.0.0.1:3000",
@@ -190,6 +188,7 @@ app.include_router(
         rag_rebuild_service=rag_rebuild_service,
         novel_skill_service=novel_skill_service,
         style_profile_service=style_profile_service,
+        settings=settings,
     ),
     prefix="/api",
 )
@@ -214,12 +213,12 @@ if _static_dir.is_dir():
         """SPA 回退：静态文件优先，否则返回 index.html 让前端路由接管。"""
         if path:
             # 尝试匹配静态文件
-            candidate = _static_dir / path.strip("/")
-            if candidate.is_file():
+            candidate = resolve_static_file(_static_dir, path)
+            if candidate is not None:
                 return FileResponse(candidate)
             # 尝试 index.html（如 /archive/ → archive/index.html）
-            index_candidate = _static_dir / path.strip("/") / "index.html"
-            if index_candidate.is_file():
+            index_candidate = resolve_static_file(_static_dir, f"{path.strip('/')}/index.html")
+            if index_candidate is not None:
                 return FileResponse(index_candidate)
         # 所有其他路径回退到 index.html（SPA 路由）
         return FileResponse(_index_html)

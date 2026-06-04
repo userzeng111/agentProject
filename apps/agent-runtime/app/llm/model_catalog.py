@@ -7,6 +7,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.llm.model_capabilities_config import (
+    apply_context_window_config,
+    resolve_generation_max_tokens,
+)
 from app.settings.config import Settings
 
 
@@ -362,6 +366,36 @@ _PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "mimo-v2.5-pro": {
+        "display_name": "Mimo v2.5 Pro",
+        "provider": "mimo",
+        "capabilities": {
+            "context_window": {
+                "max_input_tokens": 128000,
+                "max_output_tokens": 8192,
+                "max_total_tokens": 136192,
+                "recommended_prompt_budget": 90000,
+                "compression_trigger_tokens": 72000,
+            },
+            "cache": {
+                "runtime_response_cache": True,
+                "runtime_context_cache": True,
+                "provider_prompt_cache": "unknown",
+                "cache_key_strategy": "stage+model+context_hash",
+            },
+            "compression": {
+                "supported": True,
+                "may_compress": True,
+                "strategy": "reference_truncate+memory_trim",
+            },
+            "features": {
+                "json_mode": True,
+                "tool_calling": False,
+                "streaming": True,
+            },
+        },
+        "protocol": "openai",
+    },
     "K2.6": {
         "display_name": "Kimi K2.6",
         "provider": "moonshot",
@@ -485,6 +519,8 @@ class ModelCatalogService:
 
         raw_models = self._load_gateway_models()
         aggregated = self._merge_models(raw_models)
+        if self._sync_runtime_default_from_verified_env_default(aggregated):
+            aggregated = self._order_default_model_first(aggregated)
         fetched_at = datetime.now(timezone.utc).isoformat()
         payload = {
             "data": aggregated,
@@ -551,22 +587,63 @@ class ModelCatalogService:
             seen.add(model_id)
             items.append(self._build_model_item({"id": model_id}, source="registry"))
 
-        # 3. 默认模型置顶
+        return self._order_default_model_first(items)
+
+    def _order_default_model_first(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """将当前生效默认模型置顶。"""
         effective_default = self._effective_default_model().strip()
         default_idx = next((i for i, item in enumerate(items) if item["id"] == effective_default), -1)
         if default_idx > 0:
             items.insert(0, items.pop(default_idx))
-
         return items
+
+    def _sync_runtime_default_from_verified_env_default(self, items: list[dict[str, Any]]) -> bool:
+        """刷新模型目录后，将缺失或失效的持久化默认模型同步为已验证的配置默认模型。"""
+        env_default = (self.settings.default_chat_model or "").strip()
+        if not env_default:
+            return False
+        env_default_item = self._find_model_item(items, env_default)
+        if not self._is_verified_runtime_default_item(env_default_item):
+            return False
+
+        runtime_default = (self._runtime_default_model or "").strip()
+        if runtime_default:
+            runtime_item = self._find_model_item(items, runtime_default)
+            if self._is_verified_runtime_default_item(runtime_item):
+                return False
+
+        self._runtime_default_model = env_default
+        self._save_runtime_settings()
+        return True
+
+    @staticmethod
+    def _find_model_item(items: list[dict[str, Any]], model_id: str) -> dict[str, Any] | None:
+        for item in items:
+            if item.get("id") == model_id:
+                return item
+        return None
+
+    @staticmethod
+    def _is_verified_runtime_default_item(item: dict[str, Any] | None) -> bool:
+        if not item:
+            return False
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        source = str(metadata.get("source") or "").strip()
+        if source in {"registry", "default+registry"}:
+            return False
+        compatibility = str(metadata.get("compatibility") or "").strip()
+        features = (item.get("capabilities") or {}).get("features") or {}
+        return compatibility == "verified" and bool(features.get("novel_task_supported"))
 
     def _build_model_item(self, raw: dict[str, Any], source: str) -> dict[str, Any]:
         model_id = str(raw.get("id") or "").strip()
         profile = deepcopy(self.registry.get(model_id, {}))
-        capabilities = profile.get("capabilities") or self._unknown_capabilities()
+        capabilities = profile.get("capabilities") or self._unknown_capabilities(model_id)
+        capabilities = apply_context_window_config(capabilities, model_id, settings=self.settings)
         provider = profile.get("provider") or self.settings.llm_provider
         display_name = profile.get("display_name") or model_id
         compatibility = "verified" if source in {"gateway+registry", "registry", "default+registry"} else "unverified"
-        protocol = profile.get("protocol") or "openai"
+        protocol = profile.get("protocol") or getattr(self.settings, "default_protocol", "openai") or "openai"
         if hasattr(self.settings, "effective_protocol_overrides"):
             protocol = self.settings.effective_protocol_overrides.get(model_id, protocol)
         capabilities.setdefault("features", {})
@@ -588,15 +665,15 @@ class ModelCatalogService:
             },
         }
 
-    def _unknown_capabilities(self) -> dict[str, Any]:
+    def _unknown_capabilities(self, model_id: str | None = None) -> dict[str, Any]:
         return {
-            "context_window": {
-                "max_input_tokens": None,
-                "max_output_tokens": None,
-                "max_total_tokens": None,
-                "recommended_prompt_budget": None,
-                "compression_trigger_tokens": None,
-            },
+            "context_window": apply_context_window_config(
+                {
+                    "context_window": {},
+                },
+                model_id,
+                settings=self.settings,
+            )["context_window"],
             "cache": {
                 "runtime_response_cache": True,
                 "runtime_context_cache": True,
@@ -617,8 +694,11 @@ class ModelCatalogService:
         }
 
 
-def get_model_max_output_tokens(model_id: str | None) -> int | None:
-    """从静态注册表查询模型的最大输出 token 数。"""
+def get_model_max_output_tokens(model_id: str | None, settings: Settings | None = None) -> int | None:
+    """查询模型本次生成使用的输出 token 上限。"""
+    configured = resolve_generation_max_tokens(model_id, settings=settings)
+    if configured is not None:
+        return configured
     profile = _PROFILE_REGISTRY.get((model_id or "").strip(), {})
     capabilities = profile.get("capabilities") or {}
     context_window = capabilities.get("context_window") or {}

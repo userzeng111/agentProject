@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.context.models import ModelContextProfile, ReferenceMaterial
+from app.llm.model_capabilities_config import resolve_context_window
 from app.llm.model_catalog import ModelCatalogService
 
 from app.graph.state import WorkflowState
@@ -14,12 +15,15 @@ def _resolve_model_profile(
 ) -> ModelContextProfile:
     fallback_model_id = (model_id or "").strip() or "gpt-5.4"
     if model_catalog is None:
+        context_window = resolve_context_window(fallback_model_id)
+        max_input_tokens = int(context_window["max_input_tokens"])
+        max_output_tokens = int(context_window["max_output_tokens"])
         return ModelContextProfile(
             model_id=fallback_model_id,
             provider="openai_compatible",
-            max_input_tokens=128000,
-            max_output_tokens=8192,
-            reserved_output_tokens=2048,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            reserved_output_tokens=min(max_output_tokens, max_input_tokens),
         )
     profile = model_catalog.get_model_profile(fallback_model_id)
     capabilities = profile.get("capabilities") if isinstance(profile.get("capabilities"), dict) else {}
@@ -27,11 +31,11 @@ def _resolve_model_profile(
     return ModelContextProfile(
         model_id=str(profile.get("id") or fallback_model_id),
         provider=str(profile.get("provider") or "openai_compatible"),
-        max_input_tokens=int(context_window.get("max_input_tokens") or 128000),
-        max_output_tokens=int(context_window.get("max_output_tokens") or 8192),
+        max_input_tokens=int(context_window["max_input_tokens"]),
+        max_output_tokens=int(context_window["max_output_tokens"]),
         reserved_output_tokens=min(
-            int(context_window.get("max_output_tokens") or 2048),
-            int(context_window.get("max_input_tokens") or 128000),
+            int(context_window["max_output_tokens"]),
+            int(context_window["max_input_tokens"]),
         ),
         supports_runtime_cache=bool(
             (capabilities.get("cache") or {}).get("runtime_context_cache", True)

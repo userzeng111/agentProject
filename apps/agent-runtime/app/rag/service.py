@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import importlib
 import sqlite3
 import sys
 import threading
+import time
 from typing import Any, Protocol
 
+from app.observability import get_logger
+from app.observability.performance import log_performance
 from app.context.models import ReferenceMaterial
 from app.rag.config import RagConfig
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -146,7 +152,14 @@ class RagService:
         max_context_chars: int | None = None,
     ) -> RagSearchResult:
         normalized_query = query.strip()
+        query_hash = hashlib.sha256(normalized_query.encode("utf-8")).hexdigest()[:16] if normalized_query else ""
         if not self.config.enabled or not normalized_query:
+            log_performance(
+                logger,
+                "rag_search_skipped",
+                enabled=self.config.enabled,
+                query_chars=len(normalized_query),
+            )
             return RagSearchResult(
                 query=normalized_query,
                 hits=[],
@@ -155,9 +168,21 @@ class RagService:
                 error=None,
             )
 
+        backend_started = time.perf_counter()
         try:
             hits = self.search_backend.search(normalized_query, top_k or self.config.top_k)
         except Exception as exc:
+            duration_ms = (time.perf_counter() - backend_started) * 1000
+            log_performance(
+                logger,
+                "rag_search_failed",
+                level=30,
+                duration_ms=f"{duration_ms:.2f}",
+                query_chars=len(normalized_query),
+                query_hash=query_hash,
+                top_k=top_k or self.config.top_k,
+                error_type=type(exc).__name__,
+            )
             return RagSearchResult(
                 query=normalized_query,
                 hits=[],
@@ -165,9 +190,37 @@ class RagService:
                 selected_hits=[],
                 error=str(exc),
             )
+        backend_duration_ms = (time.perf_counter() - backend_started) * 1000
+        log_performance(
+            logger,
+            "rag_search_backend",
+            duration_ms=f"{backend_duration_ms:.2f}",
+            query_chars=len(normalized_query),
+            query_hash=query_hash,
+            top_k=top_k or self.config.top_k,
+            raw_hits=len(hits),
+        )
 
+        filter_started = time.perf_counter()
         hits = self._filter_and_dedup_hits(hits)
+        filter_duration_ms = (time.perf_counter() - filter_started) * 1000
+        log_performance(
+            logger,
+            "rag_search_filter",
+            duration_ms=f"{filter_duration_ms:.2f}",
+            filtered_hits=len(hits),
+        )
+        select_started = time.perf_counter()
         selected_hits = self._select_hits(hits, max_context_chars or self.config.max_context_chars)
+        select_duration_ms = (time.perf_counter() - select_started) * 1000
+        log_performance(
+            logger,
+            "rag_search_select",
+            duration_ms=f"{select_duration_ms:.2f}",
+            selected_hits=len(selected_hits),
+            selected_chars=sum(len(hit.content) for hit in selected_hits),
+            max_context_chars=max_context_chars or self.config.max_context_chars,
+        )
         return RagSearchResult(
             query=normalized_query,
             hits=hits,

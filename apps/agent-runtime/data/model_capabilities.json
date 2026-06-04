@@ -1,0 +1,19 @@
+{
+  "defaults": {
+    "max_input_tokens": 200000,
+    "max_output_tokens": 10000,
+    "recommended_prompt_budget": 140000,
+    "compression_trigger_tokens": 100000
+  },
+  "generation": {
+    "max_tokens": 10000
+  },
+  "models": {
+    "mimo-v2.5-pro": {
+      "max_input_tokens": 200000,
+      "max_output_tokens": 10000,
+      "recommended_prompt_budget": 140000,
+      "compression_trigger_tokens": 100000
+    }
+  }
+}

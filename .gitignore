@@ -89,6 +89,9 @@ DevtestDoc/
 # Claude Code temporary files
 tmpclaude-*-cwd
 data/
+!apps/agent-runtime/data/
+apps/agent-runtime/data/*
+!apps/agent-runtime/data/model_capabilities.json
 doc/
 *ply
 *.yaml

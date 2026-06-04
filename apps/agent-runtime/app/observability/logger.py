@@ -41,7 +41,12 @@ class _StructuredFormatter(logging.Formatter):
         if task_id:
             extra += f" task_id={task_id}"
 
-        return f"{self.formatTime(record)} [{record.levelname}] {record.name}{extra} {record.getMessage()}"
+        message = f"{self.formatTime(record)} [{record.levelname}] {record.name}{extra} {record.getMessage()}"
+        if record.exc_info:
+            message += "\n" + self.formatException(record.exc_info)
+        if record.stack_info:
+            message += "\n" + self.formatStack(record.stack_info)
+        return message
 
 
 def _ensure_log_dir():

@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from app.observability import get_logger
+from app.observability.performance import log_performance
 from app.rag.config import RagConfig
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -109,23 +113,73 @@ class NovelCorpusRebuildService:
 
     def rebuild(self) -> dict[str, Any]:
         started_at = time.perf_counter()
-        source_files = self._collect_source_files()
-        documents = self._build_documents(source_files)
-        build_result = self.builder.build(documents, self.config)
-        duration_ms = int((time.perf_counter() - started_at) * 1000)
-        result = {
-            "success": True,
-            "message": "小说语料索引重建完成。",
-            "scanned_files": len(source_files),
-            "indexed_documents": int(build_result.get("indexed_documents", len(documents))),
-            "output_dir": str(build_result.get("output_dir", self.config.library_dir)),
-            "duration_ms": duration_ms,
-            "finished_at": datetime.now(timezone.utc).isoformat(),
-            "sources": self._source_patterns(),
-            "warnings": [],
-        }
-        self._write_status(result)
-        return result
+        phase = "collect_sources"
+        try:
+            phase_started = time.perf_counter()
+            source_files = self._collect_source_files()
+            source_counts: dict[str, int] = {}
+            for source_type, _path in source_files:
+                source_counts[source_type] = source_counts.get(source_type, 0) + 1
+            log_performance(
+                logger,
+                "rag_rebuild_collect_sources",
+                duration_ms=f"{(time.perf_counter() - phase_started) * 1000:.2f}",
+                scanned_files=len(source_files),
+                source_counts=",".join(f"{key}:{value}" for key, value in sorted(source_counts.items())),
+            )
+
+            phase = "build_documents"
+            phase_started = time.perf_counter()
+            documents = self._build_documents(source_files)
+            log_performance(
+                logger,
+                "rag_rebuild_build_documents",
+                duration_ms=f"{(time.perf_counter() - phase_started) * 1000:.2f}",
+                document_count=len(documents),
+            )
+
+            phase = "index_builder"
+            phase_started = time.perf_counter()
+            build_result = self.builder.build(documents, self.config)
+            indexed_documents = int(build_result.get("indexed_documents", len(documents)))
+            log_performance(
+                logger,
+                "rag_rebuild_index_builder",
+                duration_ms=f"{(time.perf_counter() - phase_started) * 1000:.2f}",
+                indexed_documents=indexed_documents,
+            )
+
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
+            result = {
+                "success": True,
+                "message": "小说语料索引重建完成。",
+                "scanned_files": len(source_files),
+                "indexed_documents": indexed_documents,
+                "output_dir": str(build_result.get("output_dir", self.config.library_dir)),
+                "duration_ms": duration_ms,
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+                "sources": self._source_patterns(),
+                "warnings": [],
+            }
+            phase = "status_write"
+            phase_started = time.perf_counter()
+            self._write_status(result)
+            log_performance(
+                logger,
+                "rag_rebuild_status_write",
+                duration_ms=f"{(time.perf_counter() - phase_started) * 1000:.2f}",
+            )
+            return result
+        except Exception as exc:
+            log_performance(
+                logger,
+                "rag_rebuild_failed",
+                level=40,
+                phase=phase,
+                duration_ms=f"{(time.perf_counter() - started_at) * 1000:.2f}",
+                error_type=type(exc).__name__,
+            )
+            raise
 
     def _collect_source_files(self) -> list[tuple[str, Path]]:
         if not self.config.example_root.exists():

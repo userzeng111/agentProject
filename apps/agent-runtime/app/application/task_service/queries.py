@@ -9,6 +9,7 @@ from app.domain.models import (
     ArchiveTaskDetailResponse,
     ArchiveTaskListResponse,
     ArtifactItem,
+    ChapterPlan,
     DashboardResponse,
     DraftResult,
     ResultResponse,

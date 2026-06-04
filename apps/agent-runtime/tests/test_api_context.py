@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -47,6 +48,29 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["meta"]["default_model"], "gpt-5.4")
         self.assertIn("capabilities", payload["data"][0])
         self.assertIn("context_window", payload["data"][0]["capabilities"])
+
+    def test_protocol_settings_endpoint_returns_configured_default_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                LLM_API_KEY="",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_PROTOCOL="anthropic",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            app = FastAPI()
+            app.include_router(build_router(task_service, settings=settings), prefix="/api")
+            client = TestClient(app)
+
+            response = client.get("/api/settings/protocols")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["default_protocol"], "anthropic")
 
     def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
         response = self.client.post(
@@ -366,6 +390,10 @@ class ApiContextIntegrationTests(unittest.TestCase):
         payload = response.json()
         # queue_continue_task 立即返回 ready_for_batch，后台异步执行
         self.assertEqual(payload["status"], "ready_for_batch")
+        deadline = time.time() + 3
+        while task.id in self.task_service._active_threads and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertNotIn(task.id, self.task_service._active_threads)
 
     def test_recover_endpoint_restores_outline_review_from_history(self) -> None:
         task = self.task_service.create_task(
@@ -605,6 +633,41 @@ class ApiContextIntegrationTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(engine.gateway_client.calls[0]["model"], "glm-5.1")
             self.assertEqual(response.json()["model"], "glm-5.1")
+
+    def test_upload_asset_rejects_file_larger_than_configured_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                LLM_API_KEY="",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                UPLOAD_MAX_BYTES=4,
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+            task = task_service.create_task(
+                TaskCreateRequest(
+                    prompt="写一篇上传限制测试小说",
+                    creative_mode=CreativeMode.ORIGINAL,
+                    novel_size=NovelSize.SHORT,
+                    chapter_word_min=1800,
+                    model_id="gpt-5.4",
+                )
+            )
+
+            app = FastAPI()
+            app.include_router(build_router(task_service, settings=settings), prefix="/api")
+            client = TestClient(app)
+
+            response = client.post(
+                f"/api/tasks/{task.id}/assets",
+                files={"file": ("large.txt", b"12345", "text/plain")},
+            )
+
+            self.assertEqual(response.status_code, 413)
+            self.assertIn("文件过大", response.json()["detail"])
 
 
 if __name__ == "__main__":

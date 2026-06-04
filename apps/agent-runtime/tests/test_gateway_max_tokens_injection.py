@@ -14,21 +14,21 @@ class TestGatewayMaxTokensInjection(unittest.TestCase):
 
     def test_resolve_max_tokens_for_k26(self):
         client = self._client()
-        self.assertEqual(client._resolve_max_tokens("K2.6"), 32768)
+        self.assertEqual(client._resolve_max_tokens("K2.6"), 10000)
 
     def test_resolve_max_tokens_for_gpt54(self):
         client = self._client()
-        self.assertEqual(client._resolve_max_tokens("gpt-5.4"), 16000)
+        self.assertEqual(client._resolve_max_tokens("gpt-5.4"), 10000)
 
     def test_resolve_max_tokens_fallback_for_unknown(self):
         client = self._client()
-        self.assertEqual(client._resolve_max_tokens("unknown-model"), 4096)
+        self.assertEqual(client._resolve_max_tokens("unknown-model"), 10000)
 
     def test_inject_max_tokens_when_not_present(self):
         client = self._client()
         kwargs = {"stream": True}
         result = client._inject_max_tokens("K2.6", kwargs)
-        self.assertEqual(result["max_tokens"], 32768)
+        self.assertEqual(result["max_tokens"], 10000)
         # 原始 kwargs 不应被修改
         self.assertNotIn("max_tokens", kwargs)
 
