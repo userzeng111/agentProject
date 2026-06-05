@@ -246,7 +246,7 @@ class StoryEngine(BaseAgent):
                     "overall_score(int,0-100), summary(string)。\n\n"
                     "作品标题：{title}\n"
                     "章节计划：{chapter_plan}\n"
-                    "已完成正文：\n{full_text}\n\n"
+                    "已完成正文或压缩摘录：\n{full_text}\n\n"
                     "severity 可选值：critical / warning / info",
                 ),
             ]
@@ -257,15 +257,16 @@ class StoryEngine(BaseAgent):
                 ("system", "你是一个中文小说修订专家，擅长根据审核意见精准修复小说中的问题。你必须输出严格 JSON，不要输出额外解释。"),
                 (
                     "human",
-                    "请根据以下【审核意见】修复小说中的问题，返回修复后的全部章节内容。\n\n"
+                    "请根据以下【审核意见】修复小说中的问题，优先只返回需要改动的章节补丁。\n\n"
                     "【审核意见】（这是主要修复依据，必须逐条处理）：\n{user_comment}\n\n"
                     "【验证报告问题】（辅助参考）：\n{issues_json}\n\n"
                     "需要修复的章节：\n{chapters_json}\n\n"
-                    "请严格返回 JSON 数组，每个元素为修复后的章节：\n"
-                    "{{number:int,title:string,summary:string,content:string}}。\n"
+                    "请严格返回 JSON 对象，结构为：\n"
+                    "{{\"patches\":[{{number:int,title?:string,summary?:string,content?:string}}]}}。\n"
+                    "如果确实需要重写全部章节，也可以返回 JSON 数组，每个元素为修复后的章节。\n"
                     "模式：{mode}\n作品标题：{title}\n一句话梗概：{logline}\n\n"
                     "【重要要求】：\n"
-                    "1. 必须返回全部章节，包括未修改的章节（保持原样），不得遗漏任何章节。\n"
+                    "1. 未修改章节不要重复输出，系统会自动复用原文。\n"
                     "2. 优先修复【审核意见】中标记为严重/高优先级的问题。\n"
                     "3. 修复后的内容必须与上下文连贯，不得破坏已有的叙事逻辑。",
                 ),
@@ -897,10 +898,7 @@ class StoryEngine(BaseAgent):
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
         title = story_plan.get("working_title", "")
         chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
-        full_text = "\n\n".join(
-            f"## 第{ch['number']}章 {ch['title']}\n{ch.get('content', '')}"
-            for ch in completed_chapters
-        )
+        full_text = self._verification_full_text(completed_chapters)
 
         request_messages = self._render_skill_prompt(
             "full-text-verifier",
@@ -966,23 +964,99 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
         )
-        items = payload if isinstance(payload, list) else [payload]
-        fixed = [dict(ch) for ch in items]
+        return self._merge_issue_fix_payload(completed_chapters, payload)
 
-        # 安全检查：如果 LLM 返回的章节数少于原始章节，用原始章节补全
-        if len(fixed) < len(completed_chapters):
-            logger.warning(
-                "issue-fixer 返回 %d 章，原始 %d 章，用原始章节补全缺失部分",
-                len(fixed), len(completed_chapters),
+    def _verification_full_text(self, completed_chapters: list[dict[str, Any]]) -> str:
+        if bool(getattr(self.settings, "verification_include_full_text", False)):
+            return "\n\n".join(
+                f"## 第{ch['number']}章 {ch['title']}\n{ch.get('content', '')}"
+                for ch in completed_chapters
             )
-            fixed_numbers = {ch.get("number") for ch in fixed}
-            for orig_ch in completed_chapters:
-                if orig_ch.get("number") not in fixed_numbers:
-                    fixed.append(dict(orig_ch))
-            # 按 number 排序
-            fixed.sort(key=lambda ch: ch.get("number", 0))
 
-        return fixed
+        excerpt_chars = self._positive_int(
+            getattr(self.settings, "verification_excerpt_chars_per_chapter", 1600),
+            default=1600,
+        )
+        blocks: list[str] = []
+        for chapter in completed_chapters:
+            number = chapter.get("number", "")
+            title = chapter.get("title", "")
+            summary = str(chapter.get("summary") or "").strip() or "无"
+            content = str(chapter.get("content") or "").strip()
+            excerpt = self._head_tail_excerpt(content, excerpt_chars)
+            blocks.append(
+                f"## 第{number}章 {title}\n"
+                f"章节摘要：{summary}\n"
+                f"正文摘录：\n{excerpt}"
+            )
+        return "\n\n".join(blocks)
+
+    def _head_tail_excerpt(self, text: str, max_chars: int) -> str:
+        content = text.strip()
+        if not content:
+            return "无"
+        if len(content) <= max_chars:
+            return content
+        edge_chars = max(max_chars // 2, 1)
+        head = content[:edge_chars].rstrip()
+        tail = content[-edge_chars:].lstrip()
+        omitted = len(content) - len(head) - len(tail)
+        return f"{head}\n...[中间省略 {omitted} 字]...\n{tail}"
+
+    def _merge_issue_fix_payload(
+        self,
+        completed_chapters: list[dict[str, Any]],
+        payload: Any,
+    ) -> list[dict[str, Any]]:
+        patch_items = self._issue_fix_patch_items(payload)
+        if not patch_items:
+            logger.warning("issue-fixer 未返回可用章节补丁，复用原始章节。")
+            return [dict(chapter) for chapter in completed_chapters]
+
+        fixed_by_number: dict[int, dict[str, Any]] = {}
+        order: list[int] = []
+        for chapter in completed_chapters:
+            chapter_number = self._safe_chapter_number(chapter.get("number"))
+            if chapter_number is None:
+                continue
+            fixed_by_number[chapter_number] = dict(chapter)
+            order.append(chapter_number)
+
+        for item in patch_items:
+            if not isinstance(item, dict):
+                continue
+            chapter_number = self._safe_chapter_number(item.get("number"))
+            if chapter_number is None:
+                continue
+            merged = dict(fixed_by_number.get(chapter_number, {"number": chapter_number}))
+            for field_name in ("title", "summary", "content"):
+                if field_name in item and item.get(field_name) is not None:
+                    merged[field_name] = item.get(field_name)
+            fixed_by_number[chapter_number] = merged
+            if chapter_number not in order:
+                order.append(chapter_number)
+
+        return [fixed_by_number[number] for number in sorted(order)]
+
+    def _issue_fix_patch_items(self, payload: Any) -> list[Any]:
+        if isinstance(payload, dict):
+            for key in ("patches", "chapters", "fixed_chapters"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return value
+            if payload.get("number") is not None:
+                return [payload]
+            return []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    @staticmethod
+    def _safe_chapter_number(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _prompt_to_text(self, prompt_value) -> str:
         return "\n".join(str(message.content) for message in prompt_value.messages)
@@ -1481,9 +1555,9 @@ class StoryEngine(BaseAgent):
 
     def _chapter_parallel_min_batch_size(self) -> int:
         try:
-            configured = int(getattr(self.settings, "chapter_parallel_min_batch_size", 3) or 3)
+            configured = int(getattr(self.settings, "chapter_parallel_min_batch_size", 2) or 2)
         except (TypeError, ValueError):
-            configured = 3
+            configured = 2
         return max(configured, 2)
 
     def _should_parallel_chapter_draft(self, spec: dict[str, Any], pair_plans: list[dict[str, Any]]) -> bool:

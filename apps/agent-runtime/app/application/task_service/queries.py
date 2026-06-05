@@ -179,6 +179,7 @@ class TaskServiceQueriesMixin:
             request_preview=self._request_preview(task),
             context_status=self._load_context_status(task.id),
             response_cache_status=self._load_response_cache_status(task),
+            llm_report=self._build_llm_report(task),
             novel_progress=self._novel_progress(task),
             sources=task.sources,
             supervisor_plan=task.supervisor_plan,
@@ -814,6 +815,115 @@ class TaskServiceQueriesMixin:
         if payload.get("exchange_label"):
             status["exchange_label"] = payload.get("exchange_label")
         return status
+
+    def _build_llm_report(self, task: TaskRecord) -> dict[str, Any]:
+        token_fields = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens")
+        usage_total = {field: 0 for field in token_fields}
+        by_model: dict[str, dict[str, Any]] = {}
+        by_stage: dict[str, dict[str, Any]] = {}
+        latest_usage: dict[str, Any] | None = None
+        latest_exchange: dict[str, Any] | None = None
+        usage_count = 0
+        exchange_count = 0
+        cache_hit_count = 0
+
+        for event in task.events:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if event.event_type == "model.usage":
+                usage = self._normalize_usage_tokens(payload)
+                model = str(payload.get("model") or task.model_id or "unknown")
+                stage = event.stage or "unknown"
+                for field in token_fields:
+                    usage_total[field] += usage[field]
+                self._add_llm_usage_bucket(by_model, model, usage)
+                self._add_llm_usage_bucket(by_stage, stage, usage)
+                usage_count += 1
+                latest_usage = {
+                    "stage": stage,
+                    "unit_id": event.unit_id or "",
+                    "model": model,
+                    "finish_reason": payload.get("finish_reason"),
+                    **usage,
+                }
+            elif event.event_type in {"context.history.updated", "cache.hit"}:
+                exchange_count += 1
+                cache_hit = event.event_type == "cache.hit" or bool(payload.get("cache_hit"))
+                if cache_hit:
+                    cache_hit_count += 1
+                latest_exchange = {
+                    "stage": event.stage,
+                    "event_type": event.event_type,
+                    "unit_id": event.unit_id or "",
+                    "exchange_label": payload.get("exchange_label") or event.unit_id or "",
+                    "model": payload.get("model") or task.model_id or "",
+                    "cache_hit": cache_hit,
+                }
+                if payload.get("cache_key"):
+                    latest_exchange["cache_key"] = payload.get("cache_key")
+                if isinstance(payload.get("history_count"), int):
+                    latest_exchange["history_count"] = payload.get("history_count")
+                if isinstance(payload.get("parse_duration_ms"), (int, float)):
+                    latest_exchange["parse_duration_ms"] = payload.get("parse_duration_ms")
+
+        if usage_count == 0 and exchange_count == 0:
+            return {}
+        return {
+            "usage_total": usage_total,
+            "usage_count": usage_count,
+            "by_model": by_model,
+            "by_stage": by_stage,
+            "exchange_count": exchange_count,
+            "cache_hit_count": cache_hit_count,
+            "latest_exchange": latest_exchange or {},
+            "latest_usage": latest_usage or {},
+        }
+
+    def _normalize_usage_tokens(self, payload: dict[str, Any]) -> dict[str, int]:
+        input_tokens = self._safe_non_negative_int(payload.get("input_tokens"), payload.get("prompt_tokens"))
+        output_tokens = self._safe_non_negative_int(payload.get("output_tokens"), payload.get("completion_tokens"))
+        total_tokens = self._safe_non_negative_int(payload.get("total_tokens"))
+        if total_tokens == 0:
+            total_tokens = input_tokens + output_tokens
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "cached_tokens": self._safe_non_negative_int(payload.get("cached_tokens")),
+            "cache_read_input_tokens": self._safe_non_negative_int(payload.get("cache_read_input_tokens")),
+        }
+
+    def _add_llm_usage_bucket(
+        self,
+        buckets: dict[str, dict[str, Any]],
+        key: str,
+        usage: dict[str, int],
+    ) -> None:
+        bucket = buckets.setdefault(
+            key,
+            {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cached_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "usage_count": 0,
+            },
+        )
+        for field in ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens"):
+            bucket[field] += usage[field]
+        bucket["usage_count"] += 1
+
+    @staticmethod
+    def _safe_non_negative_int(*values: Any) -> int:
+        for value in values:
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            return max(parsed, 0)
+        return 0
 
     def _load_message_history(
         self,

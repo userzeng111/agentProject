@@ -837,6 +837,51 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(len(gateway.calls), 3)
             self.assertGreater(gateway.max_active_calls, 1)
 
+    def test_generate_chapter_pair_parallelizes_default_two_chapter_first_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                    CHAPTER_PARALLEL_DRAFT_ENABLED=True,
+                    CHAPTER_PARALLEL_MAX_WORKERS=4,
+                )
+            )
+            gateway = ConcurrentChapterGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "玄幻大陆废材逆袭",
+                    "genre": "玄幻",
+                    "style": "热血逆袭",
+                    "chapter_word_min": 2600,
+                    "chapter_word_max": 3380,
+                    "model_id": "K2.6",
+                },
+                story_plan={
+                    "working_title": "玄脉逆天",
+                    "logline": "废材少年重开玄脉。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "开篇"},
+                        {"number": 2, "title": "第二章", "goal": "遭遇"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="K2.6",
+                requested_batch_size=2,
+            )
+
+            self.assertEqual([chapter.number for chapter in drafts], [1, 2])
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertGreater(gateway.max_active_calls, 1)
+
     def test_chapter_parallel_worker_limit_caps_at_six(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -869,7 +914,7 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("尾部关键设定", reference_excerpt)
             self.assertGreater(len(reference_excerpt), 80)
 
-    def test_verify_full_story_sends_complete_text_without_silent_eight_thousand_char_truncation(self) -> None:
+    def test_verify_full_story_uses_compact_excerpt_without_losing_tail_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
                 Settings(
@@ -888,14 +933,18 @@ class StoryEngineContextTests(unittest.TestCase):
                 ]
             )
             engine.gateway_client = fake_gateway
+            head_marker = "开头关键设定"
+            middle_marker = "完整正文中段不应进入验证请求"
             tail_marker = "第九千字后的关键伏笔"
+            long_content = head_marker + ("甲" * 4200) + middle_marker + ("乙" * 4200) + tail_marker
 
             engine.verify_full_story(
                 completed_chapters=[
                     {
                         "number": 1,
                         "title": "第一章",
-                        "content": ("甲" * 8500) + tail_marker,
+                        "summary": "第一章摘要包含关键人物关系",
+                        "content": long_content,
                     }
                 ],
                 story_plan={
@@ -907,7 +956,65 @@ class StoryEngineContextTests(unittest.TestCase):
             )
 
             rendered_prompt = fake_gateway.calls[0]["messages"][-1]["content"]
+            self.assertIn("第一章摘要包含关键人物关系", rendered_prompt)
+            self.assertIn(head_marker, rendered_prompt)
             self.assertIn(tail_marker, rendered_prompt)
+            self.assertNotIn(middle_marker, rendered_prompt)
+            self.assertLess(len(rendered_prompt), len(long_content))
+
+    def test_fix_verified_issues_accepts_patch_payload_and_keeps_unchanged_chapters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = FakeGatewayClient(
+                [
+                    {
+                        "patches": [
+                            {
+                                "number": 2,
+                                "title": "第二章",
+                                "summary": "第二章修复后摘要",
+                                "content": "第二章修复后正文",
+                            }
+                        ]
+                    }
+                ]
+            )
+            original_chapters = [
+                {"number": 1, "title": "第一章", "summary": "第一章摘要", "content": "第一章原文"},
+                {"number": 2, "title": "第二章", "summary": "第二章摘要", "content": "第二章原文"},
+            ]
+
+            fixed = engine.fix_verified_issues(
+                completed_chapters=original_chapters,
+                verification_report={
+                    "issues": [
+                        {
+                            "severity": "warning",
+                            "location": "第二章",
+                            "description": "人物动机前后矛盾",
+                            "suggestion": "只修复第二章相关段落",
+                        }
+                    ]
+                },
+                review_comment="只修复第二章的人物动机。",
+                story_plan={
+                    "working_title": "补丁修复",
+                    "logline": "测试修复补丁。",
+                },
+                spec={"mode": "short_story", "model_id": "gpt-5.4"},
+                model="gpt-5.4",
+            )
+
+            self.assertEqual(len(fixed), 2)
+            self.assertEqual(fixed[0], original_chapters[0])
+            self.assertEqual(fixed[1]["summary"], "第二章修复后摘要")
+            self.assertEqual(fixed[1]["content"], "第二章修复后正文")
 
     def test_verify_full_story_uses_independent_verification_max_tokens_and_tight_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

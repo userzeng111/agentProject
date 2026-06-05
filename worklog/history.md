@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：LLM 请求次数与 Agent 生成速度分析
+  路径：`worklog/archive/backend-performance/20260604-02-LLM请求次数与Agent生成速度分析.md`
+  摘要：完成 LLM 请求次数、opencode 短请求策略、真实 1 章耗时样本与首批性能优化实现分析。
+
 - 标题：全流程 Agent 创作耗时测试
   路径：`worklog/archive/backend-performance/20260604-01-全流程Agent创作耗时测试.md`
   摘要：多轮真实全流程测试定位并优化 LLM、验证 repair、TaskStore 写放大和重复正文生成等耗时问题。

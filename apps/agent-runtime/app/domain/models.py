@@ -512,6 +512,7 @@ class WorkspaceResponse(BaseModel):
     request_preview: dict[str, Any] = Field(default_factory=dict)
     context_status: dict[str, Any] = Field(default_factory=dict)
     response_cache_status: dict[str, Any] = Field(default_factory=dict)
+    llm_report: dict[str, Any] = Field(default_factory=dict)
     novel_progress: dict[str, Any] = Field(default_factory=dict)
     sources: list[SourceAsset] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None

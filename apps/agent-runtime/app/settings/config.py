@@ -70,6 +70,14 @@ class Settings(BaseSettings):
         default=4096,
         validation_alias=AliasChoices("VERIFICATION_MAX_TOKENS"),
     )
+    verification_include_full_text: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("VERIFICATION_INCLUDE_FULL_TEXT"),
+    )
+    verification_excerpt_chars_per_chapter: int = Field(
+        default=1600,
+        validation_alias=AliasChoices("VERIFICATION_EXCERPT_CHARS_PER_CHAPTER"),
+    )
     # 章节批次并行草稿配置。硬上限在 StoryEngine 内再次限制，避免配置过大压满本机或上游网关。
     chapter_parallel_draft_enabled: bool = Field(
         default=True,
@@ -80,7 +88,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("CHAPTER_PARALLEL_MAX_WORKERS"),
     )
     chapter_parallel_min_batch_size: int = Field(
-        default=3,
+        default=2,
         validation_alias=AliasChoices("CHAPTER_PARALLEL_MIN_BATCH_SIZE"),
     )
     # 动态 Agent 审核模式（True=使用动态Agent编排审核，False=使用旧硬编码审核）

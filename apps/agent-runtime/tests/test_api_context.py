@@ -131,6 +131,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertTrue(payload["context_status"]["compression_applied"])
         self.assertEqual(payload["context_status"]["cache_scope"], "runtime_context")
         self.assertEqual(payload["response_cache_status"], {})
+        self.assertEqual(payload["llm_report"], {})
         self.assertIn("supervisor_plan", payload)
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
@@ -295,6 +296,84 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertTrue(payload["response_cache_status"]["cache_hit"])
         self.assertEqual(payload["response_cache_status"]["cache_scope"], "response_cache")
         self.assertEqual(payload["response_cache_status"]["history_count"], 3)
+
+    def test_workspace_endpoint_returns_llm_report_from_task_events(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="planning",
+            message="模型调用用量已更新。",
+            event_type="model.usage",
+            unit_id="outline",
+            payload={
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+                "cached_tokens": 30,
+                "cache_read_input_tokens": 20,
+                "model": "gpt-5.4",
+                "finish_reason": "stop",
+            },
+        )
+        self.store.append_event(
+            task.id,
+            stage="planning",
+            message="planning 阶段已记录模型上下文链：outline",
+            event_type="context.history.updated",
+            unit_id="outline",
+            payload={
+                "cache_hit": False,
+                "model": "gpt-5.4",
+                "history_count": 2,
+                "exchange_label": "outline",
+                "parse_duration_ms": 12.5,
+            },
+        )
+        self.store.append_event(
+            task.id,
+            stage="drafting",
+            message="drafting 阶段已命中模型响应缓存：chapter-01",
+            event_type="cache.hit",
+            unit_id="chapter-01",
+            payload={
+                "cache_hit": True,
+                "cache_key": "response:chapter-01",
+                "model": "K2.6",
+                "history_count": 4,
+                "exchange_label": "chapter-01",
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(
+            report["usage_total"],
+            {
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+                "cached_tokens": 30,
+                "cache_read_input_tokens": 20,
+            },
+        )
+        self.assertEqual(report["by_model"]["gpt-5.4"]["total_tokens"], 140)
+        self.assertEqual(report["by_model"]["gpt-5.4"]["usage_count"], 1)
+        self.assertEqual(report["by_stage"]["planning"]["total_tokens"], 140)
+        self.assertEqual(report["exchange_count"], 2)
+        self.assertEqual(report["cache_hit_count"], 1)
+        self.assertEqual(report["latest_exchange"]["exchange_label"], "chapter-01")
+        self.assertTrue(report["latest_exchange"]["cache_hit"])
+        self.assertEqual(report["latest_usage"]["model"], "gpt-5.4")
 
     def test_review_endpoint_returns_outline_revision_count(self) -> None:
         task = self.task_service.create_task(
