@@ -1,10 +1,14 @@
 import unittest
+import json
 from datetime import datetime, timezone
 
+from app.agents.dynamic.factory import AgentFactory
 from app.agents.dynamic.bridge import DynamicReviewBridge
 from app.agents.dynamic.master import MasterAgent
-from app.agents.dynamic.models import OrchestrationResult, TaskExecutionResult
+from app.agents.dynamic.orchestrator import TaskOrchestrator
+from app.agents.dynamic.models import AgentBlueprint, OrchestrationResult, TaskExecutionResult
 from app.domain.models import AutoReviewPolicy
+from app.llm.gateway_client import StreamChunk
 
 
 def _utc_now() -> datetime:
@@ -83,6 +87,129 @@ class DynamicReviewBridgeTraceTests(unittest.TestCase):
         self.assertEqual(synthesis.parent_agent_id, "dynamic-review-main")
         self.assertEqual(synthesis.created_by, "main_agent")
         self.assertEqual(synthesis.agent_name, "综合裁决专家")
+
+
+class AgentFactoryPromptRenderingTests(unittest.TestCase):
+    def test_render_prompt_replaces_known_variables_without_formatting_json_examples(self) -> None:
+        template = """
+请审核正文：
+{current_chapters_text}
+
+请按如下 JSON 结构输出：
+{"score": 80, "total_score": 80, "issues": [{"issue_location": "第1章", "description": "示例"}]}
+
+综合其他 Agent：
+{{sub_agents_json}}
+"""
+
+        rendered = AgentFactory.render_prompt(
+            template,
+            {
+                "current_chapters_text": "第1章正文",
+                "sub_agents_json": "[{\"agent_name\": \"结构分析师\"}]",
+            },
+        )
+
+        self.assertIn("第1章正文", rendered)
+        self.assertIn('[{"agent_name": "结构分析师"}]', rendered)
+        self.assertIn('"score": 80', rendered)
+        self.assertIn('"total_score": 80', rendered)
+        self.assertIn('"issue_location": "第1章"', rendered)
+
+    def test_execute_agent_handles_json_schema_in_prompt_template(self) -> None:
+        class FakeGateway:
+            def __init__(self) -> None:
+                self.messages = None
+
+            def _strip_markdown_fences(self, raw):
+                return raw
+
+            def _extract_first_json_value(self, raw):
+                return json.loads(raw)
+
+            def complete_stream_sync(self, messages, model, **kwargs):
+                self.messages = messages
+                yield StreamChunk(
+                    content=(
+                        '{"score": 88, "issues": [], "warnings": [], '
+                        '"highlights": ["结构稳定"], "reasoning": "ok"}'
+                    ),
+                    model=model,
+                    finish_reason="stop",
+                )
+
+        gateway = FakeGateway()
+        factory = AgentFactory(gateway_client=gateway, default_model="test-model")
+        agent = factory.create(
+            AgentBlueprint(
+                agent_name="章节质量审核员",
+                role="chapter_review",
+                dimension="章节质量",
+                weight=1.0,
+                system_prompt="你是章节质量审核员",
+                user_prompt_template=(
+                    "正文：{current_chapters_text}\n"
+                    "输出示例："
+                    '{"score": 80, "issues": [{"issue_location": "第1章"}]}\n'
+                    "综合结果：{{sub_agents_json}}"
+                ),
+                output_format="json",
+            )
+        )
+
+        result = factory.execute_agent(
+            agent,
+            {
+                "current_chapters_text": "第1章正文",
+                "sub_agents_json": "[{\"score\": 90}]",
+            },
+        )
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.score, 88)
+        self.assertEqual(result.highlights, ["结构稳定"])
+        self.assertIsNotNone(gateway.messages)
+        user_prompt = gateway.messages[1]["content"]
+        self.assertIn("第1章正文", user_prompt)
+        self.assertIn('[{"score": 90}]', user_prompt)
+        self.assertIn('"issue_location": "第1章"', user_prompt)
+
+    def test_execute_agent_accepts_dimension_specific_score_field(self) -> None:
+        class FakeGateway:
+            def _strip_markdown_fences(self, raw):
+                return raw
+
+            def _extract_first_json_value(self, raw):
+                return json.loads(raw)
+
+            def complete_stream_sync(self, messages, model, **kwargs):
+                yield StreamChunk(
+                    content=(
+                        '{"atmosphere_score": 91, "issues": [], "warnings": [], '
+                        '"highlights": ["氛围稳定"], "reasoning": "悬疑氛围评分明确"}'
+                    ),
+                    model=model,
+                    finish_reason="stop",
+                )
+
+        factory = AgentFactory(gateway_client=FakeGateway(), default_model="test-model")
+        agent = factory.create(
+            AgentBlueprint(
+                agent_name="悬疑氛围评估师",
+                role="atmosphere",
+                dimension="悬疑氛围",
+                weight=1.0,
+                system_prompt="你是悬疑氛围评估师",
+                user_prompt_template="请审核：{current_chapters_text}",
+                output_format="json",
+            )
+        )
+
+        result = factory.execute_agent(agent, {"current_chapters_text": "第1章正文"})
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.score, 91)
+        self.assertEqual(result.highlights, ["氛围稳定"])
 
 
 class MasterAgentBlueprintTests(unittest.TestCase):
@@ -170,6 +297,45 @@ class MasterAgentBlueprintTests(unittest.TestCase):
         self.assertEqual(synthesis.created_by, "main_agent")
         self.assertEqual(len(synthesis.dependencies), 2)
         self.assertEqual(len({dep for dep in synthesis.dependencies}), 2)
+
+
+class TaskOrchestratorSynthesisScoreTests(unittest.TestCase):
+    def test_backfill_synthesis_score_from_overall_score_when_missing(self) -> None:
+        synthesis = TaskExecutionResult(
+            agent_id="agent-synthesis",
+            agent_name="综合决策专家",
+            role="synthesis",
+            dimension="综合决策",
+            execution_kind="synthesis",
+            score=0.0,
+            raw_response={"final_recommendation": "通过"},
+            started_at=_utc_now(),
+            completed_at=_utc_now(),
+        )
+
+        TaskOrchestrator._backfill_synthesis_score(synthesis, 87.0)
+
+        self.assertEqual(synthesis.score, 87.0)
+        self.assertEqual(synthesis.raw_response["score"], 87.0)
+        self.assertEqual(synthesis.raw_response["overall_score"], 87.0)
+
+    def test_backfill_synthesis_score_keeps_existing_explicit_score(self) -> None:
+        synthesis = TaskExecutionResult(
+            agent_id="agent-synthesis",
+            agent_name="综合决策专家",
+            role="synthesis",
+            dimension="综合决策",
+            execution_kind="synthesis",
+            score=92.0,
+            raw_response={"score": 92.0},
+            started_at=_utc_now(),
+            completed_at=_utc_now(),
+        )
+
+        TaskOrchestrator._backfill_synthesis_score(synthesis, 87.0)
+
+        self.assertEqual(synthesis.score, 92.0)
+        self.assertEqual(synthesis.raw_response["score"], 92.0)
 
 
 if __name__ == "__main__":

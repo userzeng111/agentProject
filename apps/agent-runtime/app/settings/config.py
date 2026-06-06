@@ -51,7 +51,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AUTO_REVIEW_MODEL_MODE"),
     )
     auto_review_max_workers: int = Field(
-        default=2,
+        default=6,
         validation_alias=AliasChoices("AUTO_REVIEW_MAX_WORKERS"),
     )
     provider_prompt_cache: bool = Field(
@@ -69,6 +69,18 @@ class Settings(BaseSettings):
     verification_max_tokens: int = Field(
         default=4096,
         validation_alias=AliasChoices("VERIFICATION_MAX_TOKENS"),
+    )
+    verification_short_max_tokens: int = Field(
+        default=2400,
+        validation_alias=AliasChoices("VERIFICATION_SHORT_MAX_TOKENS"),
+    )
+    verification_short_chapter_threshold: int = Field(
+        default=1,
+        validation_alias=AliasChoices("VERIFICATION_SHORT_CHAPTER_THRESHOLD"),
+    )
+    verification_reasoning_effort: str = Field(
+        default="low",
+        validation_alias=AliasChoices("VERIFICATION_REASONING_EFFORT"),
     )
     verification_include_full_text: bool = Field(
         default=False,

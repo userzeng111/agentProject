@@ -146,6 +146,7 @@ class TaskOrchestrator:
 
             # 计算整体评分
             overall_score = self._calculate_overall_score(results)
+            self._backfill_synthesis_score(synthesis_result, overall_score)
 
             succeeded = sum(1 for r in results if r.is_success)
             failed = sum(1 for r in results if not r.is_success)
@@ -327,6 +328,22 @@ class TaskOrchestrator:
 
         weighted_sum = sum(r.score * r.weight for r in analysis_results)
         return min(100.0, weighted_sum / total_weight)
+
+    @staticmethod
+    def _backfill_synthesis_score(
+        synthesis_result: TaskExecutionResult | None,
+        overall_score: float,
+    ) -> None:
+        """当综合 Agent 缺少显式评分时，用最终整体评分回填综合结果。"""
+        if synthesis_result is None:
+            return
+        if synthesis_result.score > 0 or overall_score <= 0:
+            return
+
+        synthesis_result.score = overall_score
+        if isinstance(synthesis_result.raw_response, dict):
+            synthesis_result.raw_response.setdefault("score", overall_score)
+            synthesis_result.raw_response.setdefault("overall_score", overall_score)
 
     @staticmethod
     def _error_result(reason: str, started_at: datetime) -> OrchestrationResult:

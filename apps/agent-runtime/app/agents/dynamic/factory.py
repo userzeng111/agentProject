@@ -26,6 +26,23 @@ logger = get_logger(__name__)
 class AgentFactory:
     """根据 Blueprint 创建 DynamicAgent 实例。"""
 
+    _STANDARD_SCORE_KEYS = (
+        "score",
+        "total_score",
+        "overall_score",
+        "weighted_score",
+        "final_score",
+        "synthesis_score",
+    )
+    _IGNORED_DYNAMIC_SCORE_KEYS = {
+        "max_score",
+        "min_score",
+        "threshold_score",
+        "pass_score",
+        "passing_score",
+        "target_score",
+    }
+
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
@@ -61,17 +78,55 @@ class AgentFactory:
         variables: dict[str, Any],
     ) -> str:
         """渲染 prompt 模板，安全替换变量。"""
+        safe_vars = {
+            str(key): "" if value is None else str(value)
+            for key, value in variables.items()
+        }
+        placeholder_re = re.compile(
+            r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}"
+            r"|(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(?!\})"
+            r"|\{\{|\}\}"
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            name = match.group(1) or match.group(2)
+            if name is not None:
+                # 缺少变量时沿用旧语义：替换为空字符串。
+                return safe_vars.get(name, "")
+            return "{" if match.group(0) == "{{" else "}"
+
+        return placeholder_re.sub(replace, template)
+
+    @classmethod
+    def _extract_score(cls, response: dict[str, Any]) -> tuple[float, str | None]:
+        """从动态 Agent JSON 响应中提取评分字段。"""
+        for score_key in cls._STANDARD_SCORE_KEYS:
+            score = cls._coerce_score(response.get(score_key))
+            if score is not None:
+                return score, score_key
+
+        for key, value in response.items():
+            score_key = str(key)
+            normalized_key = score_key.lower()
+            if normalized_key in cls._IGNORED_DYNAMIC_SCORE_KEYS:
+                continue
+            if not normalized_key.endswith("_score"):
+                continue
+            score = cls._coerce_score(value)
+            if score is not None:
+                return score, score_key
+
+        return 0.0, None
+
+    @staticmethod
+    def _coerce_score(value: Any) -> float | None:
+        """将评分值转为 float；无法转换时返回 None。"""
+        if value is None:
+            return None
         try:
-            # 只替换模板中存在的变量，忽略多余变量
-            return template.format(**{
-                k: v for k, v in variables.items()
-                if f"{{{k}}}" in template
-            })
-        except KeyError:
-            # 缺少变量时用空字符串替代
-            used_vars = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template))
-            safe_vars = {k: variables.get(k, "") for k in used_vars}
-            return template.format(**safe_vars)
+            return float(value)
+        except (ValueError, TypeError):
+            return None
 
     def execute_agent(
         self,
@@ -133,24 +188,24 @@ class AgentFactory:
             agent.status = DynamicAgentStatus.COMPLETED
             agent.completed_at = completed_at
 
-            # 兼容多种评分字段名：score / total_score / overall_score / weighted_score / final_score / synthesis_score
-            score = 0.0
-            for score_key in ("score", "total_score", "overall_score", "weighted_score", "final_score", "synthesis_score"):
-                if score_key in response and response[score_key] is not None:
-                    try:
-                        score = float(response[score_key])
-                        break
-                    except (ValueError, TypeError):
-                        pass
+            score, score_key = self._extract_score(response)
+            if score_key and score_key not in self._STANDARD_SCORE_KEYS:
+                logger.warning(
+                    "Agent %s 使用兼容评分字段 %s=%.1f",
+                    bp.agent_name,
+                    score_key,
+                    score,
+                )
 
             # 评分缺失时记录警告并尝试从 reasoning 中 fallback 提取
-            if score == 0.0 and bp.output_format == "json":
+            if score_key is None and bp.output_format == "json":
                 reasoning_text = str(response.get("reasoning", ""))
                 # 尝试从 reasoning 中提取 "XX分" 或 "评分：XX" 之类的数值
                 m = re.search(r"(?:评分|得分|分数)[:：\s]*(\d+(?:\.\d+)?)", reasoning_text)
                 if m:
                     try:
                         score = float(m.group(1))
+                        score_key = "reasoning"
                         logger.warning(
                             "Agent %s 的 JSON 中缺少 score 字段，从 reasoning 中 fallback 提取到 %.1f",
                             bp.agent_name, score,

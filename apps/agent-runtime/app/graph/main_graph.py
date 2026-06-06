@@ -108,11 +108,11 @@ def build_default_callbacks(
     active_model_catalog = model_catalog
     auto_review_manager: AutoReviewManager | None = None
     dynamic_review_bridge: Any | None = None
-    auto_review_max_workers = 2
+    auto_review_max_workers = 6
     try:
         from app.settings.config import get_settings
         _settings = get_settings()
-        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 2) or 2)
+        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 6) or 6)
         auto_review_manager = AutoReviewManager(
             gateway_client=getattr(engine, "gateway_client", None),
             max_workers=auto_review_max_workers,
@@ -286,11 +286,11 @@ def build_graph(
     auto_review_manager: AutoReviewManager | None = None
     # 动态 Agent 审核桥接层（与旧 AutoReviewManager 并行，通过配置切换）
     dynamic_review_bridge: Any | None = None
-    auto_review_max_workers = 2
+    auto_review_max_workers = 6
     try:
         from app.settings.config import get_settings
         _settings = get_settings()
-        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 2) or 2)
+        auto_review_max_workers = int(getattr(_settings, "auto_review_max_workers", 6) or 6)
         auto_review_manager = AutoReviewManager(
             gateway_client=getattr(engine, "gateway_client", None),
             max_workers=auto_review_max_workers,

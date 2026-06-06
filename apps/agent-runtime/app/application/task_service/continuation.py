@@ -274,13 +274,13 @@ class TaskServiceContinuationMixin:
                             bridge = DynamicReviewBridge(
                                 gateway_client=gateway_client,
                                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
-                                max_workers=getattr(_settings, "auto_review_max_workers", 2),
+                                max_workers=getattr(_settings, "auto_review_max_workers", 6),
                             )
                             decision = bridge.review(review, policy)
                         else:
                             manager = AutoReviewManager(
                                 gateway_client=gateway_client,
-                                max_workers=getattr(_settings, "auto_review_max_workers", 2),
+                                max_workers=getattr(_settings, "auto_review_max_workers", 6),
                             )
                             decision = manager.review(review, policy)
 

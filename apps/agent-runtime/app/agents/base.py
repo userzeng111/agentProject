@@ -100,6 +100,7 @@ class BaseAgent:
         stage: str = "",
         unit_id: str = "",
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str:
         """
         流式调用 LLM，返回完整文本内容。
@@ -113,6 +114,7 @@ class BaseAgent:
             stage=stage,
             unit_id=unit_id,
             max_tokens=max_tokens,
+            request_options=request_options,
         )
         return content
 
@@ -125,6 +127,7 @@ class BaseAgent:
         stage: str = "",
         unit_id: str = "",
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> tuple[str, str | None]:
         """流式调用 LLM，返回完整文本内容和终止原因。"""
         gc = self._require_gateway_client()
@@ -132,7 +135,7 @@ class BaseAgent:
         full_reasoning = ""
         finish_reason: str | None = None
         saw_stream_output = False
-        request_kwargs: dict[str, Any] = {}
+        request_kwargs: dict[str, Any] = dict(request_options or {})
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
         try:
@@ -187,6 +190,7 @@ class BaseAgent:
         stage: str = "",
         unit_id: str = "",
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> str:
         """
         异步流式调用 LLM，返回完整文本内容。
@@ -197,7 +201,7 @@ class BaseAgent:
         full_content = ""
         full_reasoning = ""
         saw_stream_output = False
-        request_kwargs: dict[str, Any] = {}
+        request_kwargs: dict[str, Any] = dict(request_options or {})
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
         try:

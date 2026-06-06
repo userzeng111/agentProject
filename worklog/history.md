@@ -1,5 +1,13 @@
 # 历史问题索引
 
+- 标题：LLM 输出速度瓶颈全量分析
+  路径：`worklog/archive/backend-performance/20260605-01-LLM输出速度瓶颈全量分析.md`
+  摘要：完成章节先展示、短篇验证降预算、验证推理控制与真实链路验证，定位当前小说链路主要慢点在动态审核与验证阶段。
+
+- 标题：多 Agent 并行写作隔离与提速验证
+  路径：`worklog/archive/agent架构/20260605-03-多Agent并行写作隔离与提速验证.md`
+  摘要：完成 3 本 8 章真实并行压测、动态 Agent 模板与评分兼容修复、综合评分回填及 `AUTO_REVIEW_MAX_WORKERS=6` 真实复测。
+
 - 标题：LLM 请求次数与 Agent 生成速度分析
   路径：`worklog/archive/backend-performance/20260604-02-LLM请求次数与Agent生成速度分析.md`
   摘要：完成 LLM 请求次数、opencode 短请求策略、真实 1 章耗时样本与首批性能优化实现分析。

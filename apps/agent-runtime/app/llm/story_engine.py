@@ -363,6 +363,14 @@ class StoryEngine(BaseAgent):
             return default
         return parsed if parsed > 0 else default
 
+    @staticmethod
+    def _non_negative_int(value: Any, default: int = 0) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed >= 0 else default
+
     def _generation_max_tokens(self, model: str | None) -> int | None:
         return resolve_generation_max_tokens(model, settings=self.settings)
 
@@ -378,8 +386,52 @@ class StoryEngine(BaseAgent):
     ) -> int | None:
         return self._generation_max_tokens(model or spec.get("model_id") or spec.get("model"))
 
-    def _verification_max_tokens(self) -> int:
-        return self._positive_int(self.settings.verification_max_tokens, default=4096)
+    def _verification_max_tokens(self, chapter_count: int | None = None) -> int:
+        base_max_tokens = self._positive_int(self.settings.verification_max_tokens, default=4096)
+        short_threshold = self._non_negative_int(
+            getattr(self.settings, "verification_short_chapter_threshold", 1),
+            default=1,
+        )
+        short_max_tokens = self._positive_int(
+            getattr(self.settings, "verification_short_max_tokens", 0),
+            default=0,
+        )
+        if (
+            chapter_count is not None
+            and chapter_count > 0
+            and short_threshold > 0
+            and chapter_count <= short_threshold
+            and short_max_tokens > 0
+        ):
+            return min(base_max_tokens, short_max_tokens)
+        return base_max_tokens
+
+    @staticmethod
+    def _verification_chapter_count(
+        completed_chapters: list[dict[str, Any]],
+        story_plan: dict[str, Any],
+    ) -> int:
+        if completed_chapters:
+            return len(completed_chapters)
+        chapter_plan = story_plan.get("chapter_plan") if isinstance(story_plan, dict) else None
+        if isinstance(chapter_plan, list):
+            return len(chapter_plan)
+        return 0
+
+    def _verification_request_options(self, model: str) -> dict[str, Any]:
+        reasoning_effort = str(getattr(self.settings, "verification_reasoning_effort", "") or "").strip()
+        if not reasoning_effort:
+            return {}
+        protocol = str(getattr(self.settings, "default_protocol", "openai") or "openai").strip().lower()
+        resolver = getattr(self.gateway_client, "_resolve_protocol", None)
+        if callable(resolver):
+            try:
+                protocol = str(resolver(model) or protocol).strip().lower()
+            except Exception:
+                protocol = str(getattr(self.settings, "default_protocol", "openai") or "openai").strip().lower()
+        if protocol != "openai":
+            return {}
+        return {"reasoning_effort": reasoning_effort}
 
     def _verification_retry_max_tokens(self, model: str | None, base_max_tokens: int) -> int | None:
         model_max_tokens = self._generation_max_tokens(model)
@@ -781,6 +833,7 @@ class StoryEngine(BaseAgent):
                 "stage": "drafting",
                 "unit_id": f"chapter-{chapter_draft.number:02d}",
                 "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
+                "conversation_history": next_conversation_history,
                 "payload": {
                     "chapter_number": chapter_draft.number,
                     "chapter_title": chapter_draft.title,
@@ -907,8 +960,10 @@ class StoryEngine(BaseAgent):
             full_text=full_text,
         )
 
-        verification_max_tokens = self._verification_max_tokens()
+        verification_chapter_count = self._verification_chapter_count(completed_chapters, story_plan)
+        verification_max_tokens = self._verification_max_tokens(verification_chapter_count)
         verification_retry_max_tokens = self._verification_retry_max_tokens(resolved_model, verification_max_tokens)
+        verification_request_options = self._verification_request_options(resolved_model)
 
         self._require_gateway_client()
         payload, _ = self._complete_stream_json_with_cache(
@@ -919,6 +974,7 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
             max_tokens=verification_max_tokens,
+            request_options=verification_request_options,
             repair_prompt=_VERIFICATION_JSON_REPAIR_PROMPT,
             empty_truncated_retry_prompt=_VERIFICATION_TRUNCATED_RETRY_PROMPT,
             empty_truncated_retry_max_tokens=verification_retry_max_tokens,
@@ -1135,8 +1191,14 @@ class StoryEngine(BaseAgent):
         exchange_label: str,
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
-        cache_key = self._response_cache_key(model=model, request_messages=request_messages, max_tokens=max_tokens)
+        cache_key = self._response_cache_key(
+            model=model,
+            request_messages=request_messages,
+            max_tokens=max_tokens,
+            request_options=request_options,
+        )
         cached_payload = self.response_cache.get(cache_key)
         if isinstance(cached_payload, dict):
             conversation_history = self._append_assistant_message(request_messages, cached_payload)
@@ -1155,7 +1217,7 @@ class StoryEngine(BaseAgent):
 
         if self.gateway_client is None:
             raise GatewayClientError("当前没有可用的模型网关。")
-        request_kwargs: dict[str, Any] = {}
+        request_kwargs: dict[str, Any] = dict(request_options or {})
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
         payload = self.gateway_client.complete_json(request_messages, model=model, **request_kwargs)
@@ -1183,6 +1245,7 @@ class StoryEngine(BaseAgent):
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
         max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
         response_parser: Callable[[str], Any] | None = None,
         repair_prompt: str = _STREAM_JSON_REPAIR_PROMPT,
         empty_truncated_retry_prompt: str | None = None,
@@ -1196,7 +1259,12 @@ class StoryEngine(BaseAgent):
         - 失败时 fallback 到 _complete_json_with_cache
         """
         # 缓存命中则直接返回（不发 thinking 事件）
-        cache_key = self._response_cache_key(model=model, request_messages=request_messages, max_tokens=max_tokens)
+        cache_key = self._response_cache_key(
+            model=model,
+            request_messages=request_messages,
+            max_tokens=max_tokens,
+            request_options=request_options,
+        )
         cached_payload = self.response_cache.get(cache_key)
         if isinstance(cached_payload, dict):
             conversation_history = self._append_assistant_message(request_messages, cached_payload)
@@ -1227,6 +1295,7 @@ class StoryEngine(BaseAgent):
                 stage=stage,
                 unit_id=exchange_label,
                 max_tokens=max_tokens,
+                request_options=request_options,
             )
         except StreamInterruptedAfterStartError:
             logger.warning("流式响应已开始后中断，不执行非流式重放。")
@@ -1241,6 +1310,7 @@ class StoryEngine(BaseAgent):
                 exchange_label=exchange_label,
                 exchange_callback=exchange_callback,
                 max_tokens=max_tokens,
+                request_options=request_options,
             )
 
         # 解析 JSON
@@ -1274,6 +1344,7 @@ class StoryEngine(BaseAgent):
                 stage=stage,
                 unit_id=f"{exchange_label}-retry",
                 max_tokens=retry_max_tokens,
+                request_options=request_options,
             )
             parse_request_messages = retry_messages
             parse_exchange_label = f"{exchange_label}-retry"
@@ -1304,6 +1375,7 @@ class StoryEngine(BaseAgent):
                     stage=stage,
                     unit_id=f"{parse_exchange_label}-repair",
                     max_tokens=max_tokens,
+                    request_options=request_options,
                 )
                 payload = parser(repaired_content)
             except (GatewayClientError, json.JSONDecodeError) as repair_exc:
@@ -1475,12 +1547,19 @@ class StoryEngine(BaseAgent):
             "parts": parts,
         }
 
-    def _response_cache_key(self, model: str, request_messages: list[dict[str, str]], max_tokens: int | None = None) -> str:
+    def _response_cache_key(
+        self,
+        model: str,
+        request_messages: list[dict[str, str]],
+        max_tokens: int | None = None,
+        request_options: dict[str, Any] | None = None,
+    ) -> str:
         payload = json.dumps(
             {
                 "model": model,
                 "messages": request_messages,
                 "max_tokens": max_tokens,
+                "request_options": request_options or {},
             },
             ensure_ascii=False,
             sort_keys=True,

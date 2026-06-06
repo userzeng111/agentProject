@@ -349,6 +349,60 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("2600 到 3380", rendered_prompt)
             self.assertNotIn("保留冷静克制的中文叙事风格", rendered_prompt)
 
+    def test_generate_chapter_pair_saved_event_includes_conversation_history_for_chapter_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = StreamSuccessGateway(
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角发现线索。",
+                    "content": "第一章正文",
+                }
+            )
+            events: list[dict] = []
+
+            engine.generate_chapter_pair(
+                spec={
+                    "mode": "short_story",
+                    "creative_mode": "original",
+                    "novel_size": "short",
+                    "prompt": "写一篇测试短篇",
+                    "genre": "",
+                    "style": "",
+                    "chapter_word_min": 800,
+                    "chapter_word_max": 1200,
+                    "model_id": "gpt-5.4",
+                },
+                story_plan={
+                    "working_title": "测试短篇",
+                    "logline": "主角发现线索。",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "发现线索"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                progress_callback=events.append,
+                requested_batch_size=1,
+            )
+
+            saved_events = [event for event in events if event.get("event_type") == "chapter.saved"]
+            self.assertEqual(len(saved_events), 1)
+            conversation_history = saved_events[0].get("conversation_history")
+            self.assertIsInstance(conversation_history, list)
+            assert isinstance(conversation_history, list)
+            assistant_messages = [item for item in conversation_history if item.get("role") == "assistant"]
+            self.assertTrue(assistant_messages)
+            self.assertIn("第一章正文", assistant_messages[-1]["content"])
+
     def test_generate_chapter_pair_does_not_fallback_after_stream_started_then_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -1115,6 +1169,73 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1600)
 
+    def test_verify_full_story_uses_short_budget_for_single_chapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    VERIFICATION_MAX_TOKENS=4096,
+                    VERIFICATION_SHORT_MAX_TOKENS=1200,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "overall_score": 98,
+                    "issues": [],
+                    "summary": "验证通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                ],
+                story_plan={
+                    "working_title": "短验证预算",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1200)
+
+    def test_verify_full_story_passes_low_reasoning_effort_to_verification_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    VERIFICATION_REASONING_EFFORT="low",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "overall_score": 98,
+                    "issues": [],
+                    "summary": "验证通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                ],
+                story_plan={
+                    "working_title": "验证推理控制",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("reasoning_effort"), "low")
+
     def test_verify_full_story_retries_reasoning_only_length_without_generic_repair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             capability_path = Path(tmp_dir) / "model_capabilities.json"
@@ -1141,6 +1262,7 @@ class StoryEngineContextTests(unittest.TestCase):
                     openai_api_key="test-key",
                     default_chat_model="mimo-v2.5-pro",
                     MODEL_CAPABILITIES_PATH=str(capability_path),
+                    VERIFICATION_SHORT_CHAPTER_THRESHOLD=0,
                     tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 )
             )
