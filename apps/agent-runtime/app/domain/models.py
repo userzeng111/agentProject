@@ -283,6 +283,7 @@ class ReviewPayload(BaseModel):
     # 三种审核类型: outline_review | chapter_pair_review | verification_review
     type: str = "outline_review"
     version: str = "v1"
+    review_scope: str = ""
     summary: str
     story_plan: StoryPlan | None = None
     risk_flags: list[str] = Field(default_factory=list)
@@ -299,6 +300,7 @@ class ReviewPayload(BaseModel):
     # 验证审核时
     verification_report: dict[str, Any] | None = None
     verification_revision_count: int = 0
+    target_dimensions: list[str] = Field(default_factory=list)
 
 
 class ChapterDraft(BaseModel):

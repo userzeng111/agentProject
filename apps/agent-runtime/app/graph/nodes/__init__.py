@@ -10,6 +10,7 @@ from .outline import (
 from .chapter import (
     prepare_chapter_pair_context,
     draft_chapter_pair,
+    chapter_gate_review,
     review_chapter_pair,
     revise_chapter_pair,
     accumulate_chapters,
@@ -32,6 +33,7 @@ __all__ = [
     "revise_outline",
     "prepare_chapter_pair_context",
     "draft_chapter_pair",
+    "chapter_gate_review",
     "review_chapter_pair",
     "revise_chapter_pair",
     "accumulate_chapters",

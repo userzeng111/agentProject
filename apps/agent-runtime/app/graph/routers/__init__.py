@@ -3,6 +3,7 @@ from __future__ import annotations
 from .review import (
     route_after_outline_review,
     route_after_revise_outline,
+    route_after_chapter_gate_review,
     route_after_chapter_pair_review,
 )
 from .flow import (
@@ -14,6 +15,7 @@ from .flow import (
 __all__ = [
     "route_after_outline_review",
     "route_after_revise_outline",
+    "route_after_chapter_gate_review",
     "route_after_chapter_pair_review",
     "route_after_accumulate",
     "route_after_verification_review",

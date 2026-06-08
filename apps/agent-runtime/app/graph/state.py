@@ -29,6 +29,8 @@ class WorkflowState(TypedDict, total=False):
     current_chapter_pair: list[dict[str, Any]]
     completed_chapters: list[dict[str, Any]]
     chapter_pair_revision_count: int
+    chapter_gate_report: dict[str, Any]
+    chapter_gate_decision: str
     # 验证
     verification_report: dict[str, Any]
     verification_revision_count: int

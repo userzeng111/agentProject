@@ -28,6 +28,7 @@ class WorkflowCallbacks:
     revise_outline: Callable[[WorkflowState], WorkflowState]
     prepare_chapter_pair_context: Callable[[WorkflowState], WorkflowState]
     draft_chapter_pair: Callable[[WorkflowState], WorkflowState]
+    chapter_gate_review: Callable[[WorkflowState], WorkflowState]
     review_chapter_pair: Callable[[WorkflowState], WorkflowState]
     revise_chapter_pair: Callable[[WorkflowState], WorkflowState]
     accumulate_chapters: Callable[[WorkflowState], WorkflowState]
@@ -48,6 +49,7 @@ Args:
     revise_outline: 大纲修订节点回调
     prepare_chapter_pair_context: 章节对上下文准备节点回调
     draft_chapter_pair: 章节对起草节点回调
+    chapter_gate_review: 章节批次门禁验证节点回调
     review_chapter_pair: 章节对审核节点回调
     revise_chapter_pair: 章节对修订节点回调
     accumulate_chapters: 章节累积节点回调

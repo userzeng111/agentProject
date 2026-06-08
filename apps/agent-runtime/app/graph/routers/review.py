@@ -42,6 +42,15 @@ def route_after_revise_outline(state: WorkflowState) -> str:
     return "review_outline"
 
 
+def route_after_chapter_gate_review(state: WorkflowState) -> str:
+    if state.get("cancelled"):
+        return "cancel_task"
+    decision = str(state.get("chapter_gate_decision") or "").strip().lower()
+    if decision == "accumulate":
+        return "accumulate_chapters"
+    return "review_chapter_pair"
+
+
 def route_after_chapter_pair_review(state: WorkflowState) -> str:
     if state.get("cancelled"):
         return "cancel_task"

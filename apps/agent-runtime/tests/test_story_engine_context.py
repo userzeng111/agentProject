@@ -1203,6 +1203,63 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1200)
 
+    def test_verify_chapter_window_uses_recent_one_fulltext_and_last_ten_summaries_without_overlap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    CHAPTER_GATE_RECENT_FULLTEXT_COUNT=1,
+                    CHAPTER_GATE_SUMMARY_WINDOW_SIZE=10,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "overall_score": 88,
+                    "issues": [],
+                    "summary": "门禁通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            completed_chapters = [
+                {
+                    "number": number,
+                    "title": f"第{number}章",
+                    "summary": f"摘要标记-{number}",
+                    "content": f"正文标记-{number}",
+                }
+                for number in range(1, 20)
+            ]
+            current_pair = [
+                {
+                    "number": 20,
+                    "title": "第20章",
+                    "summary": "摘要标记-20",
+                    "content": "正文标记-20",
+                }
+            ]
+
+            engine.verify_chapter_window(
+                current_chapter_pair=current_pair,
+                completed_chapters=completed_chapters,
+                story_plan={
+                    "working_title": "章节门禁窗口",
+                    "chapter_plan": [{"number": number, "title": f"第{number}章"} for number in range(1, 21)],
+                },
+                spec={"mode": "long_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            rendered_prompt = gateway.stream_calls[0]["messages"][-1]["content"]
+            self.assertIn("摘要标记-9", rendered_prompt)
+            self.assertIn("摘要标记-18", rendered_prompt)
+            self.assertNotIn("摘要标记-8", rendered_prompt)
+            self.assertNotIn("摘要标记-19", rendered_prompt)
+            self.assertIn("正文标记-19", rendered_prompt)
+            self.assertIn("正文标记-20", rendered_prompt)
+
     def test_verify_full_story_passes_low_reasoning_effort_to_verification_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(

@@ -32,6 +32,7 @@ def _callbacks(cancel_task=None) -> WorkflowCallbacks:
         revise_outline=_passthrough,
         prepare_chapter_pair_context=_passthrough,
         draft_chapter_pair=_passthrough,
+        chapter_gate_review=_passthrough,
         review_chapter_pair=_passthrough,
         revise_chapter_pair=_passthrough,
         accumulate_chapters=_passthrough,

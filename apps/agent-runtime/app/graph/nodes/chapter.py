@@ -17,6 +17,71 @@ from app.observability import get_logger
 
 logger = get_logger(__name__)
 
+_SEVERE_SEVERITIES = {"critical", "fatal", "severe", "严重", "致命"}
+_DIMENSION_KEYWORDS = {
+    "structure": ("结构", "节奏", "推进", "章节衔接", "结构完整"),
+    "style": ("风格", "文风", "语气", "氛围", "悬疑基调"),
+    "consistency": ("一致性", "设定", "矛盾", "冲突", "世界观"),
+    "character_motivation": ("人物", "角色", "动机", "行为逻辑", "人设"),
+    "foreshadowing": ("伏笔", "线索", "铺垫", "回收"),
+    "logic": ("逻辑", "因果", "合理性", "推理"),
+}
+
+
+def _chapter_gate_window(
+    current_chapter_pair: list[dict[str, Any]],
+    completed_chapters: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """构造章节批次门禁验证窗口：旧章节只保留摘要，当前章节保留正文。"""
+    window: list[dict[str, Any]] = []
+    for chapter in completed_chapters:
+        window.append({
+            "number": chapter.get("number"),
+            "title": chapter.get("title", ""),
+            "summary": chapter.get("summary", ""),
+            "content": "",
+        })
+    for chapter in current_chapter_pair:
+        window.append(dict(chapter))
+    return window
+
+
+def _issue_is_severe(issue: Any) -> bool:
+    if isinstance(issue, dict):
+        severity = str(issue.get("severity") or "").strip().lower()
+        if severity in _SEVERE_SEVERITIES:
+            return True
+        text = " ".join(
+            str(issue.get(key) or "")
+            for key in ("description", "suggestion", "title", "issue_type", "category")
+        )
+        return any(keyword in text for keyword in ("严重", "致命", "critical", "fatal", "severe"))
+    if isinstance(issue, str):
+        return any(keyword in issue for keyword in ("严重", "致命", "critical", "fatal", "severe"))
+    return False
+
+
+def _chapter_gate_requires_review(report: dict[str, Any]) -> bool:
+    issues = report.get("issues") or []
+    return any(_issue_is_severe(issue) for issue in issues)
+
+
+def _chapter_gate_target_dimensions(report: dict[str, Any]) -> list[str]:
+    issues = report.get("issues") or []
+    combined = "\n".join(
+        issue if isinstance(issue, str) else " ".join(
+            str(issue.get(key) or "")
+            for key in ("description", "suggestion", "title", "issue_type", "category")
+        )
+        for issue in issues
+    )
+    lowered = combined.lower()
+    matched: list[str] = []
+    for dimension, keywords in _DIMENSION_KEYWORDS.items():
+        if any(keyword in combined or keyword.lower() in lowered for keyword in keywords):
+            matched.append(dimension)
+    return matched or ["structure", "consistency"]
+
 
 def prepare_chapter_pair_context(
     state: WorkflowState,
@@ -103,6 +168,46 @@ def draft_chapter_pair(
     }
 
 
+def chapter_gate_review(
+    state: WorkflowState,
+    *,
+    engine: Any,
+    auto_review_executor_available: bool = False,
+) -> WorkflowState:
+    if not (state.get("auto_review") and auto_review_executor_available):
+        return {
+            "chapter_gate_decision": "review",
+            "chapter_gate_report": {},
+        }
+
+    try:
+        report = engine.verify_chapter_window(
+            current_chapter_pair=state.get("current_chapter_pair") or [],
+            completed_chapters=state.get("completed_chapters") or [],
+            story_plan=state.get("story_plan") or {},
+            spec=state["normalized_spec"],
+            reference_text=state.get("reference_text", ""),
+            context_packet=state.get("chapter_pair_context_packet"),
+            model=state["normalized_spec"].get("model_id"),
+        )
+        requires_review = _chapter_gate_requires_review(report)
+        logger.info(
+            "章节门禁验证完成: requires_review=%s, issue_count=%s",
+            requires_review,
+            len(report.get("issues") or []),
+        )
+        return {
+            "chapter_gate_decision": "review" if requires_review else "accumulate",
+            "chapter_gate_report": report,
+        }
+    except Exception as exc:
+        logger.error("章节门禁验证异常，回退到章节动态审核: %s", exc, exc_info=True)
+        return {
+            "chapter_gate_decision": "review",
+            "chapter_gate_report": {},
+        }
+
+
 def review_chapter_pair(
     state: WorkflowState,
     *,
@@ -126,13 +231,20 @@ def review_chapter_pair(
             chapters = state.get("current_chapter_pair") or []
             payload = ReviewPayload(
                 type="chapter_pair_review",
-                summary="请审核本批章节是否符合大纲要求。",
+                review_scope="chapter_window",
+                summary=(
+                    "前置验证发现严重问题，请根据验证报告对本批章节执行针对性动态审核。"
+                    if state.get("chapter_gate_report")
+                    else "请审核本批章节是否符合大纲要求。"
+                ),
                 story_plan=sp,
                 batch_index=state.get("batch_index", 0),
                 chapter_pair=chapters,
                 completed_count=state.get("completed_count", 0),
                 total_chapters=state.get("total_chapters", 0),
                 chapter_pair_revision_count=state.get("chapter_pair_revision_count", 0),
+                verification_report=state.get("chapter_gate_report") or None,
+                target_dimensions=_chapter_gate_target_dimensions(state.get("chapter_gate_report") or {}),
             )
             payload._user_prompt = state.get("normalized_spec", {}).get("prompt", "")
             payload._completed_summaries = [
@@ -240,6 +352,8 @@ def accumulate_chapters(state: WorkflowState) -> WorkflowState:
     return {
         "completed_chapters": completed_chapters,
         "batch_index": batch_index,
+        "chapter_gate_report": {},
+        "chapter_gate_decision": "",
     }
 
 
@@ -256,5 +370,8 @@ def interrupt_chapter_pair_review(state: WorkflowState, comment: str = ""):
             "completed_count": state.get("completed_count", 0),
             "total_chapters": state.get("total_chapters", 0),
             "chapter_pair_revision_count": state.get("chapter_pair_revision_count", 0),
+            "review_scope": "chapter_window",
+            "verification_report": state.get("chapter_gate_report") or None,
+            "target_dimensions": _chapter_gate_target_dimensions(state.get("chapter_gate_report") or {}),
         }
     )

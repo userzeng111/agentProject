@@ -135,6 +135,18 @@ class FakeStoryEngine:
     ):
         return {"overall_score": 100, "issues": []}
 
+    def verify_chapter_window(
+        self,
+        current_chapter_pair,
+        completed_chapters,
+        story_plan,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+    ):
+        return {"overall_score": 100, "issues": []}
+
     def fix_verified_issues(
         self,
         completed_chapters,

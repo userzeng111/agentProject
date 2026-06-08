@@ -35,6 +35,7 @@ from app.graph.nodes.outline import (
 from app.graph.nodes.chapter import (
     prepare_chapter_pair_context as _prepare_chapter_pair_context_node,
     draft_chapter_pair as _draft_chapter_pair_node,
+    chapter_gate_review as _chapter_gate_review_node,
     review_chapter_pair as _review_chapter_pair_node,
     revise_chapter_pair as _revise_chapter_pair_node,
     accumulate_chapters as _accumulate_chapters_node,
@@ -52,6 +53,7 @@ from app.graph.nodes.final import (
 )
 from app.graph.routers.review import (
     route_after_outline_review,
+    route_after_chapter_gate_review,
     route_after_chapter_pair_review,
 )
 from app.graph.routers.flow import (
@@ -205,6 +207,13 @@ def build_default_callbacks(
     def draft_chapter_pair(state: WorkflowState) -> WorkflowState:
         return _draft_chapter_pair_node(state, engine=engine)
 
+    def chapter_gate_review(state: WorkflowState) -> WorkflowState:
+        return _chapter_gate_review_node(
+            state,
+            engine=engine,
+            auto_review_executor_available=auto_review_executor_available,
+        )
+
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
         return _review_chapter_pair_node(
             state,
@@ -252,6 +261,7 @@ def build_default_callbacks(
         revise_outline=revise_outline,
         prepare_chapter_pair_context=prepare_chapter_pair_context,
         draft_chapter_pair=draft_chapter_pair,
+        chapter_gate_review=chapter_gate_review,
         review_chapter_pair=review_chapter_pair,
         revise_chapter_pair=revise_chapter_pair,
         accumulate_chapters=accumulate_chapters,
@@ -398,6 +408,13 @@ def build_graph(
     def draft_chapter_pair(state: WorkflowState) -> WorkflowState:
         return _draft_chapter_pair_node(state, engine=engine)
 
+    def chapter_gate_review(state: WorkflowState) -> WorkflowState:
+        return _chapter_gate_review_node(
+            state,
+            engine=engine,
+            auto_review_executor_available=auto_review_executor_available,
+        )
+
     def review_chapter_pair(state: WorkflowState) -> WorkflowState:
         return _review_chapter_pair_node(
             state,
@@ -449,6 +466,7 @@ def build_graph(
     graph.add_node("revise_outline", revise_outline)
     graph.add_node("prepare_chapter_pair_context", prepare_chapter_pair_context)
     graph.add_node("draft_chapter_pair", draft_chapter_pair)
+    graph.add_node("chapter_gate_review", chapter_gate_review)
     graph.add_node("review_chapter_pair", review_chapter_pair)
     graph.add_node("revise_chapter_pair", revise_chapter_pair)
     graph.add_node("accumulate_chapters", accumulate_chapters)
@@ -480,7 +498,16 @@ def build_graph(
 
     # 章节对循环
     graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")
-    graph.add_edge("draft_chapter_pair", "review_chapter_pair")
+    graph.add_edge("draft_chapter_pair", "chapter_gate_review")
+    graph.add_conditional_edges(
+        "chapter_gate_review",
+        route_after_chapter_gate_review,
+        {
+            "accumulate_chapters": "accumulate_chapters",
+            "review_chapter_pair": "review_chapter_pair",
+            "cancel_task": "cancel_task",
+        },
+    )
     graph.add_conditional_edges(
         "review_chapter_pair",
         route_after_chapter_pair_review,
@@ -490,7 +517,7 @@ def build_graph(
             "cancel_task": "cancel_task",
         },
     )
-    graph.add_edge("revise_chapter_pair", "review_chapter_pair")
+    graph.add_edge("revise_chapter_pair", "chapter_gate_review")
     graph.add_conditional_edges(
         "accumulate_chapters",
         route_after_accumulate,

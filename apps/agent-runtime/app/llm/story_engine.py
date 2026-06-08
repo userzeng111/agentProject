@@ -981,6 +981,47 @@ class StoryEngine(BaseAgent):
         )
         return payload
 
+    def verify_chapter_window(
+        self,
+        current_chapter_pair: list[dict[str, Any]],
+        completed_chapters: list[dict[str, Any]],
+        story_plan: dict[str, Any],
+        spec: dict[str, Any],
+        reference_text: str = "",
+        context_packet: dict[str, Any] | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """章节批次门禁验证：当前章节保留正文，历史章节仅保留摘要。"""
+        resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
+        active_progress_callback = self.progress_callback or _progress_callback_var.get()
+        active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
+        title = story_plan.get("working_title", "")
+        chapter_plan: list[dict[str, Any]] = story_plan.get("chapter_plan") or []
+
+        request_messages = self._render_skill_prompt(
+            "full-text-verifier",
+            title=title,
+            chapter_plan=" / ".join(f"第{ch['number']}章 {ch['title']}" for ch in chapter_plan),
+            full_text=self._chapter_window_gate_text(current_chapter_pair, completed_chapters),
+        )
+
+        verification_max_tokens = self._verification_max_tokens(max(len(current_chapter_pair), 1))
+        verification_request_options = self._verification_request_options(resolved_model)
+
+        self._require_gateway_client()
+        payload, _ = self._complete_stream_json_with_cache(
+            request_messages=request_messages,
+            model=resolved_model,
+            stage="verification",
+            exchange_label="chapter-window-gate",
+            exchange_callback=active_exchange_callback,
+            progress_callback=active_progress_callback,
+            max_tokens=verification_max_tokens,
+            request_options=verification_request_options,
+            repair_prompt=_VERIFICATION_JSON_REPAIR_PROMPT,
+        )
+        return payload
+
     def fix_verified_issues(
         self,
         completed_chapters: list[dict[str, Any]],
@@ -1046,6 +1087,64 @@ class StoryEngine(BaseAgent):
                 f"正文摘录：\n{excerpt}"
             )
         return "\n\n".join(blocks)
+
+    def _chapter_window_gate_text(
+        self,
+        current_chapter_pair: list[dict[str, Any]],
+        completed_chapters: list[dict[str, Any]],
+    ) -> str:
+        recent_fulltext_count = self._chapter_gate_recent_fulltext_count()
+        summary_window_size = self._chapter_gate_summary_window_size()
+        recent_fulltext_chapters = (
+            completed_chapters[-recent_fulltext_count:]
+            if recent_fulltext_count > 0
+            else []
+        )
+        summary_source = (
+            completed_chapters[:-recent_fulltext_count]
+            if recent_fulltext_count > 0
+            else completed_chapters
+        )
+        if summary_window_size > 0:
+            summary_source = summary_source[-summary_window_size:]
+        else:
+            summary_source = []
+
+        completed_summary_blocks = [
+            f"## 第{chapter.get('number', '')}章 {chapter.get('title', '')}\n"
+            f"历史章节摘要：{str(chapter.get('summary') or '').strip() or '无'}"
+            for chapter in summary_source
+        ]
+        recent_fulltext_blocks = [
+            f"## 第{chapter.get('number', '')}章 {chapter.get('title', '')}\n"
+            f"历史正文：\n{str(chapter.get('content') or '').strip() or '无'}"
+            for chapter in recent_fulltext_chapters
+        ]
+        current_blocks = [
+            f"## 第{chapter.get('number', '')}章 {chapter.get('title', '')}\n"
+            f"章节摘要：{str(chapter.get('summary') or '').strip() or '无'}\n"
+            f"当前正文：\n{str(chapter.get('content') or '').strip() or '无'}"
+            for chapter in current_chapter_pair
+        ]
+        sections: list[str] = []
+        if completed_summary_blocks:
+            sections.append("## 历史章节摘要\n" + "\n\n".join(completed_summary_blocks))
+        if recent_fulltext_blocks:
+            sections.append("## 最近章节正文\n" + "\n\n".join(recent_fulltext_blocks))
+        sections.append("## 当前待验证章节\n" + "\n\n".join(current_blocks))
+        return "\n\n".join(section for section in sections if section)
+
+    def _chapter_gate_recent_fulltext_count(self) -> int:
+        return self._positive_int(
+            getattr(self.settings, "chapter_gate_recent_fulltext_count", 1),
+            default=1,
+        )
+
+    def _chapter_gate_summary_window_size(self) -> int:
+        return self._positive_int(
+            getattr(self.settings, "chapter_gate_summary_window_size", 10),
+            default=10,
+        )
 
     def _head_tail_excerpt(self, text: str, max_chars: int) -> str:
         content = text.strip()

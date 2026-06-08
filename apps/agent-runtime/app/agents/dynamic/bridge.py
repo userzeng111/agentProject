@@ -105,6 +105,8 @@ class DynamicReviewBridge:
         elif review_type == "chapter_pair_review":
             chapters = payload.chapter_pair or []
             chapter_nums = ", ".join(str(ch.number if hasattr(ch, "number") else ch.get("number", "?")) for ch in chapters)
+            if payload.verification_report:
+                return f"根据前置验证发现的严重问题，对第 {chapter_nums} 章执行针对性审核"
             return f"审核第 {chapter_nums} 章是否符合理大纲要求"
 
         elif review_type == "verification_review":
@@ -147,6 +149,11 @@ class DynamicReviewBridge:
             )
             completed_summaries = getattr(payload, "_completed_summaries", [])
             context["completed_summaries"] = "\n".join(completed_summaries) if completed_summaries else "无"
+            context["review_scope"] = payload.review_scope or "chapter_window"
+            if payload.verification_report:
+                context["verification_report"] = json.dumps(payload.verification_report, ensure_ascii=False, indent=2)[:4000]
+            if payload.target_dimensions:
+                context["target_dimensions"] = ", ".join(payload.target_dimensions)
 
         # 验证审核的额外上下文
         if payload.type == "verification_review":

@@ -114,6 +114,18 @@ class FakeEngine:
     ):
         return {"overall_score": 100, "issues": []}
 
+    def verify_chapter_window(
+        self,
+        current_chapter_pair,
+        completed_chapters,
+        story_plan,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+    ):
+        return {"overall_score": 100, "issues": []}
+
     def fix_verified_issues(
         self,
         completed_chapters,
@@ -132,6 +144,23 @@ class FakeDynamicEngine(FakeEngine):
     def __init__(self) -> None:
         super().__init__()
         self.gateway_client = FakeStreamingGatewayClient()
+        self.chapter_gate_reports: list[dict] = []
+        self.chapter_gate_calls = 0
+
+    def verify_chapter_window(
+        self,
+        current_chapter_pair,
+        completed_chapters,
+        story_plan,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+    ):
+        self.chapter_gate_calls += 1
+        if self.chapter_gate_reports:
+            return self.chapter_gate_reports.pop(0)
+        return {"overall_score": 100, "issues": []}
 
 
 class FakeAutoReviewManager:
@@ -159,9 +188,11 @@ class FakeAutoReviewManager:
 class FakeDynamicReviewBridge:
     def __init__(self, *args, **kwargs) -> None:
         self.calls: list[str] = []
+        self.payloads: list = []
 
     def review(self, payload, policy):
         self.calls.append(payload.type)
+        self.payloads.append(payload)
         return ReviewDecision(
             approved=True,
             comment=f"动态审核通过：{payload.type}",
@@ -357,11 +388,104 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         )
 
         self.assertNotIn("__interrupt__", result)
-        # 新行为：outline_review 会执行两次（总纲 + 章节计划批次）
+        self.assertEqual(engine.chapter_gate_calls, 1)
+        # 新行为：健康批次先过门禁，不再必进章节动态审核。
+        self.assertEqual(
+            bridge.calls,
+            ["outline_review", "outline_review", "verification_review"],
+        )
+
+    def test_dynamic_review_bridge_skips_chapter_review_when_gate_has_no_critical_issue(self) -> None:
+        engine = FakeDynamicEngine()
+        engine.chapter_gate_reports = [
+            {
+                "overall_score": 86,
+                "issues": [{"severity": "warning", "description": "节奏稍慢"}],
+                "summary": "无严重问题",
+            }
+        ]
+        bridge = FakeDynamicReviewBridge()
+
+        with patch("app.graph.main_graph.AutoReviewManager", return_value=None), patch(
+            "app.settings.config.get_settings",
+            return_value=SimpleNamespace(
+                dynamic_agent_review=True,
+                auto_review_auditor_model="gpt-5.4",
+                auto_review_max_workers=6,
+            ),
+        ), patch(
+            "app.agents.dynamic.bridge.DynamicReviewBridge",
+            return_value=bridge,
+        ):
+            graph = build_graph(
+                engine,
+                context_manager=FakeContextManager(),
+                auto_review=True,
+                auto_review_policy={
+                    "allow_self_revisions": True,
+                    "max_auto_revisions": 0,
+                },
+            )
+
+        result = graph.invoke(
+            self._initial_state(),
+            config={"configurable": {"thread_id": "task-auto-review-gate-ok"}},
+        )
+
+        self.assertNotIn("__interrupt__", result)
+        self.assertEqual(engine.chapter_gate_calls, 1)
+        self.assertEqual(
+            bridge.calls,
+            ["outline_review", "outline_review", "verification_review"],
+        )
+
+    def test_dynamic_review_bridge_runs_targeted_chapter_review_when_gate_has_critical_issue(self) -> None:
+        engine = FakeDynamicEngine()
+        engine.chapter_gate_reports = [
+            {
+                "overall_score": 42,
+                "issues": [{"severity": "critical", "description": "人物动机断裂，章节衔接失真"}],
+                "summary": "存在严重问题",
+            }
+        ]
+        bridge = FakeDynamicReviewBridge()
+
+        with patch("app.graph.main_graph.AutoReviewManager", return_value=None), patch(
+            "app.settings.config.get_settings",
+            return_value=SimpleNamespace(
+                dynamic_agent_review=True,
+                auto_review_auditor_model="gpt-5.4",
+                auto_review_max_workers=6,
+            ),
+        ), patch(
+            "app.agents.dynamic.bridge.DynamicReviewBridge",
+            return_value=bridge,
+        ):
+            graph = build_graph(
+                engine,
+                context_manager=FakeContextManager(),
+                auto_review=True,
+                auto_review_policy={
+                    "allow_self_revisions": True,
+                    "max_auto_revisions": 0,
+                },
+            )
+
+        result = graph.invoke(
+            self._initial_state(),
+            config={"configurable": {"thread_id": "task-auto-review-gate-critical"}},
+        )
+
+        self.assertNotIn("__interrupt__", result)
+        self.assertEqual(engine.chapter_gate_calls, 1)
         self.assertEqual(
             bridge.calls,
             ["outline_review", "outline_review", "chapter_pair_review", "verification_review"],
         )
+        targeted_payload = next(item for item in bridge.payloads if item.type == "chapter_pair_review")
+        self.assertEqual(targeted_payload.review_scope, "chapter_window")
+        self.assertIsNotNone(targeted_payload.verification_report)
+        self.assertTrue(targeted_payload.target_dimensions)
 
 
 if __name__ == "__main__":

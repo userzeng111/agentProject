@@ -19,6 +19,7 @@ from app.graph.routers.flow import (
     route_after_verification_review,
 )
 from app.graph.routers.review import (
+    route_after_chapter_gate_review,
     route_after_chapter_pair_review,
     route_after_outline_review,
 )
@@ -130,6 +131,7 @@ class NovelWorkflowEngine:
             "revise_outline",
             "prepare_chapter_pair_context",
             "draft_chapter_pair",
+            "chapter_gate_review",
             "review_chapter_pair",
             "revise_chapter_pair",
             "accumulate_chapters",
@@ -167,7 +169,16 @@ class NovelWorkflowEngine:
 
         # 章节对循环
         graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")
-        graph.add_edge("draft_chapter_pair", "review_chapter_pair")
+        graph.add_edge("draft_chapter_pair", "chapter_gate_review")
+        graph.add_conditional_edges(
+            "chapter_gate_review",
+            route_after_chapter_gate_review,
+            {
+                "accumulate_chapters": "accumulate_chapters",
+                "review_chapter_pair": "review_chapter_pair",
+                "cancel_task": "cancel_task",
+            },
+        )
         graph.add_conditional_edges(
             "review_chapter_pair",
             route_after_chapter_pair_review,
@@ -177,7 +188,7 @@ class NovelWorkflowEngine:
                 "cancel_task": "cancel_task",
             },
         )
-        graph.add_edge("revise_chapter_pair", "review_chapter_pair")
+        graph.add_edge("revise_chapter_pair", "chapter_gate_review")
         graph.add_conditional_edges(
             "accumulate_chapters",
             route_after_accumulate,

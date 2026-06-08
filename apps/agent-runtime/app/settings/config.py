@@ -90,6 +90,14 @@ class Settings(BaseSettings):
         default=1600,
         validation_alias=AliasChoices("VERIFICATION_EXCERPT_CHARS_PER_CHAPTER"),
     )
+    chapter_gate_recent_fulltext_count: int = Field(
+        default=1,
+        validation_alias=AliasChoices("CHAPTER_GATE_RECENT_FULLTEXT_COUNT"),
+    )
+    chapter_gate_summary_window_size: int = Field(
+        default=10,
+        validation_alias=AliasChoices("CHAPTER_GATE_SUMMARY_WINDOW_SIZE"),
+    )
     # 章节批次并行草稿配置。硬上限在 StoryEngine 内再次限制，避免配置过大压满本机或上游网关。
     chapter_parallel_draft_enabled: bool = Field(
         default=True,
