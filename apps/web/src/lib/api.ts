@@ -20,8 +20,44 @@ import { createChatSseParser, getStreamChatErrorMessage } from "@/lib/stream-cha
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestLogContext = Record<string, unknown>;
+
+interface RequestOptions {
+  logContext?: RequestLogContext;
+}
+
+function logRequestStart(path: string, method: string, logContext?: RequestLogContext) {
+  console.info("http.request.start", {
+    method,
+    path,
+    ...(logContext ?? {}),
+  });
+}
+
+function logRequestEnd(
+  path: string,
+  method: string,
+  durationMs: number,
+  httpStatus: number | null,
+  requestId: string,
+  logContext?: RequestLogContext,
+) {
+  console.info("http.request.end", {
+    method,
+    path,
+    http_status: httpStatus,
+    request_id: requestId,
+    client_duration_ms: durationMs,
+    ...(logContext ?? {}),
+  });
+}
+
+async function request<T>(path: string, init?: RequestInit, options?: RequestOptions): Promise<T> {
   const url = `${API_BASE}${path}`;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const startedAt = Date.now();
+  logRequestStart(path, method, options?.logContext);
+
   const makeRequest = async (): Promise<Response> => {
     const response = await fetch(url, {
       ...init,
@@ -35,26 +71,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return response;
   };
 
-  const method = (init?.method ?? "GET").toUpperCase();
   const canRetry = method === "GET";
 
   let response: Response;
   try {
-    response = await makeRequest();
-  } catch (err) {
-    if (canRetry) {
-      console.warn(`请求失败，准备重试: ${url}`, err instanceof Error ? err.message : String(err));
-      try {
-        response = await makeRequest();
-      } catch (retryErr) {
-        console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
-        throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+    try {
+      response = await makeRequest();
+    } catch (err) {
+      if (canRetry) {
+        console.warn(`请求失败，准备重试: ${url}`, err instanceof Error ? err.message : String(err));
+        try {
+          response = await makeRequest();
+        } catch (retryErr) {
+          console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
+          throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+        }
+      } else {
+        console.error(`请求失败（写操作不重试）: ${url}`, err instanceof Error ? err.message : String(err));
+        throw new Error(err instanceof Error ? err.message : "请求失败");
       }
-    } else {
-      console.error(`请求失败（写操作不重试）: ${url}`, err instanceof Error ? err.message : String(err));
-      throw new Error(err instanceof Error ? err.message : "请求失败");
     }
+  } catch (err) {
+    logRequestEnd(path, method, Date.now() - startedAt, null, "", options?.logContext);
+    throw err;
   }
+
+  const httpStatus = response.status;
+  const requestId = response.headers.get("X-Request-ID") ?? "";
 
   if (!response.ok) {
     let errorMessage = "请求失败";
@@ -65,9 +108,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const text = await response.text();
       errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
     }
+    logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);
     throw new Error(errorMessage);
   }
 
+  logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);
   return response.json() as Promise<T>;
 }
 
@@ -158,10 +203,12 @@ export function rollbackChapterPlan(taskId: string, keepBatchCount: number) {
   });
 }
 
-export function continueTask(taskId: string, payload: ContinueDraftPayload) {
+export function continueTask(taskId: string, payload: ContinueDraftPayload, logContext?: RequestLogContext) {
   return request<TaskRecord>(`/api/tasks/${taskId}/continue`, {
     method: "POST",
     body: JSON.stringify(payload),
+  }, {
+    logContext,
   });
 }
 

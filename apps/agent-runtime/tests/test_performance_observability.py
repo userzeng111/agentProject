@@ -188,6 +188,28 @@ def test_llm_stream_sync_logs_chunk_metrics(caplog: pytest.LogCaptureFixture) ->
     assert "finish_reason=stop" in messages
 
 
+def test_llm_stream_sync_logs_stage_and_exchange_label(caplog: pytest.LogCaptureFixture) -> None:
+    client = OpenAICompatibleGatewayClient(
+        base_url="http://example.com",
+        api_key="test-key",
+        model="test-model",
+    )
+    client._client = _FakeClient()
+
+    with caplog.at_level(logging.INFO, logger="app.llm.gateway_client"):
+        list(
+            client.complete_stream_sync(
+                [{"role": "user", "content": "测试"}],
+                _obs_stage="planning",
+                _obs_exchange_label="outline",
+            )
+        )
+
+    messages = _messages(caplog)
+    assert "stage=planning" in messages
+    assert "exchange_label=outline" in messages
+
+
 def test_rag_search_logs_phases(caplog: pytest.LogCaptureFixture) -> None:
     service = RagService(
         RagConfig(enabled=True, top_k=2, max_context_chars=100),

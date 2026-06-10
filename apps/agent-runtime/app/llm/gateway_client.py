@@ -13,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from app.observability.metrics import record_llm_call
+from app.observability.context import request_id_var
 from app.observability.performance import log_performance
 
 logger = get_logger(__name__)
@@ -48,6 +49,15 @@ class StreamChunk:
 
 
 class OpenAICompatibleGatewayClient:
+    @staticmethod
+    def _pop_observability_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+        request_kwargs = dict(kwargs)
+        observability = {
+            "stage": str(request_kwargs.pop("_obs_stage", "") or ""),
+            "exchange_label": str(request_kwargs.pop("_obs_exchange_label", "") or ""),
+        }
+        return request_kwargs, observability
+
     def __init__(
         self,
         base_url: str,
@@ -123,6 +133,12 @@ class OpenAICompatibleGatewayClient:
         if self._normalize_protocol(protocol) == "anthropic":
             headers["x-api-key"] = self.api_key
             headers["anthropic-version"] = self.anthropic_version
+        try:
+            request_id = request_id_var.get()
+        except LookupError:
+            request_id = ""
+        if request_id:
+            headers["X-Request-ID"] = request_id
         return headers
 
     def _resolve_protocol(self, model: str | None = None) -> str:
@@ -496,6 +512,7 @@ class OpenAICompatibleGatewayClient:
     ) -> Generator[StreamChunk, None, None]:
         """同步流式调用聊天补全，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
         resolved_model = model or self.model
+        kwargs, observability = self._pop_observability_kwargs(kwargs)
         kwargs = self._inject_max_tokens(resolved_model, kwargs)
         protocol = self._resolve_protocol(resolved_model)
         adapter = self._get_adapter(resolved_model)
@@ -555,6 +572,7 @@ class OpenAICompatibleGatewayClient:
                                 reasoning_chars=reasoning_chars,
                                 finish_reason=finish_reason,
                                 attempt=attempt + 1,
+                                **observability,
                             )
                             logger.info("llm_stream_sync model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
                             return
@@ -585,6 +603,7 @@ class OpenAICompatibleGatewayClient:
                                     messages=len(messages),
                                     first_token_ms=f"{first_token_ms:.2f}",
                                     attempt=attempt + 1,
+                                    **observability,
                                 )
                         if parsed.get("finish_reason"):
                             finish_reason = str(parsed.get("finish_reason") or "")

@@ -159,7 +159,8 @@ class StoryEngine(BaseAgent):
                     "当前章节序号：{chapter_number}\n当前章节标题：{chapter_title}\n当前章节目标：{chapter_goal}\n"
                     "已完成章节摘要：{completed_summaries}\n"
                     "上一章全文：{previous_chapter_full_text}\n当前章节历史草稿：{current_chapter_existing_draft}\n"
-                    "要求：当前章节内容控制在 {chapter_word_range} 字，严格遵守上述风格约束，不得退回默认通用风格。",
+                    "要求：当前章节内容控制在 {chapter_word_range} 字，严格遵守上述风格约束，不得退回默认通用风格。"
+                    "直接输出章节内容，不要自述写作思路，不要解释人物关系，不要总结主题，不要在正文外追加说明。",
                 ),
             ]
         )
@@ -239,8 +240,9 @@ class StoryEngine(BaseAgent):
                     "human",
                     "请对以下小说全文进行一致性验证，检查人物设定、时间线、世界观、情节逻辑等维度。\n"
                     "只报告影响主线理解的问题，忽略措辞、局部润色和不影响阅读的小瑕疵。\n"
-                    "最多 5 个问题，按严重程度排序；不要逐章复述，不要输出分析过程。\n"
-                    "每条 description 不超过 60 个字，每条 suggestion 不超过 60 个字，summary 不超过 80 个字。\n"
+                    "最多 3 个问题，按严重程度排序；不要逐章复述，不要输出分析过程。\n"
+                    "每条 description 不超过 40 个字，每条 suggestion 不超过 40 个字，summary 不超过 50 个字。\n"
+                    "若没有关键问题，issues 返回空数组，只给一句简短通过结论。\n"
                     "输出 JSON 必须包含：\n"
                     "issues([{{severity:string,location:string,description:string,suggestion:string}}]),\n"
                     "overall_score(int,0-100), summary(string)。\n\n"
@@ -1384,10 +1386,11 @@ class StoryEngine(BaseAgent):
             raise GatewayClientError("当前没有可用的模型网关。")
 
         active_progress = progress_callback or self.progress_callback or _progress_callback_var.get()
+        timing_details: list[dict[str, Any]] = []
 
         # 流式调用（委托 BaseAgent._call_llm_stream）
         try:
-            full_content, finish_reason = self._call_llm_stream_with_metadata(
+            full_content, finish_reason, timing_meta = self._call_llm_stream_with_metadata(
                 request_messages,
                 model,
                 progress_callback=active_progress,
@@ -1396,6 +1399,13 @@ class StoryEngine(BaseAgent):
                 max_tokens=max_tokens,
                 request_options=request_options,
             )
+            timing_details.append({
+                **timing_meta,
+                "stage": stage,
+                "exchange_label": exchange_label,
+                "is_retry": False,
+                "is_repair": False,
+            })
         except StreamInterruptedAfterStartError:
             logger.warning("流式响应已开始后中断，不执行非流式重放。")
             raise
@@ -1436,7 +1446,7 @@ class StoryEngine(BaseAgent):
                 max_tokens,
                 retry_max_tokens,
             )
-            full_content, finish_reason = self._call_llm_stream_with_metadata(
+            full_content, finish_reason, retry_timing_meta = self._call_llm_stream_with_metadata(
                 retry_messages,
                 model,
                 progress_callback=active_progress,
@@ -1445,6 +1455,13 @@ class StoryEngine(BaseAgent):
                 max_tokens=retry_max_tokens,
                 request_options=request_options,
             )
+            timing_details.append({
+                **retry_timing_meta,
+                "stage": stage,
+                "exchange_label": f"{exchange_label}-retry",
+                "is_retry": True,
+                "is_repair": False,
+            })
             parse_request_messages = retry_messages
             parse_exchange_label = f"{exchange_label}-retry"
         try:
@@ -1467,7 +1484,7 @@ class StoryEngine(BaseAgent):
             repaired_content = ""
             repair_finish_reason: str | None = None
             try:
-                repaired_content, repair_finish_reason = self._call_llm_stream_with_metadata(
+                repaired_content, repair_finish_reason, repair_timing_meta = self._call_llm_stream_with_metadata(
                     repair_messages,
                     model,
                     progress_callback=active_progress,
@@ -1476,6 +1493,13 @@ class StoryEngine(BaseAgent):
                     max_tokens=max_tokens,
                     request_options=request_options,
                 )
+                timing_details.append({
+                    **repair_timing_meta,
+                    "stage": stage,
+                    "exchange_label": f"{parse_exchange_label}-repair",
+                    "is_retry": False,
+                    "is_repair": True,
+                })
                 payload = parser(repaired_content)
             except (GatewayClientError, json.JSONDecodeError) as repair_exc:
                 self._emit_parse_failed_exchange(
@@ -1504,6 +1528,7 @@ class StoryEngine(BaseAgent):
             response_payload=payload,
             cache_key=cache_key,
             parse_duration_ms=parse_duration_ms,
+            timing_details=timing_details,
         )
         return payload, conversation_history
 
@@ -1570,6 +1595,7 @@ class StoryEngine(BaseAgent):
         response_payload: dict[str, Any],
         cache_key: str | None,
         parse_duration_ms: float | None = None,
+        timing_details: list[dict[str, Any]] | None = None,
     ) -> None:
         if callback is None:
             return
@@ -1585,6 +1611,7 @@ class StoryEngine(BaseAgent):
                 "response_payload": response_payload,
                 "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
                 "parse_duration_ms": parse_duration_ms,
+                "timing_details": [dict(item) for item in (timing_details or [])],
             }
         )
 
@@ -1670,30 +1697,67 @@ class StoryEngine(BaseAgent):
         cleaned = " ".join(text.strip().split())
         return cleaned if cleaned else "无"
 
+    @staticmethod
+    def _compact_text_with_tail(text: str, *, max_chars: int, tail_chars: int | None = None) -> str:
+        cleaned = " ".join(text.strip().split())
+        if not cleaned:
+            return "无"
+        if max_chars <= 0 or len(cleaned) <= max_chars:
+            return cleaned
+        marker = " ...[中略]... "
+        if max_chars <= len(marker) + 32:
+            return cleaned[-max_chars:]
+        requested_tail = tail_chars if tail_chars is not None else max_chars // 2
+        tail_size = max(32, min(requested_tail, max_chars - len(marker) - 16))
+        head_size = max_chars - len(marker) - tail_size
+        if head_size < 16:
+            head_size = 16
+            tail_size = max_chars - len(marker) - head_size
+        return f"{cleaned[:head_size]}{marker}{cleaned[-tail_size:]}"
+
     def _context_reference(self, reference_text: str, context_packet: dict[str, Any] | None) -> str:
         if isinstance(context_packet, dict):
             references_text = str(context_packet.get("references_text") or "").strip()
             if references_text:
-                return self._reference_excerpt(references_text)
-        return self._reference_excerpt(reference_text)
+                return self._compact_text_with_tail(
+                    self._reference_excerpt(references_text),
+                    max_chars=self._positive_int(getattr(self.settings, "drafting_reference_max_chars", 1200), default=1200),
+                )
+        return self._compact_text_with_tail(
+            self._reference_excerpt(reference_text),
+            max_chars=self._positive_int(getattr(self.settings, "drafting_reference_max_chars", 1200), default=1200),
+        )
 
     def _context_memory(self, context_packet: dict[str, Any] | None) -> str:
         if not isinstance(context_packet, dict):
             return "无"
         memory_text = str(context_packet.get("memory_text") or "").strip()
-        return memory_text or "无"
+        return self._compact_text_with_tail(
+            memory_text or "无",
+            max_chars=self._positive_int(getattr(self.settings, "drafting_memory_max_chars", 400), default=400),
+        )
 
     def _recent_completed_summaries(self, completed_chapters: list[dict[str, Any]], limit: int = 20) -> list[str]:
-        if limit <= 0:
+        configured_limit = self._positive_int(
+            getattr(self.settings, "drafting_summary_window_size", limit),
+            default=limit,
+        )
+        effective_limit = configured_limit if configured_limit > 0 else limit
+        if effective_limit <= 0:
             return []
-        recent_items = completed_chapters[-limit:]
+        summary_source = completed_chapters[:-1] if len(completed_chapters) > 1 else completed_chapters
+        recent_items = summary_source[-effective_limit:]
         return [f"{ch['title']}:{ch['summary']}" for ch in recent_items]
 
     def _previous_chapter_full_text(self, completed_chapters: list[dict[str, Any]]) -> str:
         if not completed_chapters:
             return "无"
         content = str(completed_chapters[-1].get("content") or "").strip()
-        return content or "无"
+        return self._compact_text_with_tail(
+            content or "无",
+            max_chars=self._positive_int(getattr(self.settings, "drafting_previous_fulltext_max_chars", 1200), default=1200),
+            tail_chars=self._positive_int(getattr(self.settings, "drafting_previous_fulltext_tail_chars", 700), default=700),
+        )
 
     def _existing_draft_text(self, draft_seeds: dict[int, str] | None, chapter_number: int) -> str:
         if not isinstance(draft_seeds, dict):

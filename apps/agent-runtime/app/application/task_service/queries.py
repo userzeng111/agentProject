@@ -821,11 +821,15 @@ class TaskServiceQueriesMixin:
         usage_total = {field: 0 for field in token_fields}
         by_model: dict[str, dict[str, Any]] = {}
         by_stage: dict[str, dict[str, Any]] = {}
+        timing_by_stage: dict[str, dict[str, Any]] = {}
         latest_usage: dict[str, Any] | None = None
         latest_exchange: dict[str, Any] | None = None
+        slowest_step: dict[str, Any] | None = None
+        slowest_first_token: dict[str, Any] | None = None
         usage_count = 0
         exchange_count = 0
         cache_hit_count = 0
+        timing_count = 0
 
         for event in task.events:
             payload = event.payload if isinstance(event.payload, dict) else {}
@@ -864,8 +868,56 @@ class TaskServiceQueriesMixin:
                     latest_exchange["history_count"] = payload.get("history_count")
                 if isinstance(payload.get("parse_duration_ms"), (int, float)):
                     latest_exchange["parse_duration_ms"] = payload.get("parse_duration_ms")
+                raw_timing_details = payload.get("timing_details")
+                if isinstance(raw_timing_details, list):
+                    for raw_detail in raw_timing_details:
+                        if not isinstance(raw_detail, dict):
+                            continue
+                        stage = str(raw_detail.get("stage") or event.stage or "unknown")
+                        exchange_label = str(raw_detail.get("exchange_label") or payload.get("exchange_label") or event.unit_id or "")
+                        duration_ms = self._safe_non_negative_float(raw_detail.get("duration_ms"))
+                        first_token_ms = self._safe_non_negative_float(raw_detail.get("first_token_ms"))
+                        model = str(raw_detail.get("model") or payload.get("model") or task.model_id or "")
+                        bucket = timing_by_stage.setdefault(
+                            stage,
+                            {
+                                "call_count": 0,
+                                "total_duration_ms": 0.0,
+                                "max_duration_ms": 0.0,
+                                "max_first_token_ms": 0.0,
+                                "retry_count": 0,
+                                "repair_count": 0,
+                            },
+                        )
+                        bucket["call_count"] += 1
+                        bucket["total_duration_ms"] += duration_ms
+                        bucket["max_duration_ms"] = max(bucket["max_duration_ms"], duration_ms)
+                        bucket["max_first_token_ms"] = max(bucket["max_first_token_ms"], first_token_ms)
+                        if bool(raw_detail.get("is_retry")):
+                            bucket["retry_count"] += 1
+                        if bool(raw_detail.get("is_repair")):
+                            bucket["repair_count"] += 1
+                        timing_count += 1
+                        detail = {
+                            "stage": stage,
+                            "exchange_label": exchange_label,
+                            "model": model,
+                            "duration_ms": duration_ms,
+                            "first_token_ms": first_token_ms,
+                            "attempt": self._safe_non_negative_int(raw_detail.get("attempt")) or 1,
+                            "finish_reason": raw_detail.get("finish_reason"),
+                            "content_chars": self._safe_non_negative_int(raw_detail.get("content_chars")),
+                            "reasoning_chars": self._safe_non_negative_int(raw_detail.get("reasoning_chars")),
+                            "status": raw_detail.get("status") or "success",
+                            "is_retry": bool(raw_detail.get("is_retry")),
+                            "is_repair": bool(raw_detail.get("is_repair")),
+                        }
+                        if slowest_step is None or duration_ms > slowest_step["duration_ms"]:
+                            slowest_step = detail
+                        if first_token_ms > 0 and (slowest_first_token is None or first_token_ms > slowest_first_token["first_token_ms"]):
+                            slowest_first_token = detail
 
-        if usage_count == 0 and exchange_count == 0:
+        if usage_count == 0 and exchange_count == 0 and timing_count == 0:
             return {}
         return {
             "usage_total": usage_total,
@@ -874,6 +926,10 @@ class TaskServiceQueriesMixin:
             "by_stage": by_stage,
             "exchange_count": exchange_count,
             "cache_hit_count": cache_hit_count,
+            "timing_count": timing_count,
+            "timing_by_stage": timing_by_stage,
+            "slowest_step": slowest_step or {},
+            "slowest_first_token": slowest_first_token or {},
             "latest_exchange": latest_exchange or {},
             "latest_usage": latest_usage or {},
         }
@@ -912,6 +968,18 @@ class TaskServiceQueriesMixin:
         for field in ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens"):
             bucket[field] += usage[field]
         bucket["usage_count"] += 1
+
+    @staticmethod
+    def _safe_non_negative_float(*values: Any) -> float:
+        for value in values:
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                continue
+            return max(parsed, 0.0)
+        return 0.0
 
     @staticmethod
     def _safe_non_negative_int(*values: Any) -> int:

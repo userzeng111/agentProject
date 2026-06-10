@@ -335,6 +335,22 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 "history_count": 2,
                 "exchange_label": "outline",
                 "parse_duration_ms": 12.5,
+                "timing_details": [
+                    {
+                        "stage": "planning",
+                        "exchange_label": "outline",
+                        "model": "gpt-5.4",
+                        "first_token_ms": 1200.0,
+                        "duration_ms": 12321.0,
+                        "attempt": 1,
+                        "finish_reason": "stop",
+                        "content_chars": 640,
+                        "reasoning_chars": 1200,
+                        "status": "success",
+                        "is_retry": False,
+                        "is_repair": False,
+                    }
+                ],
             },
         )
         self.store.append_event(
@@ -349,6 +365,36 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 "model": "K2.6",
                 "history_count": 4,
                 "exchange_label": "chapter-01",
+            },
+        )
+        self.store.append_event(
+            task.id,
+            stage="verification",
+            message="verification 阶段已记录模型上下文链：full-story-verification",
+            event_type="context.history.updated",
+            unit_id="full-story-verification",
+            payload={
+                "cache_hit": False,
+                "model": "gpt-5.4",
+                "history_count": 5,
+                "exchange_label": "full-story-verification",
+                "parse_duration_ms": 18.0,
+                "timing_details": [
+                    {
+                        "stage": "verification",
+                        "exchange_label": "full-story-verification",
+                        "model": "gpt-5.4",
+                        "first_token_ms": 4200.0,
+                        "duration_ms": 52000.0,
+                        "attempt": 1,
+                        "finish_reason": "stop",
+                        "content_chars": 880,
+                        "reasoning_chars": 2600,
+                        "status": "success",
+                        "is_retry": False,
+                        "is_repair": False,
+                    }
+                ],
             },
         )
 
@@ -369,11 +415,18 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["by_model"]["gpt-5.4"]["total_tokens"], 140)
         self.assertEqual(report["by_model"]["gpt-5.4"]["usage_count"], 1)
         self.assertEqual(report["by_stage"]["planning"]["total_tokens"], 140)
-        self.assertEqual(report["exchange_count"], 2)
+        self.assertEqual(report["exchange_count"], 3)
         self.assertEqual(report["cache_hit_count"], 1)
-        self.assertEqual(report["latest_exchange"]["exchange_label"], "chapter-01")
-        self.assertTrue(report["latest_exchange"]["cache_hit"])
+        self.assertEqual(report["latest_exchange"]["exchange_label"], "full-story-verification")
+        self.assertFalse(report["latest_exchange"]["cache_hit"])
         self.assertEqual(report["latest_usage"]["model"], "gpt-5.4")
+        self.assertEqual(report["timing_count"], 2)
+        self.assertEqual(report["timing_by_stage"]["planning"]["call_count"], 1)
+        self.assertEqual(report["timing_by_stage"]["verification"]["total_duration_ms"], 52000.0)
+        self.assertEqual(report["slowest_step"]["exchange_label"], "full-story-verification")
+        self.assertEqual(report["slowest_step"]["duration_ms"], 52000.0)
+        self.assertEqual(report["slowest_first_token"]["exchange_label"], "full-story-verification")
+        self.assertEqual(report["slowest_first_token"]["first_token_ms"], 4200.0)
 
     def test_review_endpoint_returns_outline_revision_count(self) -> None:
         task = self.task_service.create_task(

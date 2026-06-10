@@ -67,11 +67,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("PROVIDER_PROMPT_CACHE_TTL"),
     )
     verification_max_tokens: int = Field(
-        default=4096,
+        default=2400,
         validation_alias=AliasChoices("VERIFICATION_MAX_TOKENS"),
     )
     verification_short_max_tokens: int = Field(
-        default=2400,
+        default=900,
         validation_alias=AliasChoices("VERIFICATION_SHORT_MAX_TOKENS"),
     )
     verification_short_chapter_threshold: int = Field(
@@ -89,6 +89,26 @@ class Settings(BaseSettings):
     verification_excerpt_chars_per_chapter: int = Field(
         default=1600,
         validation_alias=AliasChoices("VERIFICATION_EXCERPT_CHARS_PER_CHAPTER"),
+    )
+    drafting_reference_max_chars: int = Field(
+        default=1200,
+        validation_alias=AliasChoices("DRAFTING_REFERENCE_MAX_CHARS"),
+    )
+    drafting_memory_max_chars: int = Field(
+        default=400,
+        validation_alias=AliasChoices("DRAFTING_MEMORY_MAX_CHARS"),
+    )
+    drafting_summary_window_size: int = Field(
+        default=8,
+        validation_alias=AliasChoices("DRAFTING_SUMMARY_WINDOW_SIZE"),
+    )
+    drafting_previous_fulltext_max_chars: int = Field(
+        default=1200,
+        validation_alias=AliasChoices("DRAFTING_PREVIOUS_FULLTEXT_MAX_CHARS"),
+    )
+    drafting_previous_fulltext_tail_chars: int = Field(
+        default=700,
+        validation_alias=AliasChoices("DRAFTING_PREVIOUS_FULLTEXT_TAIL_CHARS"),
     )
     chapter_gate_recent_fulltext_count: int = Field(
         default=1,

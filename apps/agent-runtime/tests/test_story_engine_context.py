@@ -845,6 +845,47 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(usage_events[0]["payload"]["cached_tokens"], 2856)
             self.assertEqual(usage_events[0]["payload"]["cache_read_input_tokens"], 2856)
 
+    def test_stream_exchange_callback_includes_timing_details(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = StreamSuccessGateway(
+                payload={
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角重开玄脉。",
+                    "content": "第一章正文",
+                }
+            )
+            exchanges: list[dict] = []
+
+            payload, _ = engine._complete_stream_json_with_cache(  # noqa: SLF001
+                request_messages=[
+                    {"role": "system", "content": "你是章节起草助手。"},
+                    {"role": "user", "content": "当前章节序号：1\n请输出 JSON。"},
+                ],
+                model="K2.6",
+                stage="drafting",
+                exchange_label="chapter-01",
+                exchange_callback=exchanges.append,
+                progress_callback=None,
+                max_tokens=1024,
+            )
+
+            self.assertEqual(payload["number"], 1)
+            self.assertEqual(len(exchanges), 1)
+            self.assertIn("timing_details", exchanges[0])
+            self.assertEqual(len(exchanges[0]["timing_details"]), 1)
+            self.assertEqual(exchanges[0]["timing_details"][0]["stage"], "drafting")
+            self.assertEqual(exchanges[0]["timing_details"][0]["exchange_label"], "chapter-01")
+            self.assertIn("duration_ms", exchanges[0]["timing_details"][0])
+            self.assertIn("first_token_ms", exchanges[0]["timing_details"][0])
+
     def test_generate_chapter_pair_parallelizes_three_chapter_batch_with_configured_worker_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -967,6 +1008,38 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertIn("尾部关键设定", reference_excerpt)
             self.assertGreater(len(reference_excerpt), 80)
+
+    def test_context_reference_and_memory_are_compacted_with_tail_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    DRAFTING_REFERENCE_MAX_CHARS=120,
+                    DRAFTING_MEMORY_MAX_CHARS=90,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            reference_text = "开头设定" + ("甲" * 160) + "中段冗余信息" + ("乙" * 160) + "尾部关键设定"
+            memory_text = "前情提要" + ("丙" * 80) + "中段记忆" + ("丁" * 80) + "尾部行动约束"
+
+            reference_excerpt = engine._context_reference(  # noqa: SLF001
+                "备用参考",
+                {"references_text": reference_text},
+            )
+            memory_excerpt = engine._context_memory(  # noqa: SLF001
+                {"memory_text": memory_text},
+            )
+
+            self.assertIn("开头设定", reference_excerpt)
+            self.assertIn("尾部关键设定", reference_excerpt)
+            self.assertNotIn("中段冗余信息", reference_excerpt)
+            self.assertLess(len(reference_excerpt), len(reference_text))
+
+            self.assertIn("前情提要", memory_excerpt)
+            self.assertIn("尾部行动约束", memory_excerpt)
+            self.assertNotIn("中段记忆", memory_excerpt)
+            self.assertLess(len(memory_excerpt), len(memory_text))
 
     def test_verify_full_story_uses_compact_excerpt_without_losing_tail_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1125,16 +1198,18 @@ class StoryEngineContextTests(unittest.TestCase):
             )
 
             call = gateway.stream_calls[0]
-            self.assertEqual(call["kwargs"].get("max_tokens"), 4096)
+            self.assertEqual(call["kwargs"].get("max_tokens"), 2400)
             self.assertNotEqual(call["kwargs"].get("max_tokens"), 10000)
             rendered_prompt = call["messages"][-1]["content"]
-            self.assertIn("最多 5 个问题", rendered_prompt)
-            self.assertIn("description 不超过 60 个字", rendered_prompt)
-            self.assertIn("suggestion 不超过 60 个字", rendered_prompt)
-            self.assertIn("summary 不超过 80 个字", rendered_prompt)
+            self.assertIn("最多 3 个问题", rendered_prompt)
+            self.assertIn("description 不超过 40 个字", rendered_prompt)
+            self.assertIn("suggestion 不超过 40 个字", rendered_prompt)
+            self.assertIn("summary 不超过 50 个字", rendered_prompt)
             self.assertIn("只报告影响主线理解的问题", rendered_prompt)
             self.assertIn("不要逐章复述", rendered_prompt)
             self.assertIn("不要输出分析过程", rendered_prompt)
+            self.assertIn("若没有关键问题，issues 返回空数组", rendered_prompt)
+            self.assertIn("只给一句简短通过结论", rendered_prompt)
 
     def test_verify_full_story_uses_configured_verification_max_tokens_override(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1143,6 +1218,7 @@ class StoryEngineContextTests(unittest.TestCase):
                     openai_api_key="test-key",
                     default_chat_model="mimo-v2.5-pro",
                     VERIFICATION_MAX_TOKENS=1600,
+                    VERIFICATION_SHORT_CHAPTER_THRESHOLD=0,
                     tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 )
             )
@@ -1175,8 +1251,8 @@ class StoryEngineContextTests(unittest.TestCase):
                 Settings(
                     openai_api_key="test-key",
                     default_chat_model="mimo-v2.5-pro",
-                    VERIFICATION_MAX_TOKENS=4096,
-                    VERIFICATION_SHORT_MAX_TOKENS=1200,
+                    VERIFICATION_MAX_TOKENS=2400,
+                    VERIFICATION_SHORT_MAX_TOKENS=900,
                     tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 )
             )
@@ -1201,7 +1277,59 @@ class StoryEngineContextTests(unittest.TestCase):
                 model="mimo-v2.5-pro",
             )
 
-            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1200)
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 900)
+
+    def test_generate_chapter_pair_uses_tighter_direct_writing_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角抵达港口。",
+                    "content": "第一章正文",
+                }
+            )
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "写一个港口悬疑故事",
+                    "genre": "悬疑",
+                    "style": "冷峻",
+                    "chapter_word_min": 600,
+                    "chapter_word_max": 780,
+                    "chapter_word_range_text": "600 到 780",
+                },
+                story_plan={
+                    "working_title": "港口迷雾",
+                    "logline": "调查员在港口迷雾中追查失踪案。",
+                    "planned_chapter_count": 1,
+                    "chapter_plan": [
+                        {"number": 1, "title": "抵达港口", "goal": "主角进入现场并发现异常。"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(len(drafts), 1)
+            rendered_prompt = gateway.stream_calls[0]["messages"][-1]["content"]
+            self.assertIn("直接输出章节内容", rendered_prompt)
+            self.assertIn("不要自述写作思路", rendered_prompt)
+            self.assertIn("不要解释人物关系", rendered_prompt)
+            self.assertIn("不要在正文外追加说明", rendered_prompt)
 
     def test_verify_chapter_window_uses_recent_one_fulltext_and_last_ten_summaries_without_overlap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1345,8 +1473,8 @@ class StoryEngineContextTests(unittest.TestCase):
 
             self.assertEqual(result, payload)
             self.assertEqual(len(gateway.calls), 2)
-            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 4096)
-            self.assertEqual(gateway.calls[1]["kwargs"].get("max_tokens"), 8192)
+            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 2400)
+            self.assertEqual(gateway.calls[1]["kwargs"].get("max_tokens"), 4800)
             self.assertNotIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
             self.assertIn("不要输出分析过程", gateway.calls[1]["messages"][-1]["content"])
 
@@ -1528,12 +1656,15 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("中文小说章节起草助手", first_call_messages[0]["content"])
             self.assertNotEqual(first_call_messages[0]["content"], "你是小说策划助手。")
 
-    def test_generate_chapter_pair_includes_previous_fulltext_uses_recent_twenty_summaries_and_existing_draft(self) -> None:
+    def test_generate_chapter_pair_compacts_previous_fulltext_and_recent_summaries(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
                 Settings(
                     openai_api_key="test-key",
                     default_chat_model="gpt-5.4",
+                    DRAFTING_SUMMARY_WINDOW_SIZE=8,
+                    DRAFTING_PREVIOUS_FULLTEXT_MAX_CHARS=120,
+                    DRAFTING_PREVIOUS_FULLTEXT_TAIL_CHARS=40,
                     tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 )
             )
@@ -1554,7 +1685,11 @@ class StoryEngineContextTests(unittest.TestCase):
                     "number": number,
                     "title": f"第{number}章",
                     "summary": f"摘要{number}",
-                    "content": f"第{number}章正文",
+                    "content": (
+                        "上一章开头线索" + ("甲" * 80) + "中段重复铺垫" + ("乙" * 80) + "上一章尾部关键反转"
+                        if number == 21
+                        else f"第{number}章正文"
+                    ),
                 }
                 for number in range(1, 22)
             ]
@@ -1587,11 +1722,14 @@ class StoryEngineContextTests(unittest.TestCase):
             )
 
             prompt = fake_gateway.calls[0]["messages"][-1]["content"]
-            self.assertIn("上一章全文：第21章正文", prompt)
+            self.assertIn("上一章开头线索", prompt)
+            self.assertIn("上一章尾部关键反转", prompt)
+            self.assertNotIn("中段重复铺垫", prompt)
             self.assertIn("当前章节历史草稿：这是第二十二章的历史草稿片段。", prompt)
-            self.assertIn("第2章:摘要2", prompt)
-            self.assertIn("第21章:摘要21", prompt)
-            self.assertNotIn("第1章:摘要1", prompt)
+            self.assertIn("第13章:摘要13", prompt)
+            self.assertIn("第20章:摘要20", prompt)
+            self.assertNotIn("第12章:摘要12", prompt)
+            self.assertNotIn("第21章:摘要21", prompt)
 
     def test_build_story_plan_uses_persistent_response_cache_across_engine_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

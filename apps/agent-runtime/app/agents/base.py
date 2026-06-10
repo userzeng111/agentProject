@@ -16,6 +16,7 @@ import json
 from app.observability import get_logger
 from collections.abc import Callable
 from pathlib import Path
+import time
 from typing import Any
 
 from app.agents.loader import SkillLoader
@@ -107,7 +108,7 @@ class BaseAgent:
 
         可选通过 progress_callback 透传思考链事件。
         """
-        content, _ = self._call_llm_stream_with_metadata(
+        content, _, _ = self._call_llm_stream_with_metadata(
             messages,
             model,
             progress_callback=progress_callback,
@@ -128,8 +129,8 @@ class BaseAgent:
         unit_id: str = "",
         max_tokens: int | None = None,
         request_options: dict[str, Any] | None = None,
-    ) -> tuple[str, str | None]:
-        """流式调用 LLM，返回完整文本内容和终止原因。"""
+    ) -> tuple[str, str | None, dict[str, Any]]:
+        """流式调用 LLM，返回完整文本内容、终止原因和耗时元数据。"""
         gc = self._require_gateway_client()
         full_content = ""
         full_reasoning = ""
@@ -138,6 +139,10 @@ class BaseAgent:
         request_kwargs: dict[str, Any] = dict(request_options or {})
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
+        request_kwargs["_obs_stage"] = stage
+        request_kwargs["_obs_exchange_label"] = unit_id
+        started = time.perf_counter()
+        first_token_ms: float | None = None
         try:
             for chunk in gc.complete_stream_sync(messages, model=model, **request_kwargs):
                 if chunk.finish_reason:
@@ -156,8 +161,10 @@ class BaseAgent:
                     })
                 if chunk.reasoning_content:
                     saw_stream_output = True
+                    if first_token_ms is None:
+                        first_token_ms = (time.perf_counter() - started) * 1000
+                    full_reasoning += chunk.reasoning_content
                     if progress_callback:
-                        full_reasoning += chunk.reasoning_content
                         progress_callback({
                             "event_type": "model.thinking",
                             "stage": stage,
@@ -172,6 +179,8 @@ class BaseAgent:
                         })
                 if chunk.content:
                     saw_stream_output = True
+                    if first_token_ms is None:
+                        first_token_ms = (time.perf_counter() - started) * 1000
                     full_content += chunk.content
         except Exception as exc:
             if saw_stream_output:
@@ -179,7 +188,19 @@ class BaseAgent:
                     "流式响应已开始后中断，已保留最近稳定阶段，请从恢复入口继续。"
                 ) from exc
             raise
-        return full_content, finish_reason
+        duration_ms = (time.perf_counter() - started) * 1000
+        return full_content, finish_reason, {
+            "stage": stage,
+            "exchange_label": unit_id,
+            "model": model,
+            "first_token_ms": first_token_ms,
+            "duration_ms": duration_ms,
+            "finish_reason": finish_reason,
+            "content_chars": len(full_content),
+            "reasoning_chars": len(full_reasoning),
+            "status": "success",
+            "attempt": 1,
+        }
 
     async def _call_llm_stream_async(
         self,

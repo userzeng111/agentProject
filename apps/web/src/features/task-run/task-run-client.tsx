@@ -792,6 +792,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         requested_chapter_count: requestedChapterCount,
         continue_request_id: requestId,
         model_id: resolvedActionModelId || undefined,
+      }, {
+        continue_request_id: requestId,
       });
       await refreshWorkspace();
       setError("");

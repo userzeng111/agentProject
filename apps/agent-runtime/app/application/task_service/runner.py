@@ -329,6 +329,7 @@ class TaskServiceRunnerMixin:
             prompt_diagnostics = event.get("prompt_diagnostics") if isinstance(event.get("prompt_diagnostics"), dict) else {}
             parse_duration_ms = event.get("parse_duration_ms")
             model_name = str(event.get("model") or self.engine.settings.default_chat_model)
+            timing_details = event.get("timing_details") if isinstance(event.get("timing_details"), list) else []
             message = (
                 f"{stage} 阶段已命中模型响应缓存：{exchange_label}"
                 if cache_hit
@@ -351,6 +352,7 @@ class TaskServiceRunnerMixin:
                     "exchange_label": exchange_label,
                     "prompt_diagnostics": prompt_diagnostics,
                     "parse_duration_ms": parse_duration_ms,
+                    "timing_details": [dict(item) for item in timing_details if isinstance(item, dict)],
                 },
             )
 
