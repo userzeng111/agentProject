@@ -102,6 +102,10 @@ class Settings(BaseSettings):
         default=8,
         validation_alias=AliasChoices("DRAFTING_SUMMARY_WINDOW_SIZE"),
     )
+    drafting_chapter_titles_window_size: int = Field(
+        default=5,
+        validation_alias=AliasChoices("DRAFTING_CHAPTER_TITLES_WINDOW_SIZE"),
+    )
     drafting_previous_fulltext_max_chars: int = Field(
         default=1200,
         validation_alias=AliasChoices("DRAFTING_PREVIOUS_FULLTEXT_MAX_CHARS"),

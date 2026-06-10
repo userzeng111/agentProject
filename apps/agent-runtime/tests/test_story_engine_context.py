@@ -133,6 +133,21 @@ class StreamReasoningOnlyLengthThenSuccessGateway(StreamGatewayBase):
         yield StreamChunk(finish_reason="stop", model=model or "")
 
 
+class StreamPartialJsonLengthThenSuccessGateway(StreamGatewayBase):
+    def __init__(self, retry_payload: dict) -> None:
+        self.retry_payload = retry_payload
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if len(self.calls) == 1:
+            yield StreamChunk(content='{"overall_score":95,"issues":[{"severity":"warning"', model=model or "")
+            yield StreamChunk(finish_reason="length", model=model or "")
+            return
+        yield StreamChunk(content=json.dumps(self.retry_payload, ensure_ascii=False), model=model or "")
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
 class StreamInvalidThenInvalidRepairGateway(StreamGatewayBase):
     def __init__(self, first_raw: str, repair_raw: str) -> None:
         self.first_raw = first_raw
@@ -1478,7 +1493,64 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertNotIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
             self.assertIn("不要输出分析过程", gateway.calls[1]["messages"][-1]["content"])
 
-    def test_generate_draft_reuses_previous_turns_as_message_history(self) -> None:
+    def test_verify_full_story_retries_non_empty_length_before_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "models": {
+                            "mimo-v2.5-pro": {
+                                "max_input_tokens": 200000,
+                                "max_output_tokens": 10000,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    VERIFICATION_SHORT_CHAPTER_THRESHOLD=0,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            payload = {
+                "overall_score": 95,
+                "issues": [],
+                "summary": "验证通过",
+            }
+            gateway = StreamPartialJsonLengthThenSuccessGateway(payload)
+            engine.gateway_client = gateway
+
+            result = engine.verify_full_story(
+                completed_chapters=[
+                    {"number": 1, "title": "第一章", "content": "第一章正文"},
+                ],
+                story_plan={
+                    "working_title": "验证重试",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(result, payload)
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 2400)
+            self.assertEqual(gateway.calls[1]["kwargs"].get("max_tokens"), 4800)
+            self.assertIn("请重新完整输出", gateway.calls[1]["messages"][-1]["content"])
+            self.assertNotIn("重新输出一个完整、可解析的 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
+
+    def test_generate_draft_reuses_previous_chapter_context_without_assistant_json_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
                 Settings(
@@ -1537,9 +1609,127 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(len(fake_gateway.calls), 2)
             self.assertEqual(len(fake_gateway.calls[0]["messages"]), 2)
             second_call_messages = fake_gateway.calls[1]["messages"]
-            self.assertGreaterEqual(len(second_call_messages), 4)
-            self.assertTrue(any(message["role"] == "assistant" for message in second_call_messages))
-            self.assertIn("第一章", second_call_messages[-2]["content"])
+            self.assertEqual(len(second_call_messages), 3)
+            self.assertFalse(any(message["role"] == "assistant" for message in second_call_messages))
+            self.assertIn("第一章:主角发现异样", second_call_messages[-1]["content"])
+            self.assertIn("上一章全文：第一章内容", second_call_messages[-1]["content"])
+
+    def test_generate_draft_does_not_reuse_previous_chapter_assistant_json_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "number": 1,
+                        "title": "第一章",
+                        "summary": "主角追查夜航记录",
+                        "content": "第一章内容",
+                    },
+                    {
+                        "number": 2,
+                        "title": "第二章",
+                        "summary": "主角继续深入调查",
+                        "content": "第二章内容",
+                    },
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            engine.generate_draft(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "写一篇追查夜航记录的悬疑故事",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "chapter_word_min": 2200,
+                    "chapter_word_max": 2860,
+                    "model_id": "gpt-5.4",
+                },
+                story_plan={
+                    "working_title": "夜航记录",
+                    "logline": "档案员追查被改动的记录",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "发现问题"},
+                        {"number": 2, "title": "第二章", "goal": "继续追查"},
+                    ],
+                },
+                reference_text="港口、潮汐、夜航记录。",
+                context_packet={
+                    "memory_text": "保持冷静克制，记录职业细节。",
+                    "references_text": "港口、潮汐、夜航记录。",
+                },
+                model="gpt-5.4",
+            )
+
+            second_call_messages = fake_gateway.calls[1]["messages"]
+            self.assertFalse(any(message["role"] == "assistant" for message in second_call_messages))
+
+    def test_generate_chapter_pair_sequential_path_does_not_reuse_previous_assistant_json_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    CHAPTER_PARALLEL_DRAFT_ENABLED=False,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "number": 1,
+                        "title": "第一章",
+                        "summary": "主角抵达港口。",
+                        "content": "第一章内容",
+                    },
+                    {
+                        "number": 2,
+                        "title": "第二章",
+                        "summary": "主角继续追查。",
+                        "content": "第二章内容",
+                    },
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "写一篇追查夜航记录的悬疑故事",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "chapter_word_min": 2200,
+                    "chapter_word_max": 2860,
+                    "model_id": "gpt-5.4",
+                },
+                story_plan={
+                    "working_title": "夜航记录",
+                    "logline": "档案员追查被改动的记录",
+                    "chapter_plan": [
+                        {"number": 1, "title": "第一章", "goal": "发现问题"},
+                        {"number": 2, "title": "第二章", "goal": "继续追查"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="港口、潮汐、夜航记录。",
+                model="gpt-5.4",
+                requested_batch_size=2,
+            )
+
+            self.assertEqual(len(drafts), 2)
+            second_call_messages = fake_gateway.calls[1]["messages"]
+            self.assertFalse(any(message["role"] == "assistant" for message in second_call_messages))
 
     def test_generate_draft_can_start_from_existing_question_answer_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1730,6 +1920,67 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn("第20章:摘要20", prompt)
             self.assertNotIn("第12章:摘要12", prompt)
             self.assertNotIn("第21章:摘要21", prompt)
+
+    def test_generate_chapter_pair_limits_chapter_titles_to_local_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    DRAFTING_SUMMARY_WINDOW_SIZE=8,
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            fake_gateway = FakeGatewayClient(
+                [
+                    {
+                        "number": 10,
+                        "title": "锚点-10",
+                        "summary": "第十章摘要",
+                        "content": "第十章内容",
+                    }
+                ]
+            )
+            engine.gateway_client = fake_gateway
+
+            chapter_plan = [
+                {"number": number, "title": f"锚点-{number:02d}", "goal": f"推进{number}"}
+                for number in range(1, 16)
+            ]
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "long_story",
+                    "creative_mode": "original",
+                    "novel_size": "long",
+                    "prompt": "写一篇港口悬疑长篇",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "chapter_word_min": 2200,
+                    "chapter_word_max": 2860,
+                    "model_id": "gpt-5.4",
+                },
+                story_plan={
+                    "working_title": "旧港回声",
+                    "logline": "档案员追查港口失踪案。",
+                    "chapter_plan": chapter_plan,
+                },
+                batch_index=9,
+                completed_chapters=[],
+                reference_text="旧港、灯塔、夜航日志。",
+                model="gpt-5.4",
+                requested_batch_size=1,
+            )
+
+            self.assertEqual(len(drafts), 1)
+            prompt = fake_gateway.calls[0]["messages"][-1]["content"]
+            self.assertIn("锚点-08", prompt)
+            self.assertIn("锚点-09", prompt)
+            self.assertIn("锚点-10", prompt)
+            self.assertIn("锚点-11", prompt)
+            self.assertIn("锚点-12", prompt)
+            self.assertNotIn("锚点-01", prompt)
+            self.assertNotIn("锚点-15", prompt)
 
     def test_build_story_plan_uses_persistent_response_cache_across_engine_instances(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

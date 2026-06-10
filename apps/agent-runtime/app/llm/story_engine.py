@@ -45,8 +45,8 @@ _STREAM_JSON_REPAIR_PROMPT = (
 )
 
 _VERIFICATION_TRUNCATED_RETRY_PROMPT = (
-    "上一次全文验证响应被输出预算截断，只产生了模型思考过程，没有返回 JSON。"
-    "请停止分析，直接输出一个极短 JSON 对象。"
+    "上一次全文验证响应被输出预算截断，JSON 结果不完整。"
+    "请停止分析，请重新完整输出一个极短 JSON 对象。"
     "必须包含 issues、overall_score、summary 三个字段。"
     "issues 最多 3 条；description、suggestion、summary 都必须简短。"
     "不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
@@ -647,7 +647,12 @@ class StoryEngine(BaseAgent):
                 chapter_number=item["number"],
                 chapter_title=self._escape_user_input(item["title"]),
                 chapter_goal=self._escape_user_input(item["goal"]),
-                chapter_titles=self._escape_user_input(" / ".join(ch["title"] for ch in chapter_plan)),
+                chapter_titles=self._escape_user_input(
+                    self._chapter_titles_window_text(
+                        chapter_plan,
+                        current_chapter_number=int(item["number"]),
+                    )
+                ),
                 completed_summaries=self._escape_user_input("；".join(completed_summaries) if completed_summaries else "无"),
                 previous_chapter_full_text=self._escape_user_input(previous_chapter_full_text),
                 current_chapter_existing_draft="无",
@@ -663,7 +668,7 @@ class StoryEngine(BaseAgent):
                 conversation_history=conversation_history,
                 prompt_messages=chapter_request_messages,
             )
-            chapter_payload, conversation_history = self._complete_stream_json_with_cache(
+            chapter_payload, next_conversation_history = self._complete_stream_json_with_cache(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="drafting",
@@ -676,6 +681,7 @@ class StoryEngine(BaseAgent):
                     boundaries=boundaries,
                 ),
             )
+            conversation_history = self._drafting_history_for_next_request(next_conversation_history)
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(chapter_payload))
             chapters.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
@@ -688,6 +694,7 @@ class StoryEngine(BaseAgent):
                         "stage": "drafting",
                         "unit_id": f"chapter-{chapter_draft.number:02d}",
                         "message": f"第 {chapter_draft.number} 章已生成：{chapter_draft.title}",
+                        "conversation_history": next_conversation_history,
                         "payload": {
                             "chapter_number": chapter_draft.number,
                             "chapter_title": chapter_draft.title,
@@ -798,7 +805,12 @@ class StoryEngine(BaseAgent):
                 chapter_number=plan["number"],
                 chapter_title=self._escape_user_input(plan["title"]),
                 chapter_goal=self._escape_user_input(plan["goal"]),
-                chapter_titles=self._escape_user_input(" / ".join(ch["title"] for ch in chapter_plan)),
+                chapter_titles=self._escape_user_input(
+                    self._chapter_titles_window_text(
+                        chapter_plan,
+                        current_chapter_number=int(plan["number"]),
+                    )
+                ),
                 completed_summaries=self._escape_user_input(prompt_completed_text),
                 previous_chapter_full_text=self._escape_user_input(prompt_previous_chapter_full_text),
                 current_chapter_existing_draft=self._escape_user_input(self._existing_draft_text(draft_seeds, int(plan["number"]))),
@@ -865,13 +877,13 @@ class StoryEngine(BaseAgent):
 
         drafts: list[ChapterDraft] = []
         for plan in pair_plans:
-            chapter_draft, conversation_history = generate_one_chapter(
+            chapter_draft, next_conversation_history = generate_one_chapter(
                 plan,
                 prompt_completed_text=completed_text,
                 prompt_previous_chapter_full_text=previous_chapter_full_text,
                 prompt_conversation_history=conversation_history,
             )
-
+            conversation_history = self._drafting_history_for_next_request(next_conversation_history)
             drafts.append(chapter_draft)
             completed_summaries.append(f"{chapter_draft.title}:{chapter_draft.summary}")
             completed_summaries = completed_summaries[-20:]
@@ -1250,6 +1262,23 @@ class StoryEngine(BaseAgent):
         }
         return [dict(item) for item in request_messages] + [assistant_message]
 
+    @staticmethod
+    def _is_structured_assistant_json_message(message: dict[str, str]) -> bool:
+        if str(message.get("role") or "") != "assistant":
+            return False
+        content = str(message.get("content") or "").strip()
+        return content.startswith("{") or content.startswith("[")
+
+    def _drafting_history_for_next_request(
+        self,
+        conversation_history: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        return [
+            dict(item)
+            for item in conversation_history
+            if not self._is_structured_assistant_json_message(item)
+        ]
+
     def _chapter_response_boundaries(self) -> dict[str, str]:
         suffix = secrets.token_hex(6)
         return {
@@ -1466,7 +1495,73 @@ class StoryEngine(BaseAgent):
             parse_exchange_label = f"{exchange_label}-retry"
         try:
             payload = parser(full_content)
+            if (
+                self._should_retry_non_empty_truncated_response(
+                    content=full_content,
+                    finish_reason=finish_reason,
+                    max_tokens=max_tokens,
+                    retry_max_tokens=empty_truncated_retry_max_tokens,
+                    retry_prompt=empty_truncated_retry_prompt,
+                )
+                and not self._is_complete_verification_payload(payload)
+            ):
+                raise GatewayClientError("全文验证 JSON 因输出预算截断而不完整。")
         except (GatewayClientError, json.JSONDecodeError) as exc:
+            if self._should_retry_non_empty_truncated_response(
+                content=full_content,
+                finish_reason=finish_reason,
+                max_tokens=max_tokens,
+                retry_max_tokens=empty_truncated_retry_max_tokens,
+                retry_prompt=empty_truncated_retry_prompt,
+            ):
+                retry_messages = [dict(item) for item in request_messages] + [
+                    {"role": "user", "content": empty_truncated_retry_prompt or ""},
+                ]
+                retry_max_tokens = empty_truncated_retry_max_tokens
+                logger.warning(
+                    "流式 JSON 响应非空但被截断，使用更高预算重试: stage=%s exchange_label=%s finish_reason=%s max_tokens=%s retry_max_tokens=%s",
+                    stage,
+                    exchange_label,
+                    finish_reason,
+                    max_tokens,
+                    retry_max_tokens,
+                )
+                full_content, finish_reason, retry_timing_meta = self._call_llm_stream_with_metadata(
+                    retry_messages,
+                    model,
+                    progress_callback=active_progress,
+                    stage=stage,
+                    unit_id=f"{exchange_label}-retry",
+                    max_tokens=retry_max_tokens,
+                    request_options=request_options,
+                )
+                timing_details.append({
+                    **retry_timing_meta,
+                    "stage": stage,
+                    "exchange_label": f"{exchange_label}-retry",
+                    "is_retry": True,
+                    "is_repair": False,
+                })
+                parse_request_messages = retry_messages
+                parse_exchange_label = f"{exchange_label}-retry"
+                payload = parser(full_content)
+                parse_duration_ms = (time.perf_counter() - parse_started) * 1000
+                self.response_cache.set(cache_key, payload)
+                conversation_history = self._append_assistant_message(request_messages, payload)
+                self._emit_exchange(
+                    callback=exchange_callback,
+                    stage=stage,
+                    exchange_label=exchange_label,
+                    model=model,
+                    cache_hit=False,
+                    request_messages=request_messages,
+                    conversation_history=conversation_history,
+                    response_payload=payload,
+                    cache_key=cache_key,
+                    parse_duration_ms=parse_duration_ms,
+                    timing_details=timing_details,
+                )
+                return payload, conversation_history
             self._emit_parse_failed_exchange(
                 callback=exchange_callback,
                 stage=stage,
@@ -1549,6 +1644,35 @@ class StoryEngine(BaseAgent):
         if normalized_finish_reason not in _TRUNCATED_FINISH_REASONS:
             return False
         return max_tokens is None or retry_max_tokens > max_tokens
+
+    @staticmethod
+    def _should_retry_non_empty_truncated_response(
+        content: str,
+        finish_reason: str | None,
+        *,
+        max_tokens: int | None,
+        retry_max_tokens: int | None,
+        retry_prompt: str | None,
+    ) -> bool:
+        if not retry_prompt or not retry_max_tokens:
+            return False
+        if not content.strip():
+            return False
+        normalized_finish_reason = (finish_reason or "").strip().lower()
+        if normalized_finish_reason not in _TRUNCATED_FINISH_REASONS:
+            return False
+        return max_tokens is None or retry_max_tokens > max_tokens
+
+    @staticmethod
+    def _is_complete_verification_payload(payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        return (
+            "issues" in payload
+            and isinstance(payload.get("issues"), list)
+            and "overall_score" in payload
+            and "summary" in payload
+        )
 
     def _build_story_plan_with_retry(
         self,
@@ -1778,6 +1902,36 @@ class StoryEngine(BaseAgent):
         return int(
             spec.get("chapter_word_min", spec.get("requested_target_words", spec.get("target_words", 1800))) or 1800
         )
+
+    def _chapter_titles_window_text(
+        self,
+        chapter_plan: list[dict[str, Any]],
+        *,
+        current_chapter_number: int,
+    ) -> str:
+        configured_size = self._positive_int(
+            getattr(self.settings, "drafting_chapter_titles_window_size", 5),
+            default=5,
+        )
+        if configured_size <= 0:
+            configured_size = 5
+        if not chapter_plan:
+            return "无"
+        if len(chapter_plan) <= configured_size:
+            return " / ".join(str(ch.get("title") or "") for ch in chapter_plan if str(ch.get("title") or "").strip())
+        current_index = 0
+        for index, chapter in enumerate(chapter_plan):
+            if int(chapter.get("number") or 0) == current_chapter_number:
+                current_index = index
+                break
+        half = configured_size // 2
+        start = max(current_index - half, 0)
+        end = start + configured_size
+        if end > len(chapter_plan):
+            end = len(chapter_plan)
+            start = max(end - configured_size, 0)
+        window = chapter_plan[start:end]
+        return " / ".join(str(ch.get("title") or "") for ch in window if str(ch.get("title") or "").strip()) or "无"
 
     def _chapter_batch_size(self, spec: dict[str, Any], *, completed_count: int, total_chapters: int) -> int:
         remaining = max(total_chapters - completed_count, 0)

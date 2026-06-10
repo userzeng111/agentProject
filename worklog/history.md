@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：下一轮性能优化规划
+  路径：`worklog/archive/backend-performance/20260610-01-下一轮性能优化规划.md`
+  摘要：完成 verification 截断重试修复与 drafting A1/A2 瘦身，真实样本确认 A1 有收益、A2 新增收益有限。
+
 - 标题：后端链路耗时与最长 LLM 步骤观测设计
   路径：`worklog/archive/backend-performance/20260608-01-后端链路耗时与最长LLM步骤观测设计.md`
   摘要：完成前后端与网关耗时观测、代理辅助采样、真实样本分析，以及 P0 与 P1-A 首轮优化验证。
