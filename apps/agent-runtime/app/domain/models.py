@@ -519,6 +519,7 @@ class WorkspaceResponse(BaseModel):
     sources: list[SourceAsset] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None
     agent_runs: list[AgentRunRecord] = Field(default_factory=list)
+    auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
     # 大纲批次分步状态
     outline_phase: str = ""
     outline_completed_count: int = 0

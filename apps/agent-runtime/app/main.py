@@ -42,7 +42,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app):
         super().__init__(app)
-        self._records: dict[str, list[float]] = defaultdict(list)
+        self._records: dict[tuple[str, str], list[float]] = defaultdict(list)
 
     async def dispatch(self, request, call_next):
         path = request.url.path
@@ -58,10 +58,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             self._last_cleanup = now
 
         is_chat = path.startswith("/api/chat/")
+        scope = "chat" if is_chat else "general"
         limit = self._chat_limit if is_chat else self._general_limit
         window = self._chat_window if is_chat else self._general_window
 
-        timestamps = self._records[client_ip]
+        timestamps = self._records[(client_ip, scope)]
         # 移除窗口期外的旧记录
         cutoff = now - window
         while timestamps and timestamps[0] < cutoff:
@@ -78,13 +79,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     def _cleanup(self, now: float):
-        for ip, timestamps in list(self._records.items()):
-            # 以通用窗口为准清理长期无请求的 IP
-            cutoff = now - self._general_window
+        for key, timestamps in list(self._records.items()):
+            scope = key[1]
+            window = self._chat_window if scope == "chat" else self._general_window
+            cutoff = now - window
             while timestamps and timestamps[0] < cutoff:
                 timestamps.pop(0)
             if not timestamps:
-                del self._records[ip]
+                del self._records[key]
 
 
 class CacheControlMiddleware(BaseHTTPMiddleware):

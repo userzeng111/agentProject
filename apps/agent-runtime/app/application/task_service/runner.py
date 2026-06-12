@@ -168,7 +168,7 @@ class TaskServiceRunnerMixin:
             message = str(event.get("message") or "任务进度已更新。")
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             progress = self._progress_value(task_id, event_type, payload)
-            status = TaskStatus.DRAFTING if stage == "drafting" else None
+            status = self._status_for_progress_stage(stage)
             if event_type == "model.thinking":
                 self.store.broadcast_event(
                     task_id,
@@ -243,6 +243,20 @@ class TaskServiceRunnerMixin:
                 )
 
         return callback
+
+    @staticmethod
+    def _status_for_progress_stage(stage: str) -> TaskStatus | None:
+        if stage == "drafting":
+            return TaskStatus.DRAFTING
+        if stage == "waiting_outline_review":
+            return TaskStatus.WAITING_OUTLINE_REVIEW
+        if stage == "waiting_chapter_review":
+            return TaskStatus.WAITING_CHAPTER_REVIEW
+        if stage == "waiting_verification_review":
+            return TaskStatus.WAITING_VERIFICATION_REVIEW
+        if stage == "assembling":
+            return TaskStatus.ASSEMBLING
+        return None
 
     def _build_exchange_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:
@@ -363,6 +377,10 @@ class TaskServiceRunnerMixin:
         total = len(task.story_plan.chapter_plan) if task.story_plan is not None else 0
         chapter_number = payload.get("chapter_number")
         if not isinstance(chapter_number, int) or total <= 0:
+            if event_type.startswith("outline.chapter_plan_batch."):
+                return max(task.progress, 45)
+            if event_type.startswith("outline.review."):
+                return max(task.progress, 50)
             return max(task.progress, 60) if event_type.startswith("chapter.") else None
         base_progress = 55
         span = 35

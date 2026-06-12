@@ -75,6 +75,10 @@ def set_progress_callback(callback: Callable[[dict[str, Any]], None] | None) -> 
     return _progress_callback_var.set(callback)
 
 
+def get_progress_callback() -> Callable[[dict[str, Any]], None] | None:
+    return _progress_callback_var.get()
+
+
 def reset_progress_callback(token: Token) -> None:
     _progress_callback_var.reset(token)
 

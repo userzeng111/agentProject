@@ -6,6 +6,7 @@ from app.application.task_service import TaskService
 from app.domain.models import TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
+from app.storage import db_repository
 from app.storage.task_store import TaskLogStore
 
 
@@ -297,6 +298,58 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertFalse(workspace.recovery_options[0].available)
             self.assertEqual(workspace.recovery_options[1].action, "restart_from_input")
             self.assertFalse(workspace.recovery_options[1].available)
+
+    def test_workspace_rebuilds_outline_batch_state_from_database_when_pending_review_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            stale_task = store.get(task.id)
+            stale_task.status = TaskStatus.PLANNING
+            stale_task.current_stage = "planning"
+            stale_task.current_unit = "outline-revision"
+            stale_task.progress = 20
+            stale_task.pending_review = None
+            store.save(stale_task)
+
+            db_repository.create_chapter_plan_batch(
+                task_id=task.id,
+                batch_no=1,
+                start_chapter=1,
+                end_chapter=8,
+                requested_count=20,
+                effective_count=8,
+                status="waiting_review",
+            )
+            for chapter_number in range(1, 9):
+                db_repository.upsert_outline_chapter_plan(
+                    task_id=task.id,
+                    chapter_number=chapter_number,
+                    title=f"第{chapter_number}章",
+                    goal="推进主线",
+                    outline_batch_no=1,
+                    status="outline_planned",
+                )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(workspace.outline_phase, "chapter_batches")
+            self.assertEqual(workspace.outline_completed_count, 0)
+            self.assertEqual(workspace.outline_total_count, 8)
 
     def test_workspace_keeps_waiting_manual_action_on_read_and_recommends_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

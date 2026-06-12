@@ -21,6 +21,7 @@ from app.domain.models import (
     TaskSummary,
     WorkspaceResponse,
 )
+from app.storage import db_repository
 
 logger = get_logger(__name__)
 
@@ -170,6 +171,15 @@ class TaskServiceQueriesMixin:
         recent_events = chapter_events + recent_other_events
         recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         outline_batch = task.pending_review.outline_batch if task.pending_review else None
+        outline_phase = outline_batch.phase if outline_batch else ""
+        outline_completed_count = outline_batch.completed_count if outline_batch else 0
+        outline_total_count = outline_batch.total_count if outline_batch else 0
+        if outline_batch is None:
+            outline_summary = db_repository.get_chapter_plan_batch_workspace_summary(task.id)
+            if outline_summary is not None:
+                outline_phase = str(outline_summary["phase"])
+                outline_completed_count = int(outline_summary["approved_count"])
+                outline_total_count = int(outline_summary["total_count"])
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
@@ -184,9 +194,10 @@ class TaskServiceQueriesMixin:
             sources=task.sources,
             supervisor_plan=task.supervisor_plan,
             agent_runs=task.agent_runs,
-            outline_phase=outline_batch.phase if outline_batch else "",
-            outline_completed_count=outline_batch.completed_count if outline_batch else 0,
-            outline_total_count=outline_batch.total_count if outline_batch else 0,
+            auto_review_trace=task.auto_review_trace or [],
+            outline_phase=outline_phase,
+            outline_completed_count=outline_completed_count,
+            outline_total_count=outline_total_count,
         )
 
     def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:

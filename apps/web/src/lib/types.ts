@@ -379,6 +379,7 @@ export interface WorkspaceResponse extends RecoveryContractFields {
   sources?: SourceAsset[];
   supervisor_plan?: SupervisorPlanSnapshot | null;
   agent_runs?: AgentRunItem[];
+  auto_review_trace?: AgentTraceItem[];
   // 大纲批次分步状态
   outline_phase?: string;
   outline_completed_count?: number;

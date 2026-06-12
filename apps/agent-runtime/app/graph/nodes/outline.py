@@ -13,9 +13,80 @@ from app.graph.utils.helpers import (
     _normalize_story_plan,
 )
 from app.graph.utils.spec import build_normalized_spec
+from app.llm.story_engine import get_progress_callback
 from app.observability import get_logger
 
 logger = get_logger(__name__)
+
+
+def _outline_review_unit_id(state: WorkflowState) -> str:
+    return "outline-chapter-batches" if state.get("outline_phase") == "chapter_batches" else "outline"
+
+
+def _emit_outline_review_progress(
+    state: WorkflowState,
+    *,
+    event_type: str,
+    message: str,
+    payload: dict[str, Any] | None = None,
+) -> None:
+    callback = get_progress_callback()
+    if callback is None:
+        return
+    callback(
+        {
+            "event_type": event_type,
+            "stage": "waiting_outline_review",
+            "unit_id": _outline_review_unit_id(state),
+            "message": message,
+            "payload": {
+                "summary": message,
+                "display_level": "public",
+                "outline_phase": state.get("outline_phase", "master"),
+                **(payload or {}),
+            },
+        }
+    )
+
+
+def _finalize_chapter_plan_batch_review(
+    state: WorkflowState,
+    decision: ReviewDecision,
+) -> dict[str, Any]:
+    if state.get("outline_phase") != "chapter_batches":
+        return {}
+
+    story_plan = state.get("story_plan") or {}
+    batch_index = int(state.get("outline_batch_index", 0) or 0)
+    batch_size = int(state.get("outline_batch_size", 20) or 20)
+    total = int(
+        state.get("outline_total_count")
+        or story_plan.get("planned_chapter_count")
+        or len(story_plan.get("chapter_plan") or [])
+        or 0
+    )
+    current_batch = state.get("current_batch_chapter_plans") or []
+    effective_count = len(current_batch) or min(batch_size, max(total - batch_index, 0))
+    batch_no = (batch_index // batch_size) + 1
+
+    try:
+        from app.storage import db_repository
+
+        if decision.approved:
+            db_repository.mark_chapter_plan_batch_approved(state["task_id"], batch_no)
+        else:
+            db_repository.mark_chapter_plan_batch_rejected(state["task_id"], batch_no)
+    except Exception as exc:
+        logger.warning("章节计划批次审核结果写入失败（不阻断主流程）: %s", exc)
+
+    if not decision.approved:
+        return {}
+
+    completed_count = min(total, batch_index + effective_count) if total > 0 else batch_index + effective_count
+    return {
+        "outline_completed_count": completed_count,
+        "outline_batch_retry_count": 0,
+    }
 
 
 def normalize_request(
@@ -142,6 +213,24 @@ def plan_chapter_batch(
 
     from app.storage import db_repository
     batch_no = (batch_index // batch_size) + 1
+    callback = get_progress_callback()
+    if callback is not None:
+        callback(
+            {
+                "event_type": "outline.chapter_plan_batch.started",
+                "stage": "waiting_outline_review",
+                "unit_id": "outline-chapter-batches",
+                "message": f"开始规划第 {batch_no} 批章节计划。",
+                "payload": {
+                    "summary": f"开始规划第 {batch_no} 批章节计划。",
+                    "display_level": "public",
+                    "outline_phase": "chapter_batches",
+                    "batch_no": batch_no,
+                    "start_chapter": batch_index + 1,
+                    "end_chapter": batch_index + effective_size,
+                },
+            }
+        )
     try:
         db_repository.create_chapter_plan_batch(
             task_id=state["task_id"],
@@ -163,6 +252,25 @@ def plan_chapter_batch(
             )
     except Exception as e:
         logger.warning("章节计划批次数据库写入失败（测试环境可忽略）: %s", e)
+
+    if callback is not None:
+        callback(
+            {
+                "event_type": "outline.chapter_plan_batch.completed",
+                "stage": "waiting_outline_review",
+                "unit_id": "outline-chapter-batches",
+                "message": f"第 {batch_no} 批章节计划已生成，等待审核。",
+                "payload": {
+                    "summary": f"第 {batch_no} 批章节计划已生成，等待审核。",
+                    "display_level": "public",
+                    "outline_phase": "chapter_batches",
+                    "batch_no": batch_no,
+                    "start_chapter": batch_index + 1,
+                    "end_chapter": batch_index + effective_size,
+                    "effective_count": effective_size,
+                },
+            }
+        )
 
     return {
         "current_batch_chapter_plans": [p.model_dump(mode="json") for p in batch_plans],
@@ -186,6 +294,15 @@ def review_outline(
         logger.info("大纲审核节点: auto_review=%s, executor_available=%s", state.get("auto_review"), auto_review_executor_available)
         policy = AutoReviewPolicy.model_validate(state.get("auto_review_policy") or {})
         force_manual = False
+        _emit_outline_review_progress(
+            state,
+            event_type="outline.review.started",
+            message=(
+                "自动审核开始：正在审核章节计划批次。"
+                if state.get("outline_phase") == "chapter_batches"
+                else "自动审核开始：正在审核总纲。"
+            ),
+        )
         try:
             story_plan_dict = state.get("story_plan") or {}
             from app.domain.models import StoryPlan as SP
@@ -232,6 +349,20 @@ def review_outline(
             )
             trace = list(state.get("auto_review_trace") or [])
             force_manual = True
+        _emit_outline_review_progress(
+            state,
+            event_type="outline.review.completed",
+            message=(
+                f"自动审核完成：{'通过' if decision.approved else '未通过'}，评分 {decision.overall_score or 0:.1f}。"
+            ),
+            payload={
+                "approved": decision.approved,
+                "score": decision.overall_score,
+                "auto_escalated": decision.auto_escalated,
+                "critical_issue_count": len(decision.critical_issues or []),
+                "warning_count": len(decision.warnings or []),
+            },
+        )
         # auto_review 达到修订上限时自动强制通过，避免中断到人工审核
         if not decision.approved and policy.allow_self_revisions and not force_manual:
             max_revisions = max(policy.get_max_auto_revisions("outline_review"), 0)
@@ -240,10 +371,15 @@ def review_outline(
                     "大纲审核节点: auto_review 达到修订上限 %d，自动强制通过",
                     max_revisions,
                 )
+                batch_updates = _finalize_chapter_plan_batch_review(
+                    state,
+                    decision.model_copy(update={"approved": True}),
+                )
                 return {
                     "approved": True,
                     "review_comment": decision.comment or "自动审核达到修订上限，强制通过。",
                     "auto_review_trace": trace,
+                    **batch_updates,
                 }
         if force_manual or should_interrupt_manual_review(
             approved=decision.approved,
@@ -254,15 +390,22 @@ def review_outline(
             review = interrupt_outline_review(state, comment=decision.comment if force_manual else "")
             approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
             comment = review.get("comment", "") if isinstance(review, dict) else ""
+            batch_updates = _finalize_chapter_plan_batch_review(
+                state,
+                decision.model_copy(update={"approved": approved}),
+            )
             return {
                 "approved": approved,
                 "review_comment": comment,
                 "auto_review_trace": trace,
+                **batch_updates,
             }
+        batch_updates = _finalize_chapter_plan_batch_review(state, decision)
         return {
             "approved": decision.approved,
             "review_comment": decision.comment,
             "auto_review_trace": trace,
+            **batch_updates,
         }
     # 人工审核模式（保持现有逻辑）
     review = interrupt_outline_review(state)

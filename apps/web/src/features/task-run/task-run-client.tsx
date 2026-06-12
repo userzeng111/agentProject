@@ -37,10 +37,6 @@ import {
 } from "@mui/material";
 import {
   NavigateNext as NavigateNextIcon,
-  CheckCircle as CheckCircleIcon,
-  Edit as EditIcon,
-  PlayArrow as PlayIcon,
-  MenuBook as MenuBookIcon,
   Close as CloseIcon,
   Psychology as ThinkIcon,
   ExpandMore as ExpandIcon,
@@ -56,7 +52,13 @@ import {
   resolveRecoveryPreview,
 } from "@/features/task-recovery/recovery-state.mjs";
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
-import { buildChapterProgress, buildThinkingGroups } from "@/features/task-run/task-run-state.mjs";
+import {
+  buildChapterProgress,
+  buildThinkingGroups,
+  resolveEventStreamErrorTransition,
+  resolveTerminalEventStreamState,
+} from "@/features/task-run/task-run-state.mjs";
+import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
@@ -122,29 +124,6 @@ function getDeletePrompt(status: TaskStatus): string {
     default:
       return "确认删除该任务？此操作不可恢复。";
   }
-}
-
-const WORKFLOW_STEPS = [
-  { label: "创建", icon: <EditIcon fontSize="small" /> },
-  { label: "运行", icon: <PlayIcon fontSize="small" /> },
-  { label: "审核", icon: <CheckCircleIcon fontSize="small" /> },
-  { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
-];
-
-function getStepIndex(status: TaskStatus): number {
-  if (status === "completed") return 4;
-  if (
-    status === "waiting_outline_review" ||
-    status === "waiting_chapter_review" ||
-    status === "waiting_verification_review" ||
-    status === "ready_for_batch" ||
-    status === "drafting" ||
-    status === "assembling" ||
-    status === "cancelled"
-  )
-    return 2;
-  if (status === "planning" || status === "sources_ingested" || status === "waiting_manual_action") return 1;
-  return 0;
 }
 
 const streamPathCandidates = (taskId: string) => [
@@ -636,6 +615,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       setStreamState("缺少任务 ID，无法连接事件流");
       return;
     }
+    const initialTerminalState = resolveTerminalEventStreamState(workspace?.meta?.status || "");
+    if (initialTerminalState) {
+      setStreamState(initialTerminalState);
+      return;
+    }
 
     let disposed = false;
     let source: EventSource | null = null;
@@ -645,6 +629,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     let reconnectAttempts = 0;
     const MAX_RECONNECT = 3;
     const RECONNECT_DELAY = 2000;
+    let terminalEventReceived = false;
+    let terminalStreamState = "";
 
     const tryConnect = (index: number) => {
       if (disposed || index >= candidatePaths.length) {
@@ -676,20 +662,45 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       };
       source.addEventListener("snapshot", handleRefresh);
       source.addEventListener("task.event", handleRefresh);
-      source.addEventListener("task.done", handleRefresh);
+      source.addEventListener("task.done", (event) => {
+        terminalEventReceived = true;
+        try {
+          const payload = JSON.parse((event as MessageEvent).data || "{}");
+          terminalStreamState = resolveTerminalEventStreamState(payload?.event_type || "");
+        } catch {
+          terminalStreamState = "";
+        }
+        if (!terminalStreamState) {
+          terminalStreamState = "任务已结束，事件流已关闭";
+        }
+        setStreamState(terminalStreamState);
+        handleRefresh();
+      });
 
       source.onerror = () => {
         source?.close();
         if (disposed) {
           return;
         }
-        if (!opened) {
+        const transition = resolveEventStreamErrorTransition({
+          opened,
+          terminalEventReceived,
+          reconnectAttempts,
+          maxReconnect: MAX_RECONNECT,
+          reconnectDelaySeconds: RECONNECT_DELAY / 1000,
+          terminalState: terminalStreamState,
+        });
+        if (transition.action === "terminal") {
+          setStreamState(transition.streamState);
+          return;
+        }
+        if (transition.action === "next_path") {
           tryConnect(index + 1);
           return;
         }
-        if (reconnectAttempts < MAX_RECONNECT) {
-          reconnectAttempts += 1;
-          setStreamState(`事件流已断开，${RECONNECT_DELAY / 1000}秒后第${reconnectAttempts}次重连...`);
+        reconnectAttempts = transition.nextReconnectAttempts;
+        setStreamState(transition.streamState);
+        if (transition.action === "reconnect") {
           reconnectTimeout = setTimeout(() => {
             reconnectTimeout = null;
             if (!disposed) {
@@ -698,7 +709,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           }, RECONNECT_DELAY);
           return;
         }
-        setStreamState("事件流已断开，当前使用手动刷新");
       };
     };
 
@@ -711,7 +721,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       source?.close();
       eventSourceRef.current = null;
     };
-  }, [resolvedTaskId, refreshWorkspace]);
+  }, [resolvedTaskId, refreshWorkspace, workspace?.meta?.status]);
 
   // 全局前端错误捕获：窗口级错误与未处理 Promise 拒绝
   useEffect(() => {
@@ -865,7 +875,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const systemStages = buildSystemStages(workspace.recent_events);
   const chapterProgress = buildChapterProgress(workspace.recent_events, workspace.novel_progress);
   const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
-  const currentStep = getStepIndex(workspace.meta.status);
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
@@ -907,68 +916,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         <Chip color={status.color} label={status.label} />
       </Stack>
 
-      {/* 步骤指示器 */}
-      <Card className="glass-card">
-        <CardContent sx={{ py: 2 }}>
-          <Stack direction="row" justifyContent="center" spacing={0} sx={{ width: "100%" }}>
-            {WORKFLOW_STEPS.map((step, index) => {
-              const isDone = index < currentStep;
-              const isActive = index === currentStep;
-              return (
-                <Box
-                  key={step.label}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    flex: index < WORKFLOW_STEPS.length - 1 ? 1 : 0,
-                    justifyContent: "center",
-                  }}
-                >
-                  <Stack spacing={0.5} alignItems="center" sx={{ minWidth: 64 }}>
-                    <Box
-                      sx={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: "50%",
-                        display: "grid",
-                        placeItems: "center",
-                        backgroundColor: isDone ? "success.main" : isActive ? "primary.main" : "rgba(29,42,39,0.08)",
-                        color: "#fff",
-                        transition: "all 0.3s",
-                      }}
-                    >
-                      {isDone ? <CheckCircleIcon fontSize="small" /> : step.icon}
-                    </Box>
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: isActive ? 600 : 400,
-                        color: isActive ? "primary.main" : isDone ? "success.main" : "text.secondary",
-                      }}
-                    >
-                      {step.label}
-                    </Typography>
-                  </Stack>
-                  {index < WORKFLOW_STEPS.length - 1 && (
-                    <Box
-                      sx={{
-                        flex: 1,
-                        height: 2,
-                        mx: 1,
-                        mt: -2,
-                        backgroundColor: isDone ? "success.main" : "rgba(29,42,39,0.08)",
-                        transition: "all 0.3s",
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
-                </Box>
-              );
-            })}
-          </Stack>
-        </CardContent>
-      </Card>
-
       {error ? <Alert severity="error">{error}</Alert> : null}
       {!error && workspace.state_reconciled ? (
         <Alert severity="info">
@@ -1003,6 +950,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           </Stack>
         </Alert>
       ) : null}
+
+      <WorkflowOverviewCard workspace={workspace} onSelectTab={setActiveTab} />
 
       {/* 请求摘要卡片 */}
       <Card>
@@ -1314,23 +1263,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           </Stack>
         </CardContent>
       </Card>
-
-      {/* 进度条 */}
-      <Box>
-        <Stack direction="row" justifyContent="space-between" spacing={1} sx={{ mb: 1 }}>
-          <Typography variant="body2" color="text.secondary">
-            {workspace.meta.current_stage || "初始化中"}
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            {workspace.meta.progress}%
-          </Typography>
-        </Stack>
-        <LinearProgress
-          variant="determinate"
-          value={workspace.meta.progress}
-          sx={{ height: 8, borderRadius: 999 }}
-        />
-      </Box>
 
       {/* Tab 区域 */}
       <Card>

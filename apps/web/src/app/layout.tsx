@@ -1,6 +1,7 @@
 import { AppThemeProvider } from "@/components/app-theme-provider";
 import { AppHeader } from "@/components/app-header";
 import { Box } from "@mui/material";
+import "@xyflow/react/dist/style.css";
 import "./globals.css";
 
 export default function RootLayout({
