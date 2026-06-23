@@ -29,7 +29,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     - 通用接口：60 请求 / 分钟
     - 聊天接口（/api/chat/）：20 请求 / 分钟
-    - /health 豁免
+    - 健康检查与 CORS 预检豁免
     - 每 10 分钟清理一次过期记录
     """
 
@@ -46,7 +46,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         path = request.url.path
-        if path == "/health":
+        if request.method == "OPTIONS" or path in {"/health", "/api/health"}:
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"

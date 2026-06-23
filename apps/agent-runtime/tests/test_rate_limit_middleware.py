@@ -12,6 +12,14 @@ def _build_test_app() -> FastAPI:
     def ping() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.options("/api/ping")
+    def ping_options() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.get("/api/health")
+    def api_health() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.post("/api/chat/completions")
     def chat_completions() -> dict[str, str]:
         return {"status": "ok"}
@@ -42,3 +50,27 @@ def test_chat_requests_still_use_chat_rate_limit() -> None:
 
     assert response.status_code == 429
     assert response.json()["detail"] == "请求过于频繁，请稍后再试。"
+
+
+def test_cors_preflight_requests_are_not_rate_limited() -> None:
+    client = TestClient(_build_test_app())
+
+    for _ in range(60):
+        response = client.get("/api/ping")
+        assert response.status_code == 200
+
+    response = client.options("/api/ping")
+
+    assert response.status_code == 200
+
+
+def test_api_health_is_not_rate_limited() -> None:
+    client = TestClient(_build_test_app())
+
+    for _ in range(60):
+        response = client.get("/api/ping")
+        assert response.status_code == 200
+
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
