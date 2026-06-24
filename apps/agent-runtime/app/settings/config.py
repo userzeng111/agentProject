@@ -15,6 +15,14 @@ class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "小说 Agent Runtime"
     runtime_origin: str = "http://127.0.0.1:3001"
+    rate_limit_general_per_minute: int = Field(
+        default=60,
+        validation_alias=AliasChoices("RATE_LIMIT_GENERAL_PER_MINUTE"),
+    )
+    rate_limit_chat_per_minute: int = Field(
+        default=20,
+        validation_alias=AliasChoices("RATE_LIMIT_CHAT_PER_MINUTE"),
+    )
     tasklog_root: str = DEFAULT_TASKLOG_ROOT
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(

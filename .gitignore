@@ -119,3 +119,4 @@ backups/
 **/.env.*
 !.env.example
 !**/.env.example
+.agents/

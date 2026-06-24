@@ -27,21 +27,28 @@ from app.storage.task_store import TaskLogStore
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """基于内存的按 IP 限流中间件。
 
-    - 通用接口：60 请求 / 分钟
-    - 聊天接口（/api/chat/）：20 请求 / 分钟
+    - 通用接口：默认 60 请求 / 分钟
+    - 聊天接口（/api/chat/）：默认 20 请求 / 分钟
     - 健康检查与 CORS 预检豁免
     - 每 10 分钟清理一次过期记录
     """
 
-    _general_limit = 60
-    _general_window = 60.0
-    _chat_limit = 20
-    _chat_window = 60.0
-    _last_cleanup = 0.0
     _cleanup_interval = 600.0
 
-    def __init__(self, app):
+    def __init__(
+        self,
+        app,
+        general_limit: int = 60,
+        chat_limit: int = 20,
+        general_window: float = 60.0,
+        chat_window: float = 60.0,
+    ):
         super().__init__(app)
+        self._general_limit = max(int(general_limit), 0)
+        self._chat_limit = max(int(chat_limit), 0)
+        self._general_window = max(float(general_window), 0.0)
+        self._chat_window = max(float(chat_window), 0.0)
+        self._last_cleanup = 0.0
         self._records: dict[tuple[str, str], list[float]] = defaultdict(list)
 
     async def dispatch(self, request, call_next):
@@ -68,14 +75,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         while timestamps and timestamps[0] < cutoff:
             timestamps.pop(0)
 
-        if len(timestamps) >= limit:
+        if limit > 0 and len(timestamps) >= limit:
             from fastapi.responses import JSONResponse
             return JSONResponse(
                 status_code=429,
                 content={"detail": "请求过于频繁，请稍后再试。"},
             )
 
-        timestamps.append(now)
+        if limit > 0:
+            timestamps.append(now)
         return await call_next(request)
 
     def _cleanup(self, now: float):
@@ -181,7 +189,11 @@ app.add_middleware(
     expose_headers=["X-Request-ID"],
     max_age=600,
 )
-app.add_middleware(RateLimitMiddleware)
+app.add_middleware(
+    RateLimitMiddleware,
+    general_limit=settings.rate_limit_general_per_minute,
+    chat_limit=settings.rate_limit_chat_per_minute,
+)
 app.include_router(
     build_router(
         task_service,

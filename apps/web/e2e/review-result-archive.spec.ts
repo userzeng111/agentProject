@@ -1,0 +1,146 @@
+import { expect, test } from "@playwright/test";
+import { makeArchiveDetail, makeArchiveList, mockCommonApiRoutes } from "./helpers/fixtures";
+
+function makeReview(reviewType = "outline") {
+  const normalizedReviewType =
+    reviewType === "chapter" ? "chapter_pair_review" : reviewType === "verification" ? "verification_review" : "outline_review";
+  return {
+    meta: {
+      task_id: "task_review_fixture",
+      title: "审核测试任务",
+      status:
+        reviewType === "chapter"
+          ? "waiting_chapter_review"
+          : reviewType === "verification"
+            ? "waiting_verification_review"
+            : "waiting_outline_review",
+      summary: "审核摘要",
+      creative_model_id: "gpt-5.4",
+      default_model_id: "gpt-5.4",
+      review_model_id: "gpt-5.4",
+    },
+    review_type: normalizedReviewType,
+    review_version: "v1",
+    revision_count: 0,
+    summary: "审核测试摘要",
+    risk_flags: [],
+    outline_markdown: "# 测试大纲\n\n大纲摘要",
+    story_plan: {
+      working_title: "测试大纲",
+      logline: "大纲摘要",
+      world_notes: ["测试世界观"],
+      character_notes: ["测试角色"],
+      planned_chapter_count: 1,
+    },
+    outline_batch: {
+      phase: "master",
+      batch_index: 0,
+      batch_size: 20,
+      completed_count: 0,
+      total_count: 1,
+      current_batch_plans: [],
+    },
+    chapter_pair: [{ number: 1, title: "第一章", summary: "章节摘要", content: "内容占位" }],
+    verification_report: {
+      overall_score: 90,
+      summary: "验证摘要",
+      issues: [{ severity: "warning", message: "测试问题" }],
+    },
+    auto_review_trace: [],
+    review_history: [],
+    allowed_actions: [],
+    recovery_options: [],
+    recommended_action: "",
+  };
+}
+
+test.describe("审核、结果、归档页面", () => {
+  test("审核页缺少 id 时显示错误兜底", async ({ page }) => {
+    await page.goto("/review", { waitUntil: "commit" });
+    await expect(page.getByText(/缺少任务 ID|读取审核信息失败/)).toBeVisible();
+  });
+
+  test("审核页大纲分支展示审核操作", async ({ page }) => {
+    await mockCommonApiRoutes(page);
+    await page.route("**/api/tasks/task_review_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("outline") });
+    });
+    await page.goto("/review/?id=task_review_fixture", { waitUntil: "commit" });
+    await expect(page.getByRole("heading", { name: /大纲审核/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(page.getByLabel("审核意见")).toBeVisible();
+  });
+
+  test("审核页章节与验证分支展示对应审核材料", async ({ page }) => {
+    await mockCommonApiRoutes(page);
+    await page.route("**/api/tasks/task_review_chapter_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("chapter") });
+    });
+    await page.goto("/review/?id=task_review_chapter_fixture", { waitUntil: "commit" });
+    await expect(page.getByText("章节摘要")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
+
+    await page.route("**/api/tasks/task_review_verification_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("verification") });
+    });
+    await page.goto("/review/?id=task_review_verification_fixture", { waitUntil: "commit" });
+    await expect(page.getByText("验证摘要")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "发现的问题" })).toBeVisible();
+    await expect(page.getByText("warning")).toBeVisible();
+  });
+
+  test("结果页缺少 id 时显示错误兜底", async ({ page }) => {
+    await page.goto("/result", { waitUntil: "commit" });
+    await expect(page.getByText(/缺少任务 ID|读取结果失败/)).toBeVisible();
+  });
+
+  test("结果页展示摘要、正文区和章节索引", async ({ page }) => {
+    await page.route("**/api/tasks/task_result_fixture/result", async (route) => {
+      await route.fulfill({
+        json: {
+          meta: {
+            task_id: "task_result_fixture",
+            title: "结果测试任务",
+            status: "completed",
+            summary: "结果摘要",
+          },
+          result_summary: "结果摘要",
+          result_markdown: "# 结果正文\n\n正文占位。",
+          result_md_ref: "",
+          chapter_index: [{ number: 1, title: "第一章", summary: "章节摘要", content: "正文占位" }],
+          artifact_index: [],
+          history_index: [],
+        },
+      });
+    });
+    await page.goto("/result/?id=task_result_fixture", { waitUntil: "commit" });
+    await expect(page.getByRole("heading", { name: "生成结果" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "结果摘要" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();
+  });
+
+  test("归档列表和详情 Tab 可渲染", async ({ page }) => {
+    await page.route("**/api/archive**", async (route) => {
+      if (route.request().url().includes("/api/archive/task_archive_fixture")) {
+        await route.fulfill({ json: makeArchiveDetail() });
+        return;
+      }
+      await route.fulfill({ json: makeArchiveList() });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    await expect(page.getByText("归档测试任务")).toBeVisible();
+    await page.goto("/archive/detail/?id=task_archive_fixture", { waitUntil: "commit" });
+    await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /大纲|阅读|原始/ }).first()).toBeVisible();
+  });
+
+  test("归档列表空态可渲染", async ({ page }) => {
+    await page.route("**/api/archive**", async (route) => {
+      await route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    await expect(page.getByText(/暂无归档|还没有/)).toBeVisible();
+  });
+});

@@ -110,53 +110,65 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
       <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
         <Stack spacing={1}>
           <Stack
-            direction="row"
+            direction={{ xs: "column", sm: "row" }}
             spacing={1}
             justifyContent="space-between"
-            alignItems="center"
+            alignItems={{ xs: "stretch", sm: "center" }}
           >
-            <Typography
-              variant="subtitle1"
-              sx={{ fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+              <Typography
+                variant="subtitle1"
+                sx={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              >
+                {task.title || task.task_id}
+              </Typography>
+              <Chip
+                label={statusLabelMap[task.status] ?? task.status}
+                size="small"
+                sx={{ flexShrink: 0 }}
+              />
+            </Stack>
+            <Box
+              sx={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 1,
+                justifyContent: { xs: "flex-start", sm: "flex-end" },
+                flexShrink: 0,
+              }}
             >
-              {task.title || task.task_id}
-            </Typography>
-            <Chip
-              label={statusLabelMap[task.status] ?? task.status}
-              size="small"
-              sx={{ flexShrink: 0 }}
-            />
-            <Button
-              component={Link}
-              href={resolveTaskHref(task)}
-              size="small"
-              sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
-            >
-              查看
-            </Button>
-            {isFailed && (
               <Button
                 component={Link}
-                href={`/create/?retry_from=${task.task_id}`}
+                href={resolveTaskHref(task)}
                 size="small"
-                color="warning"
-                startIcon={<ReplayIcon />}
                 sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
               >
-                重新创建
+                查看
               </Button>
-            )}
-            {deletable && onDelete && (
-              <Button
-                size="small"
-                color="error"
-                startIcon={<DeleteIcon />}
-                onClick={() => onDelete(task.task_id)}
-                sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
-              >
-                删除
-              </Button>
-            )}
+              {isFailed && (
+                <Button
+                  component={Link}
+                  href={`/create/?retry_from=${task.task_id}`}
+                  size="small"
+                  color="warning"
+                  startIcon={<ReplayIcon />}
+                  sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+                >
+                  重新创建
+                </Button>
+              )}
+              {deletable && onDelete && (
+                <Button
+                  size="small"
+                  color="error"
+                  startIcon={<DeleteIcon />}
+                  onClick={() => onDelete(task.task_id)}
+                  sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+                >
+                  删除
+                </Button>
+              )}
+            </Box>
           </Stack>
           <Typography
             variant="body2"

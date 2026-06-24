@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：Playwright 自动化测试流程建设
+  路径：`worklog/archive/功能开发/20260624-02-Playwright自动化测试流程建设.md`
+  摘要：完成 Playwright 前后端 E2E 流程建设，覆盖主要页面/API/状态分支、真实浏览器任务生命周期、调试中心回归与移动端布局，并通过桌面/移动端、前后端测试、构建与 smoke 验证。
+
 - 标题：AgentProject 功能补充方向分析
   路径：`worklog/archive/功能开发/20260623-01-AgentProject功能补充方向分析.md`
   摘要：完成首批 Agent 运行调试中心，实现任务工作台只读调试 Tab、workspace 调试摘要字段、诊断纯函数与本地验证。

@@ -7,7 +7,10 @@
     "build": "npx next build",
     "start": "npx next start",
     "test": "node --test",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:trace": "playwright test --trace on"
   },
   "dependencies": {
     "@emotion/cache": "^11.14.0",
@@ -23,6 +26,7 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.61.1",
     "@types/node": "^20",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
