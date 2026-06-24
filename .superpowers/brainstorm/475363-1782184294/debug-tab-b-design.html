@@ -1,0 +1,88 @@
+<h2>首批设计：工作台内嵌“调试”标签页（B 方案）</h2>
+<p class="subtitle">定位：只读诊断投影层。先帮用户判断任务是否正常、卡在哪里、慢在哪里、能否恢复；不改变任务状态，不触发重跑。</p>
+
+<div class="mockup">
+  <div class="mockup-header">工作台 Tab：调试</div>
+  <div class="mockup-body">
+    <div class="mock-nav">运行概览 | 章节进度 | 事件流 | Supervisor | 调试</div>
+
+    <div style="display:grid;grid-template-columns:1.25fr .75fr;gap:14px;margin-top:14px;">
+      <div class="placeholder">
+        <strong>1. 诊断结论</strong><br>
+        结论：运行正常 / 等待用户 / 可恢复异常 / 终态 / 状态不一致<br>
+        判断依据：状态、最近事件、恢复契约、LLM/RAG 错误、SSE 连接状态<br>
+        下一步：跳审核页 / 打开恢复弹窗 / 手动刷新 / 查看证据
+      </div>
+      <div class="placeholder">
+        <strong>2. 实时连接</strong><br>
+        SSE：连接中 / 已连接 / 正常终止 / 重连中 / 失败<br>
+        最近事件：snapshot / task.event / task.done / keep-alive<br>
+        重连次数与候选路径
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px;">
+      <div class="placeholder">
+        <strong>3. LLM 诊断</strong><br>
+        请求次数、token、最慢阶段、首 token、cache hit、retry/repair、parse failed
+      </div>
+      <div class="placeholder">
+        <strong>4. Agent Trace</strong><br>
+        子 Agent 成败、评分、问题数、综合裁决、最近一轮摘要
+      </div>
+      <div class="placeholder">
+        <strong>5. 上下文 / RAG</strong><br>
+        上下文预算、压缩、响应缓存、RAG ready、检索错误、注入状态
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:.85fr 1.15fr;gap:14px;margin-top:14px;">
+      <div class="placeholder">
+        <strong>6. 状态对账</strong><br>
+        TaskRecord 状态<br>
+        pending_review 类型<br>
+        novel_progress 阶段<br>
+        supervisor 子任务摘要<br>
+        checkpoint/恢复契约证据
+      </div>
+      <div class="placeholder">
+        <strong>7. 最近事件 + 证据链接</strong><br>
+        最近 20 条关键事件，按 stage/type 标注<br>
+        refs：request.json、trace/current.json、context history、artifact index<br>
+        原始内容只提供引用，不默认展开
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>首批数据流</h3>
+  <div class="options">
+    <div class="option" data-choice="data-workspace" onclick="toggleSelect(this)">
+      <div class="letter">1</div>
+      <div class="content">
+        <h3>主数据源：`getWorkspace(taskId)`</h3>
+        <p>复用已有 `WorkspaceResponse`：meta、recent_events、llm_report、trace、context、cache、supervisor、agent_runs。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="data-sse" onclick="toggleSelect(this)">
+      <div class="letter">2</div>
+      <div class="content">
+        <h3>实时刷新：复用工作台 SSE</h3>
+        <p>监听 snapshot / task.event / task.done，更新调试页摘要。SSE 失败时降级到手动刷新。</p>
+      </div>
+    </div>
+    <div class="option" data-choice="data-derived" onclick="toggleSelect(this)">
+      <div class="letter">3</div>
+      <div class="content">
+        <h3>前端派生诊断</h3>
+        <p>首批不强行新增后端 debug API，先用纯函数派生诊断结论、状态对账、LLM/RAG 摘要。</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>后续可接入但首批不做</h3>
+  <p>独立 `/debug` 页面、事件分页 API、LLM exchange 列表、运行态 `/api/debug/runtime`、队列 job、显式状态转移记录、Supervisor 真实调度 DAG。</p>
+</div>

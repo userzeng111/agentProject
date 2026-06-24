@@ -201,6 +201,87 @@ export interface ResponseCacheStatus {
   model?: string;
 }
 
+export interface PendingReviewSummary {
+  present?: boolean;
+  review_type?: string;
+  stage?: string;
+  batch_index?: number | null;
+  revision_count?: number;
+  outline_phase?: string;
+  summary?: string;
+}
+
+export interface RagStatus {
+  enabled?: boolean;
+  ready?: boolean;
+  source?: string;
+  summary?: string;
+  last_query_stage?: string;
+  last_error?: string;
+  injected?: boolean;
+  injection_evidence?: string;
+}
+
+export interface LlmUsageSummary {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  cached_tokens?: number;
+  cache_read_input_tokens?: number;
+  usage_count?: number;
+}
+
+export interface LlmTimingDetail {
+  stage?: string;
+  exchange_label?: string;
+  model?: string;
+  duration_ms?: number;
+  first_token_ms?: number;
+  attempt?: number;
+  finish_reason?: string | null;
+  content_chars?: number;
+  reasoning_chars?: number;
+  status?: string;
+  is_retry?: boolean;
+  is_repair?: boolean;
+}
+
+export interface LlmTimingBucket {
+  call_count?: number;
+  total_duration_ms?: number;
+  max_duration_ms?: number;
+  max_first_token_ms?: number;
+  retry_count?: number;
+  repair_count?: number;
+}
+
+export interface LlmExchangeSummary {
+  stage?: string;
+  event_type?: string;
+  unit_id?: string;
+  exchange_label?: string;
+  model?: string;
+  cache_hit?: boolean;
+  cache_key?: string;
+  history_count?: number;
+  parse_duration_ms?: number;
+}
+
+export interface LlmReport {
+  usage_total?: LlmUsageSummary;
+  usage_count?: number;
+  by_model?: Record<string, LlmUsageSummary>;
+  by_stage?: Record<string, LlmUsageSummary>;
+  exchange_count?: number;
+  cache_hit_count?: number;
+  timing_count?: number;
+  timing_by_stage?: Record<string, LlmTimingBucket>;
+  slowest_step?: LlmTimingDetail;
+  slowest_first_token?: LlmTimingDetail;
+  latest_exchange?: LlmExchangeSummary;
+  latest_usage?: LlmExchangeSummary & LlmUsageSummary;
+}
+
 export interface TaskRecord {
   id: string;
   mode: TaskMode;
@@ -365,6 +446,9 @@ export interface WorkspaceResponse extends RecoveryContractFields {
   context_status?: ContextStatus;
   response_cache_status?: ResponseCacheStatus;
   context_snapshot?: ContextStatus;
+  pending_review_summary?: PendingReviewSummary;
+  rag_status?: RagStatus;
+  llm_report?: LlmReport;
   novel_progress?: {
     target_chapter_count?: number;
     chapter_count_min?: number;

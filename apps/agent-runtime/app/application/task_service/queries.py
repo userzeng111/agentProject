@@ -180,6 +180,8 @@ class TaskServiceQueriesMixin:
                 outline_phase = str(outline_summary["phase"])
                 outline_completed_count = int(outline_summary["approved_count"])
                 outline_total_count = int(outline_summary["total_count"])
+        context_status = self._load_context_status(task.id)
+        response_cache_status = self._load_response_cache_status(task)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
@@ -187,8 +189,10 @@ class TaskServiceQueriesMixin:
             available_tabs=self._workspace_tabs(task),
             **recovery_contract,
             request_preview=self._request_preview(task),
-            context_status=self._load_context_status(task.id),
-            response_cache_status=self._load_response_cache_status(task),
+            context_status=context_status,
+            response_cache_status=response_cache_status,
+            pending_review_summary=self._build_pending_review_summary(task),
+            rag_status=self._build_rag_status(task, context_status),
             llm_report=self._build_llm_report(task),
             novel_progress=self._novel_progress(task),
             sources=task.sources,
@@ -826,6 +830,230 @@ class TaskServiceQueriesMixin:
         if payload.get("exchange_label"):
             status["exchange_label"] = payload.get("exchange_label")
         return status
+
+    def _build_pending_review_summary(self, task: TaskRecord) -> dict[str, Any]:
+        stage = task.current_stage or task.status.value
+        review = task.pending_review
+        if review is None:
+            return {
+                "present": False,
+                "review_type": "",
+                "stage": stage,
+                "batch_index": None,
+                "revision_count": 0,
+                "outline_phase": "",
+                "summary": "当前没有待审核内容。",
+            }
+
+        review_type = review.type or ""
+        outline_batch = review.outline_batch
+        summary: dict[str, Any] = {
+            "present": True,
+            "review_type": review_type,
+            "stage": stage,
+            "batch_index": None,
+            "revision_count": review.revision_count,
+            "outline_phase": outline_batch.phase if outline_batch else "",
+            "summary": self._short_debug_summary(review.summary),
+        }
+
+        if review_type == "chapter_pair_review":
+            summary["batch_index"] = review.batch_index
+            summary["revision_count"] = review.chapter_pair_revision_count
+            summary["summary"] = self._chapter_pair_review_summary(review.batch_index, review.completed_count)
+            return summary
+
+        if review_type == "verification_review":
+            summary["revision_count"] = review.verification_revision_count
+            return summary
+
+        if review_type == "outline_review" and outline_batch is not None:
+            summary["outline_phase"] = outline_batch.phase
+            summary["batch_index"] = outline_batch.batch_index
+            if outline_batch.phase == "chapter_batches":
+                summary["summary"] = self._outline_batch_review_summary(outline_batch)
+        return summary
+
+    def _build_rag_status(self, task: TaskRecord, context_status: dict[str, Any]) -> dict[str, Any]:
+        rag_service = self.rag_service
+        enabled = rag_service is not None
+        ready = False
+        last_error = ""
+
+        if rag_service is not None:
+            config = getattr(rag_service, "config", None)
+            if hasattr(config, "enabled"):
+                enabled = bool(getattr(config, "enabled"))
+            try:
+                ready = bool(rag_service.is_ready())
+            except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                ready = False
+                last_error = str(exc)
+            if not ready and not last_error:
+                try:
+                    last_error = str(rag_service.readiness_error() or "")
+                except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                    last_error = str(exc)
+
+        last_query_stage = ""
+        injected = False
+        injection_evidence = ""
+
+        event_evidence = self._rag_event_evidence(task)
+        if event_evidence:
+            injected = True
+            injection_evidence = "event"
+            last_query_stage = event_evidence.get("stage", "")
+
+        if not injected:
+            snapshot_evidence = self._rag_context_snapshot_evidence(task.id)
+            if snapshot_evidence:
+                injected = True
+                injection_evidence = "context_snapshot"
+                last_query_stage = snapshot_evidence.get("stage", "")
+
+        if not last_query_stage:
+            last_query_stage = self._rag_last_stage_from_events(task)
+
+        if not enabled:
+            summary = "RAG 未启用。"
+        elif ready:
+            summary = "RAG 已启用且索引可用。"
+        else:
+            summary = "RAG 已启用但尚未就绪。"
+
+        return {
+            "enabled": enabled,
+            "ready": ready if enabled else False,
+            "source": "workspace",
+            "summary": summary,
+            "last_query_stage": last_query_stage,
+            "last_error": last_error,
+            "injected": injected,
+            "injection_evidence": injection_evidence,
+        }
+
+    @staticmethod
+    def _short_debug_summary(value: str | None, max_chars: int = 80) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}..."
+
+    @staticmethod
+    def _chapter_pair_review_summary(batch_index: int | None, completed_count: int | None) -> str:
+        if batch_index is not None:
+            display_batch = int(batch_index) + 1
+            return f"等待第 {display_batch} 批章节审核。"
+        if completed_count is not None:
+            return f"等待已完成 {completed_count} 章后的章节审核。"
+        return "等待章节审核。"
+
+    @staticmethod
+    def _outline_batch_review_summary(outline_batch: Any) -> str:
+        current_plans = outline_batch.current_batch_plans or []
+        if current_plans:
+            first = current_plans[0].number
+            last = current_plans[-1].number
+            return f"等待第 {first}-{last} 章章节计划审核。"
+        if outline_batch.total_count:
+            return f"等待章节计划批次审核，已确认 {outline_batch.completed_count}/{outline_batch.total_count} 章。"
+        return "等待章节计划批次审核。"
+
+    def _rag_event_evidence(self, task: TaskRecord) -> dict[str, str]:
+        for event in reversed(task.events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if self._event_has_rag_injection_evidence(event.event_type, payload):
+                return {"stage": event.stage or ""}
+        return {}
+
+    @staticmethod
+    def _event_has_rag_injection_evidence(event_type: str, payload: dict[str, Any]) -> bool:
+        if TaskServiceQueriesMixin._rag_event_type_blocks_injection(event_type):
+            return False
+        evidence_keys = (
+            "rag_injected",
+            "rag_context_injected",
+            "rag_augmented",
+        )
+        if any(bool(payload.get(key)) for key in evidence_keys):
+            return True
+        count_keys = ("rag_hit_count", "rag_context_count", "selected_context_count")
+        for key in count_keys:
+            value = payload.get(key)
+            if isinstance(value, int) and value > 0:
+                return True
+        for key in ("selected_contexts", "selected_hits", "hits"):
+            value = payload.get(key)
+            if isinstance(value, list) and len(value) > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _rag_event_type_blocks_injection(event_type: str) -> bool:
+        normalized = event_type.strip().lower()
+        blocked_prefixes = (
+            "rag.search_failed",
+            "rag.search_skipped",
+            *TaskServiceQueriesMixin._rag_stage_denied_event_type_prefixes(),
+        )
+        return any(normalized.startswith(prefix) for prefix in blocked_prefixes)
+
+    @staticmethod
+    def _rag_stage_denied_event_type_prefixes() -> tuple[str, ...]:
+        return (
+            "rag.status",
+            "rag.rebuild",
+            "rag_rebuild",
+        )
+
+    @staticmethod
+    def _rag_event_type_blocks_stage(event_type: str) -> bool:
+        normalized = event_type.strip().lower()
+        return any(
+            normalized.startswith(prefix)
+            for prefix in TaskServiceQueriesMixin._rag_stage_denied_event_type_prefixes()
+        )
+
+    def _rag_context_snapshot_evidence(self, task_id: str) -> dict[str, str]:
+        for relative_path in ("context/drafting/draft-context.json", "context/planning/outline-context.json"):
+            try:
+                snapshot = self.store.read_json(task_id, relative_path)
+            except FileNotFoundError:
+                continue
+            compressed_references = snapshot.get("compressed_references")
+            if self._compressed_references_have_rag_source(compressed_references):
+                return {"stage": str(snapshot.get("stage") or "")}
+        return {}
+
+    @staticmethod
+    def _compressed_references_have_rag_source(compressed_references: Any) -> bool:
+        if not isinstance(compressed_references, list):
+            return False
+        for item in compressed_references:
+            if not isinstance(item, dict):
+                continue
+            for key in ("source_id", "id", "source"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip().startswith("rag-"):
+                    return True
+        return False
+
+    @staticmethod
+    def _rag_last_stage_from_events(task: TaskRecord) -> str:
+        for event in reversed(task.events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            event_type = event.event_type.lower()
+            if TaskServiceQueriesMixin._rag_event_type_blocks_stage(event_type):
+                continue
+            has_rag_payload_key = any(
+                str(key).lower().startswith("rag_")
+                or str(key).lower() in {"selected_contexts", "selected_hits", "hits"}
+                for key in payload.keys()
+            )
+            if event_type.startswith("rag.") or event_type.startswith("rag_") or has_rag_payload_key:
+                return event.stage or ""
+        return ""
 
     def _build_llm_report(self, task: TaskRecord) -> dict[str, Any]:
         token_fields = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens")

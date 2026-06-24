@@ -58,6 +58,7 @@ import {
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
 } from "@/features/task-run/task-run-state.mjs";
+import DebugPanel from "@/features/task-run/debug-panel";
 import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
@@ -388,6 +389,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [tab1Expanded, setTab1Expanded] = useState(true);
   const [tab2Expanded, setTab2Expanded] = useState(true);
   const [tab3Expanded, setTab3Expanded] = useState(true);
+  const [tab4Expanded, setTab4Expanded] = useState(true);
   const eventSourceRef = useRef<EventSource | null>(null);
   const continueRequestIdRef = useRef<string | null>(null);
   const currentActionModelIdRef = useRef("");
@@ -899,6 +901,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const outlineBatchProgress = isOutlineBatchPhase
     ? `章节计划设计中（已确认 ${workspace.outline_completed_count ?? 0} / ${workspace.outline_total_count ?? 0} 章）`
     : null;
+  const debugStreamPath = resolvedTaskId ? streamPathCandidates(resolvedTaskId)[0] : undefined;
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -1280,6 +1283,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               <Tab label={`章节进度 (${chapterProgress.length})`} />
               <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
               <Tab label="任务详情" />
+              <Tab label="调试" />
             </Tabs>
             {activeTab === 0 && (
               <Tooltip title={logTabExpanded ? "收起日志" : "展开日志"}>
@@ -1320,6 +1324,17 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   size="small"
                   onClick={() => setTab3Expanded((prev) => !prev)}
                   sx={{ mr: 1, transform: tab3Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
+                >
+                  <ExpandIcon />
+                </IconButton>
+              </Tooltip>
+            )}
+            {activeTab === 4 && (
+              <Tooltip title={tab4Expanded ? "收起调试" : "展开调试"}>
+                <IconButton
+                  size="small"
+                  onClick={() => setTab4Expanded((prev) => !prev)}
+                  sx={{ mr: 1, transform: tab4Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
                 >
                   <ExpandIcon />
                 </IconButton>
@@ -1676,6 +1691,19 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   {workspace.meta.summary || "暂无摘要"}
                 </Typography>
               </Stack>
+            </Collapse>
+          )}
+
+          {/* Tab 4: 调试 */}
+          {activeTab === 4 && (
+            <Collapse in={tab4Expanded}>
+              <DebugPanel
+                workspace={workspace}
+                streamState={streamState}
+                streamPath={debugStreamPath}
+                onRefresh={() => void refreshWorkspace()}
+                onOpenRecovery={handleOpenRecoveryDialog}
+              />
             </Collapse>
           )}
         </CardContent>

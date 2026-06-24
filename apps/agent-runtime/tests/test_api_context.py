@@ -136,6 +136,41 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
 
+    def test_workspace_endpoint_returns_debug_summary_fields(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="港口谜案",
+            logline="档案员调查夜航失踪案。",
+            world_notes=["潮湿港口"],
+            character_notes=["女档案员"],
+            chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            story_plan=story_plan,
+            revision_count=2,
+        )
+        self.store.set_waiting_review(task.id, review, story_plan)
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("pending_review_summary", payload)
+        self.assertIn("rag_status", payload)
+        self.assertEqual(payload["pending_review_summary"]["review_type"], "outline_review")
+        self.assertNotIn("story_plan", payload["pending_review_summary"])
+
     def test_workspace_endpoint_returns_default_and_last_action_model_fields(self) -> None:
         self.task_service.model_catalog.ensure_novel_generation_model_supported = lambda _model_id: None
         self.task_service._start_background = lambda *args, **kwargs: None

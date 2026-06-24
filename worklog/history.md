@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：AgentProject 功能补充方向分析
+  路径：`worklog/archive/功能开发/20260623-01-AgentProject功能补充方向分析.md`
+  摘要：完成首批 Agent 运行调试中心，实现任务工作台只读调试 Tab、workspace 调试摘要字段、诊断纯函数与本地验证。
+
 - 标题：后端掉线与限流排查
   路径：`worklog/archive/agent架构/20260617-01-后端掉线与限流排查.md`
   摘要：修复限流中间件误伤 CORS 预检与健康检查导致前端误判后端掉线，豁免 OPTIONS 与 /api/health 并补齐回归测试。

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from app.application.task_service import TaskService
-from app.domain.models import TaskCreateRequest, TaskMode, TaskStatus
+from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage import db_repository
@@ -232,6 +232,545 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             assert workspace.supervisor_plan is not None
             self.assertEqual(workspace.supervisor_plan.subtasks[0].kind, "reference_analysis")
             self.assertEqual(workspace.supervisor_plan.subtasks[0].status.value, "ready")
+
+    def test_workspace_exposes_pending_review_summary_without_review_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="港口谜案",
+                logline="档案员调查夜航失踪案。",
+                world_notes=["潮湿港口"],
+                character_notes=["女档案员"],
+                chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            )
+            review = ReviewPayload(
+                type="outline_review",
+                version="v1",
+                summary="请审核大纲。",
+                story_plan=story_plan,
+                revision_count=2,
+            )
+            store.set_waiting_review(task.id, review, story_plan)
+
+            workspace = service.get_workspace(task.id)
+
+            expected_keys = {
+                "present",
+                "review_type",
+                "stage",
+                "batch_index",
+                "revision_count",
+                "outline_phase",
+                "summary",
+            }
+            self.assertTrue(workspace.pending_review_summary["present"])
+            self.assertEqual(set(workspace.pending_review_summary.keys()), expected_keys)
+            self.assertEqual(workspace.pending_review_summary["review_type"], "outline_review")
+            self.assertEqual(workspace.pending_review_summary["stage"], "waiting_outline_review")
+            self.assertIsNone(workspace.pending_review_summary["batch_index"])
+            self.assertEqual(workspace.pending_review_summary["revision_count"], 2)
+            self.assertIn("大纲", workspace.pending_review_summary["summary"])
+            self.assertNotIn("story_plan", workspace.pending_review_summary)
+            self.assertNotIn("chapter_pair", workspace.pending_review_summary)
+
+    def test_workspace_exposes_pending_review_summary_stable_shape_without_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(
+                workspace.pending_review_summary,
+                {
+                    "present": False,
+                    "review_type": "",
+                    "stage": "created",
+                    "batch_index": None,
+                    "revision_count": 0,
+                    "outline_phase": "",
+                    "summary": "当前没有待审核内容。",
+                },
+            )
+
+    def test_workspace_pending_review_summary_omits_chapter_pair_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="港口谜案",
+                logline="档案员调查夜航失踪案。",
+                world_notes=["潮湿港口"],
+                character_notes=["女档案员"],
+                chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            )
+            review = ReviewPayload(
+                type="chapter_pair_review",
+                version="v1",
+                summary="等待章节审核。",
+                batch_index=0,
+                chapter_pair=[
+                    {
+                        "number": 1,
+                        "title": "起始",
+                        "summary": "发现异常",
+                        "content": "章节正文泄露标记：这一段不能进入调试摘要。",
+                    }
+                ],
+                completed_count=0,
+                total_chapters=1,
+                chapter_pair_revision_count=3,
+            )
+            store.set_waiting_chapter_review(task.id, review, story_plan=story_plan)
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(
+                set(workspace.pending_review_summary.keys()),
+                {"present", "review_type", "stage", "batch_index", "revision_count", "outline_phase", "summary"},
+            )
+            self.assertTrue(workspace.pending_review_summary["present"])
+            self.assertEqual(workspace.pending_review_summary["review_type"], "chapter_pair_review")
+            self.assertEqual(workspace.pending_review_summary["stage"], "waiting_chapter_review")
+            self.assertEqual(workspace.pending_review_summary["batch_index"], 0)
+            self.assertEqual(workspace.pending_review_summary["revision_count"], 3)
+            self.assertNotIn("chapter_pair", workspace.pending_review_summary)
+            self.assertNotIn("章节正文泄露标记", workspace.pending_review_summary["summary"])
+
+    def test_workspace_pending_review_summary_omits_verification_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="港口谜案",
+                logline="档案员调查夜航失踪案。",
+                world_notes=["潮湿港口"],
+                character_notes=["女档案员"],
+                chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            )
+            review = ReviewPayload(
+                type="verification_review",
+                version="v1",
+                summary="等待验证审核。",
+                verification_report={
+                    "summary": "验证报告泄露标记：这一段不能进入调试摘要。",
+                    "raw_response": "raw response 不应进入 workspace 调试摘要。",
+                    "prompt": "prompt 不应进入 workspace 调试摘要。",
+                },
+                verification_revision_count=4,
+            )
+            store.set_waiting_verification_review(task.id, review, story_plan=story_plan)
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(
+                set(workspace.pending_review_summary.keys()),
+                {"present", "review_type", "stage", "batch_index", "revision_count", "outline_phase", "summary"},
+            )
+            self.assertTrue(workspace.pending_review_summary["present"])
+            self.assertEqual(workspace.pending_review_summary["review_type"], "verification_review")
+            self.assertEqual(workspace.pending_review_summary["stage"], "waiting_verification_review")
+            self.assertIsNone(workspace.pending_review_summary["batch_index"])
+            self.assertEqual(workspace.pending_review_summary["revision_count"], 4)
+            self.assertNotIn("verification_report", workspace.pending_review_summary)
+            self.assertNotIn("验证报告泄露标记", workspace.pending_review_summary["summary"])
+            self.assertNotIn("raw_response", workspace.pending_review_summary)
+            self.assertNotIn("prompt", workspace.pending_review_summary)
+
+    def test_workspace_exposes_rag_status_summary_from_context_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class ReadyRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return True
+
+                def readiness_error(self) -> str:
+                    return ""
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=ReadyRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            store.write_context_snapshot(
+                task.id,
+                stage="drafting",
+                snapshot_name="draft-context",
+                payload={
+                    "task_id": task.id,
+                    "stage": "drafting",
+                    "cache_hit": False,
+                    "budget": {"max_input_tokens": 256000},
+                    "packet": {
+                        "estimated_input_tokens": 4096,
+                        "references_text": "RAG 参考内容只作为长度证据，不应原样返回。",
+                    },
+                    "compressed_references": [
+                        {
+                            "source_id": "rag-test-1",
+                            "was_compressed": False,
+                            "original_chars": 32,
+                            "compressed_chars": 32,
+                        }
+                    ],
+                },
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertTrue(workspace.rag_status["enabled"])
+            self.assertTrue(workspace.rag_status["ready"])
+            self.assertTrue(workspace.rag_status["injected"])
+            self.assertEqual(workspace.rag_status["last_query_stage"], "drafting")
+            self.assertEqual(workspace.rag_status["injection_evidence"], "context_snapshot")
+            self.assertNotIn("hits", workspace.rag_status)
+            self.assertNotIn("contexts", workspace.rag_status)
+            self.assertNotIn("selected_contexts", workspace.rag_status)
+            self.assertNotIn("references_text", workspace.rag_status)
+            self.assertNotIn("RAG 参考内容", workspace.rag_status.get("summary", ""))
+
+    def test_workspace_rag_status_does_not_treat_plain_reference_snapshot_as_injected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class ReadyRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return True
+
+                def readiness_error(self) -> str:
+                    return ""
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=ReadyRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            store.write_context_snapshot(
+                task.id,
+                stage="drafting",
+                snapshot_name="draft-context",
+                payload={
+                    "task_id": task.id,
+                    "stage": "drafting",
+                    "cache_hit": False,
+                    "budget": {"max_input_tokens": 256000},
+                    "packet": {
+                        "estimated_input_tokens": 4096,
+                        "references_text": "普通用户素材内容，不是 RAG 命中。",
+                    },
+                    "compressed_references": [
+                        {
+                            "source_id": "source-user-note-1",
+                            "was_compressed": False,
+                            "original_chars": 18,
+                            "compressed_chars": 18,
+                        }
+                    ],
+                },
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertFalse(workspace.rag_status["injected"])
+            self.assertEqual(workspace.rag_status["injection_evidence"], "")
+            self.assertEqual(workspace.rag_status["last_query_stage"], "")
+
+    def test_workspace_rag_status_does_not_treat_failed_skipped_status_or_rebuild_events_as_injected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class ReadyRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return True
+
+                def readiness_error(self) -> str:
+                    return ""
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=ReadyRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            store.append_event(
+                task.id,
+                stage="planning",
+                message="RAG 检索失败，继续使用普通上下文。",
+                event_type="rag.search_failed",
+                payload={
+                    "summary": "RAG 检索失败。",
+                    "display_level": "public",
+                    "error": "临时检索错误",
+                    "rag_injected": True,
+                    "rag_hit_count": 2,
+                    "selected_hits": [{"doc_id": "rag-failed-1"}],
+                },
+            )
+            store.append_event(
+                task.id,
+                stage="planning",
+                message="RAG 检索已跳过。",
+                event_type="rag.search_skipped",
+                payload={
+                    "summary": "RAG 检索已跳过。",
+                    "display_level": "public",
+                    "reason": "query_empty",
+                    "rag_injected": True,
+                    "selected_contexts": ["跳过事件不应视为已注入。"],
+                    "hits": [{"doc_id": "rag-skipped-1"}],
+                },
+            )
+            store.append_event(
+                task.id,
+                stage="verification",
+                message="RAG 状态已刷新。",
+                event_type="rag.status",
+                payload={
+                    "summary": "RAG 状态已刷新。",
+                    "display_level": "public",
+                    "rag_injected": True,
+                    "rag_context_count": 3,
+                },
+            )
+            store.append_event(
+                task.id,
+                stage="verification",
+                message="RAG 索引重建状态已刷新。",
+                event_type="rag.rebuild.status",
+                payload={
+                    "summary": "RAG 索引重建状态已刷新。",
+                    "display_level": "public",
+                    "rag_injected": True,
+                    "selected_context_count": 4,
+                },
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertFalse(workspace.rag_status["injected"])
+            self.assertEqual(workspace.rag_status["injection_evidence"], "")
+            self.assertEqual(workspace.rag_status["last_query_stage"], "planning")
+
+    def test_workspace_rag_status_prefers_event_stage_over_context_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class ReadyRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return True
+
+                def readiness_error(self) -> str:
+                    return ""
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=ReadyRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            store.write_context_snapshot(
+                task.id,
+                stage="drafting",
+                snapshot_name="draft-context",
+                payload={
+                    "task_id": task.id,
+                    "stage": "drafting",
+                    "cache_hit": False,
+                    "budget": {"max_input_tokens": 256000},
+                    "packet": {
+                        "estimated_input_tokens": 4096,
+                        "references_text": "RAG 参考内容只作为长度证据，不应原样返回。",
+                    },
+                    "compressed_references": [],
+                },
+            )
+            store.append_event(
+                task.id,
+                stage="verification",
+                message="verification 阶段已注入 RAG 参考材料。",
+                event_type="rag.injected",
+                payload={"summary": "RAG 参考材料已注入。", "display_level": "public", "rag_injected": True},
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertTrue(workspace.rag_status["injected"])
+            self.assertEqual(workspace.rag_status["injection_evidence"], "event")
+            self.assertEqual(workspace.rag_status["last_query_stage"], "verification")
+
+    def test_workspace_exposes_rag_status_when_rag_is_not_ready_or_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class MissingRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return False
+
+                def readiness_error(self) -> str:
+                    return "小说RAG知识库尚未构建，请先前往设置页完成索引构建。"
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=MissingRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertTrue(workspace.rag_status["enabled"])
+            self.assertFalse(workspace.rag_status["ready"])
+            self.assertIn("尚未构建", workspace.rag_status["last_error"])
+
+            service_without_rag = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+            workspace_without_rag = service_without_rag.get_workspace(task.id)
+
+            self.assertFalse(workspace_without_rag.rag_status["enabled"])
+            self.assertFalse(workspace_without_rag.rag_status["ready"])
 
     def test_workspace_exposes_default_and_last_action_model_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
