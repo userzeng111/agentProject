@@ -1231,9 +1231,6 @@ class StoryEngine(BaseAgent):
         except (TypeError, ValueError):
             return None
 
-    def _prompt_to_text(self, prompt_value) -> str:
-        return "\n".join(str(message.content) for message in prompt_value.messages)
-
     def _prompt_to_messages(self, prompt_value) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = []
         for message in prompt_value.messages:
@@ -1892,15 +1889,6 @@ class StoryEngine(BaseAgent):
             return "无"
         content = str(draft_seeds.get(chapter_number) or "").strip()
         return content or "无"
-
-    def _theme_tail(self, mode: str) -> str:
-        if mode == TaskMode.LONG_STORY.value:
-            return "长夜分章"
-        if mode == TaskMode.FANFIC.value:
-            return "支线回响"
-        if mode == TaskMode.STYLE_REMIX.value:
-            return "风格折返"
-        return "短篇初稿"
 
     def _requested_target_words(self, spec: dict[str, Any]) -> int:
         return int(

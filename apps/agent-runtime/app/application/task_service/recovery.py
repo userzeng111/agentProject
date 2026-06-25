@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from app.observability import get_logger
 from typing import Any
 
 
@@ -21,8 +20,6 @@ from app.graph.main_graph import (
     _outline_instruction,
     _resolve_model_profile,
 )
-
-logger = get_logger(__name__)
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",

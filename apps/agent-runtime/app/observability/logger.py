@@ -12,10 +12,6 @@ from app.observability.context import request_id_var, task_id_var
 # 日志目录 - 在 apps/agent-runtime/logs/ 下
 LOG_DIR = Path(__file__).parent.parent / "logs"
 
-# 日志格式
-LOG_FORMAT = "[%(levelname)s] %(asctime)s %(name)s %(filename)s:%(lineno)d - %(message)s"
-DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-
 # 是否已初始化
 _initialized = False
 
@@ -137,7 +133,3 @@ def get_logger(name: str) -> logging.Logger:
 
     logger = logging.getLogger(name)
     return logger
-
-
-# 便捷的模块级日志器
-logger = get_logger("backend.app")

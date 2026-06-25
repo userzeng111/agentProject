@@ -27,14 +27,6 @@ from app.llm.story_engine import (
 
 logger = get_logger(__name__)
 
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
-
 
 class TaskServiceContinuationMixin:
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from app.observability import get_logger
 from typing import Any
 
 
@@ -22,16 +21,6 @@ from app.domain.models import (
     WorkspaceResponse,
 )
 from app.storage import db_repository
-
-logger = get_logger(__name__)
-
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
 
 
 class TaskServiceQueriesMixin:
@@ -1243,30 +1232,6 @@ class TaskServiceQueriesMixin:
                 continue
             return max(parsed, 0)
         return 0
-
-    def _load_message_history(
-        self,
-        task_id: str,
-        stage: str,
-        filename: str,
-    ) -> list[dict[str, str]]:
-        try:
-            payload = self.store.read_json(task_id, f"context/{stage}/{filename}.json")
-        except FileNotFoundError:
-            return []
-        messages = payload.get("messages")
-        if not isinstance(messages, list):
-            return []
-        normalized: list[dict[str, str]] = []
-        for item in messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role") or "user").strip() or "user"
-            content = str(item.get("content") or "").strip()
-            if not content:
-                continue
-            normalized.append({"role": role, "content": content})
-        return normalized
 
     def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}

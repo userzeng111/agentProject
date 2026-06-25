@@ -683,43 +683,6 @@ export interface ArchiveIndexResponse {
   total_pages?: number;
 }
 
-export interface ArchiveMeta {
-  task_id: string;
-  title: string;
-  mode: TaskMode;
-  creative_mode?: CreativeMode;
-  novel_size?: NovelSize;
-  chapter_word_min?: number;
-  model_id?: string;
-  default_model_id?: string;
-  last_action_model_id?: string;
-  last_action_kind?: string;
-  status: TaskStatus;
-  current_stage: string;
-  current_unit?: string | null;
-  progress: number;
-  updated_at: string;
-  error_message?: string | null;
-  storage_state: string;
-}
-
-export interface ArchiveResultFile {
-  title: string;
-  summary: string;
-  body: string;
-  chapters: Array<{
-    number: number;
-    title: string;
-    summary: string;
-    content: string;
-  }>;
-}
-
-export interface ArchiveEventsFile {
-  task_id: string;
-  items: WorkspaceEvent[];
-}
-
 export interface ArchiveDetailResponse {
   meta: WorkspaceMeta;
   request_preview?: {
