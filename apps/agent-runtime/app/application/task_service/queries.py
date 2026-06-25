@@ -835,17 +835,17 @@ class TaskServiceQueriesMixin:
         stage = task.current_stage or task.status.value
         review = task.pending_review
         if review is None:
-            return {
-                "present": False,
-                "review_type": "",
-                "stage": stage,
-                "batch_index": None,
-                "revision_count": 0,
-                "outline_phase": "",
-                "summary": "当前没有待审核内容。",
-            }
+            return self._empty_pending_review_summary(stage)
 
         review_type = review.type or ""
+        expected_status_by_review_type = {
+            "outline_review": TaskStatus.WAITING_OUTLINE_REVIEW,
+            "chapter_pair_review": TaskStatus.WAITING_CHAPTER_REVIEW,
+            "verification_review": TaskStatus.WAITING_VERIFICATION_REVIEW,
+        }
+        if task.status is not expected_status_by_review_type.get(review_type):
+            return self._empty_pending_review_summary(stage)
+
         outline_batch = review.outline_batch
         summary: dict[str, Any] = {
             "present": True,
@@ -873,6 +873,18 @@ class TaskServiceQueriesMixin:
             if outline_batch.phase == "chapter_batches":
                 summary["summary"] = self._outline_batch_review_summary(outline_batch)
         return summary
+
+    @staticmethod
+    def _empty_pending_review_summary(stage: str) -> dict[str, Any]:
+        return {
+            "present": False,
+            "review_type": "",
+            "stage": stage,
+            "batch_index": None,
+            "revision_count": 0,
+            "outline_phase": "",
+            "summary": "当前没有待审核内容。",
+        }
 
     def _build_rag_status(self, task: TaskRecord, context_status: dict[str, Any]) -> dict[str, Any]:
         rag_service = self.rag_service

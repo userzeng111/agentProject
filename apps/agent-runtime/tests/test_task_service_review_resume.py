@@ -951,6 +951,50 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "当前任务没有待恢复的审核节点"):
             service.resume_task(task.id, approved=False, comment="")
 
+    def test_resume_task_rejects_active_run_before_mutating_waiting_review_state(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=2,
+            chapter_plan=[
+                ChapterPlan(number=1, title="第一章", goal="听见异响"),
+                ChapterPlan(number=2, title="第二章", goal="发现真相"),
+            ],
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            story_plan=story_plan,
+        )
+        waiting = store.set_waiting_review(task.id, review, story_plan)
+        original_event_count = len(waiting.events)
+        service._active_runs.add(task.id)
+
+        with self.assertRaisesRegex(ValueError, "任务正在运行中"):
+            service.resume_task(task.id, approved=True, comment="通过")
+
+        current = store.get(task.id)
+        self.assertEqual(current.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(current.current_stage, "waiting_outline_review")
+        self.assertEqual(current.current_unit, "outline")
+        self.assertIsNone(current.pending_review.outline_batch if current.pending_review else None)
+        self.assertEqual(current.last_action_kind, "")
+        self.assertEqual(current.last_action_model_id, "")
+        self.assertEqual(len(current.events), original_event_count)
+
     def test_review_history_exposes_rejected_and_repairing_events(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)

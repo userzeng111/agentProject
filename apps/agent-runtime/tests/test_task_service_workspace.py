@@ -324,6 +324,54 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
                 },
             )
 
+    def test_workspace_hides_stale_pending_review_summary_outside_waiting_review_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="港口谜案",
+                logline="档案员调查夜航失踪案。",
+                world_notes=["潮湿港口"],
+                character_notes=["女档案员"],
+                chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            )
+            review = ReviewPayload(
+                type="outline_review",
+                version="v1",
+                summary="旧的章节计划审核摘要不应继续展示。",
+                story_plan=story_plan,
+                revision_count=2,
+            )
+            store.set_waiting_review(task.id, review, story_plan)
+            stale_task = store.get(task.id)
+            stale_task.status = TaskStatus.DRAFTING
+            stale_task.current_stage = "verification"
+            stale_task.current_unit = "full-story-verification"
+            stale_task.progress = 90
+            store.save(stale_task)
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertFalse(workspace.pending_review_summary["present"])
+            self.assertEqual(workspace.pending_review_summary["review_type"], "")
+            self.assertEqual(workspace.pending_review_summary["stage"], "verification")
+            self.assertEqual(workspace.pending_review_summary["summary"], "当前没有待审核内容。")
+
     def test_workspace_pending_review_summary_omits_chapter_pair_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

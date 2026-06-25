@@ -31,6 +31,9 @@ class TaskServiceReviewMixin:
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }
         task = self.store.get(task_id)
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在运行中，请勿重复提交。")
         task = self._reconcile_pending_review_with_novel_project(task)
         if task.status not in valid_statuses or task.pending_review is None:
             task = self.recover_task(task_id, model_id=model_id)

@@ -120,3 +120,6 @@ backups/
 !.env.example
 !**/.env.example
 .agents/
+
+# Test output artifacts
+output/
