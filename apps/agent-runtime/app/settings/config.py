@@ -165,6 +165,11 @@ class Settings(BaseSettings):
         default=str(DEFAULT_MODEL_CAPABILITIES_PATH),
         validation_alias=AliasChoices("MODEL_CAPABILITIES_PATH"),
     )
+    # 静态文件目录配置（前端构建产物）
+    static_dir: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("STATIC_DIR"),
+    )
     # 数据库配置
     database_path: str | None = Field(
         default=None,

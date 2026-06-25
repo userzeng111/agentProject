@@ -18,7 +18,7 @@ test.describe("聊天与设置页面", () => {
     await input.fill("触发错误");
     await expect(page.locator("button").last()).toBeEnabled();
     await input.press("Enter");
-    await expect(page.getByText("触发错误")).toBeVisible();
+    await expect(page.getByText("触发错误").last()).toBeVisible();
     await expect(page.getByText(/错误: .*聊天服务不可用 fixture/)).toBeVisible();
   });
 

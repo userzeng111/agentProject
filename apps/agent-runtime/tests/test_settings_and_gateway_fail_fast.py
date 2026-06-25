@@ -205,13 +205,14 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
 
     def test_build_story_plan_raises_when_gateway_not_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            engine = StoryEngine(
-                Settings(
-                    _env_file=None,
-                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                    default_chat_model="glm-5.1",
-                )
+            settings = Settings(
+                _env_file=None,
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="glm-5.1",
+                LLM_API_KEY="",
+                LLM_BASE_URL="",
             )
+            engine = StoryEngine(settings)
 
             with self.assertRaisesRegex(GatewayClientError, "模型网关"):
                 engine.build_story_plan(

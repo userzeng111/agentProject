@@ -143,6 +143,20 @@ class TaskServiceRunnerMixin:
                             Command(resume={"approved": approved, "comment": comment}),
                             config=self._config(task_id),
                         )
+                    # 循环解析后续中断（如 chapter_gate_review 后紧跟的 review_chapter_pair）
+                    max_interrupt_rounds = 10
+                    interrupt_round = 0
+                    while "__interrupt__" in result and interrupt_round < max_interrupt_rounds:
+                        interrupt_round += 1
+                        logger.info(
+                            "检测到后续中断，自动解析第 %d 轮，task_id=%s",
+                            interrupt_round,
+                            task_id,
+                        )
+                        result = self.workflow_engine.resume(
+                            Command(resume={"approved": approved, "comment": comment}),
+                            config=self._config(task_id),
+                        )
                 finally:
                     reset_progress_callback(progress_token)
                     reset_exchange_callback(exchange_token)

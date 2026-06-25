@@ -42,8 +42,10 @@ test.describe("任务工作台状态分支", () => {
       await page.goto(`/tasks/?id=${workspace.meta.task_id}`, { waitUntil: "commit" });
 
       await expect(page.getByText(item.label, { exact: true }).first()).toBeVisible();
-      await expect(page.getByRole("tab", { name: /调试/ })).toBeVisible();
-      await page.getByRole("tab", { name: /调试/ }).click();
+      const debugTab = page.getByRole("tab", { name: /调试/ });
+      await expect(debugTab).toBeVisible();
+      await expect(debugTab).toBeEnabled();
+      await debugTab.click({ timeout: 15000 });
       await expect(page.getByText("诊断结论", { exact: false })).toBeVisible();
       await expectNoSensitiveText(page);
     });

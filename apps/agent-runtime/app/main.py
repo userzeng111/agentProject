@@ -215,7 +215,13 @@ _dynamic_router = build_dynamic_router(
 app.include_router(_dynamic_router, prefix="/api/v2")
 
 # 挂载前端静态文件（仅当 out 目录存在时）
-_static_dir = Path("/home/user01/WorkSpace/AgentProject/apps/web/out")
+# 优先使用环境变量配置，否则使用默认路径
+_static_dir_str = settings.static_dir
+if _static_dir_str:
+    _static_dir = Path(_static_dir_str)
+else:
+    # 默认路径：相对于项目根目录的 apps/web/out
+    _static_dir = Path(__file__).resolve().parents[3] / "apps" / "web" / "out"
 if _static_dir.is_dir():
     _index_html = _static_dir / "index.html"
 
