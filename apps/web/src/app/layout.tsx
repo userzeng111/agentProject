@@ -1,8 +1,17 @@
-import { AppThemeProvider } from "@/components/app-theme-provider";
-import { AppHeader } from "@/components/app-header";
-import { Box } from "@mui/material";
+import type { Metadata } from "next";
+import { ClientLayout } from "./client-layout";
 import "@xyflow/react/dist/style.css";
 import "./globals.css";
+
+export const metadata: Metadata = {
+  title: "小说工坊 | AI 辅助小说创作",
+  description: "基于 LangChain 与 LangGraph 的 AI 辅助小说创作系统",
+  openGraph: {
+    title: "小说工坊 | AI 辅助小说创作",
+    description: "基于 LangChain 与 LangGraph 的 AI 辅助小说创作系统",
+    images: ["/og-default.png"],
+  },
+};
 
 export default function RootLayout({
   children,
@@ -10,33 +19,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
-      <head>
-        <title>小说 Agent Demo</title>
-        <meta name="description" content="基于 LangChain 与 LangGraph 的小说生成 demo" />
-      </head>
+    <html lang="zh-CN" suppressHydrationWarning>
       <body>
-        <AppThemeProvider>
-          <Box
-            sx={{
-              minHeight: "100vh",
-              display: "flex",
-              flexDirection: "column",
-              background:
-                "radial-gradient(circle at top left, rgba(226, 195, 136, 0.35), transparent 32%), linear-gradient(180deg, #f7efe2 0%, #efe4cf 52%, #e2d3bb 100%)",
-            }}
-          >
-            <AppHeader />
-            <Box
-              component="main"
-              sx={{
-                flex: 1,
-              }}
-            >
-              {children}
-            </Box>
-          </Box>
-        </AppThemeProvider>
+        <ClientLayout>{children}</ClientLayout>
       </body>
     </html>
   );
