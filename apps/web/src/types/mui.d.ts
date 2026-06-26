@@ -4,7 +4,7 @@ import '@mui/material/styles';
 
 declare module '@mui/material/styles' {
   interface Palette {
-    custom?: {
+    custom: {
       bgDefault: string;
       bgPaper: string;
       bgElevated: string;

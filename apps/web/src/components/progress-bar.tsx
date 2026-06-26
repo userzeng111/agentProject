@@ -40,7 +40,7 @@ export function ProgressBar({
         sx={{
           height: 8,
           borderRadius: 4,
-          backgroundColor: (theme) => theme.palette.custom!.border,
+          backgroundColor: (theme) => theme.palette.custom.border,
           "& .MuiLinearProgress-bar": {
             borderRadius: 4,
             backgroundColor: (theme) => theme.palette.primary.main,

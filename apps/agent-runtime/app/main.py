@@ -55,6 +55,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         if request.method == "OPTIONS" or path in {"/health", "/api/health"}:
             return await call_next(request)
+        # 静态资源请求豁免限流，避免首屏加载大量 JS/CSS chunk 触发 429
+        if path.startswith("/_next/") or path.endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2")):
+            return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
         now = time.time()
