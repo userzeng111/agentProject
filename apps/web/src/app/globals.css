@@ -1,44 +1,15 @@
+/* apps/web/src/app/globals.css */
 :root {
-  /* === 主色 === */
-  --app-paper: #fffaf2;
-  --app-bg: #efe4cf;
-  --app-ink: #1d2a27;
-  --app-accent: #276451;
-  --app-accent-light: #3a8a70;
-  --app-secondary: #9a5f2f;
+  /* 动画与玻璃态专用变量；颜色 Token 已迁移到 MUI Theme */
+  /* 字体变量为系统字体回退栈。
+     阶段 4 启用 next/font/local 后，由其通过 <html style> 注入同名 CSS 变量，
+     优先级高于 :root，从而自动覆盖此处定义。 */
+  --font-sans-sc: "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-serif-sc: "Songti SC", "STSong", serif;
 
-  /* === 辅助色 === */
-  --app-success: #2e7d5b;
-  --app-warning: #c47a2a;
-  --app-error: #b44a3f;
-  --app-info: #4a7a8a;
-
-  /* === 背景色层级 === */
-  --app-surface-1: rgba(255, 250, 242, 0.95);
-  --app-surface-2: rgba(255, 250, 242, 0.85);
-  --app-surface-3: rgba(255, 250, 242, 0.65);
-
-  /* === 边框色层级 === */
-  --app-border-light: rgba(29, 42, 39, 0.06);
-  --app-border: rgba(29, 42, 39, 0.12);
-  --app-border-strong: rgba(29, 42, 39, 0.22);
-
-  /* === 字体 === */
-  --font-sans-sc: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-serif-sc: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
-
-  /* === 阴影 === */
-  --shadow-sm: 0 2px 8px rgba(88, 69, 37, 0.12);
-  --shadow-md: 0 4px 20px rgba(88, 69, 37, 0.10);
-  --shadow-lg: 0 8px 32px rgba(88, 69, 37, 0.12);
-  --shadow-xl: 0 16px 48px rgba(88, 69, 37, 0.15);
-
-  /* === 间距 === */
-  --spacing-xs: 4px;
-  --spacing-sm: 8px;
-  --spacing-md: 16px;
-  --spacing-lg: 24px;
-  --spacing-xl: 32px;
+  /* 玻璃态变量，与 Design Token 对齐；深色模式由 MUI Theme 的 sx 函数控制 */
+  --glass-bg: rgba(255, 250, 242, 0.65);
+  --glass-border: rgba(255, 255, 255, 0.45);
 }
 
 * {
@@ -52,10 +23,6 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  color: var(--app-ink);
-  background:
-    radial-gradient(circle at top left, rgba(226, 195, 136, 0.35), transparent 32%),
-    linear-gradient(180deg, #f7efe2 0%, var(--app-bg) 52%, #e2d3bb 100%);
 }
 
 a {
@@ -70,11 +37,11 @@ pre {
 
 /* === 玻璃态卡片 === */
 .glass-card {
-  background: var(--app-surface-3);
+  background: var(--glass-bg);
   backdrop-filter: blur(12px) saturate(1.2);
   -webkit-backdrop-filter: blur(12px) saturate(1.2);
-  border: 1px solid rgba(255, 255, 255, 0.45);
-  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--glass-border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   border-radius: 16px;
 }
 
@@ -91,4 +58,15 @@ pre {
 
 .page-fade-in {
   animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* === 减少动画偏好 === */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
