@@ -54,7 +54,7 @@ function getShadows(mode: "light" | "dark"): Shadows {
   ];
 }
 
-function getDesignTokens(mode: "light" | "dark") {
+export function getDesignTokens(mode: "light" | "dark") {
   const tokens = mode === "light" ? LIGHT_TOKENS : DARK_TOKENS;
   const shadows = getShadows(mode);
   return {
@@ -91,7 +91,7 @@ function getDesignTokens(mode: "light" | "dark") {
       },
     },
     shape: { borderRadius: 10 },
-    shadows: getShadows(mode),
+    shadows,
     typography: {
       fontFamily: "var(--font-sans-sc)",
       h1: { fontFamily: "var(--font-serif-sc)" },
