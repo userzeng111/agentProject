@@ -38,36 +38,36 @@ describe('theme-mode utilities', () => {
   it('getInitialMode should default to system when window is undefined', async () => {
     // @ts-expect-error 模拟 SSR 环境
     delete globalThis.window;
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'system');
   });
 
   it('getInitialMode should return light when localStorage has light', async () => {
     store['theme-mode'] = 'light';
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'light');
   });
 
   it('getInitialMode should return dark when localStorage has dark', async () => {
     store['theme-mode'] = 'dark';
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'dark');
   });
 
   it('getInitialMode should return system when localStorage has system', async () => {
     store['theme-mode'] = 'system';
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'system');
   });
 
   it('getInitialMode should fallback to system when localStorage has invalid value', async () => {
     store['theme-mode'] = 'invalid-value';
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'system');
   });
 
   it('getInitialMode should fallback to system when localStorage is empty', async () => {
-    const { getInitialMode } = await import('./theme-mode.ts');
+    const { getInitialMode } = await import('./theme-mode');
     assert.strictEqual(getInitialMode(), 'system');
   });
 });
