@@ -1,5 +1,5 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 
 describe('theme-mode utilities', () => {
   it('getInitialMode should default to system when window is undefined', async () => {
