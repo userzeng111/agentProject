@@ -1,56 +1,76 @@
 "use client";
 
-import { createContext, useCallback, useContext, useState, ReactNode } from "react";
-import { Snackbar, Alert } from "@mui/material";
+import { useState, useCallback, useMemo, useContext, createContext, useRef } from "react";
+import { Alert, Snackbar } from "@mui/material";
 
-interface NotificationState {
-  open: boolean;
+type NotificationType = "success" | "error" | "warning" | "info";
+
+interface Notification {
+  id: string;
+  type: NotificationType;
   message: string;
-  severity: "success" | "error" | "warning" | "info";
+  duration?: number;
+  position: number;
 }
 
 interface NotificationContextValue {
-  notify: (message: string, severity?: NotificationState["severity"]) => void;
+  notify: (notification: Omit<Notification, "id" | "position">) => void;
+  closeNotification: (id: string) => void;
 }
 
-const NotificationContext = createContext<NotificationContextValue | undefined>(undefined);
+const NotificationContext = createContext<NotificationContextValue | null>(null);
 
-export function NotificationProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<NotificationState>({
-    open: false,
-    message: "",
-    severity: "info",
-  });
+function generateId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
 
-  const notify = useCallback((message: string, severity: NotificationState["severity"] = "info") => {
-    setState({ open: true, message, severity });
+export function NotificationProvider({ children }: { children: React.ReactNode }) {
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const positionRef = useRef(0);
+
+  const notify = useCallback((notification: Omit<Notification, "id" | "position">) => {
+    const position = positionRef.current++;
+    setNotifications((prev) => [...prev, { ...notification, id: generateId(), position }]);
   }, []);
 
-  const handleClose = useCallback(() => {
-    setState((prev) => ({ ...prev, open: false }));
+  const closeNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
+
+  const value = useMemo(
+    () => ({ notify, closeNotification }),
+    [notify, closeNotification]
+  );
 
   return (
-    <NotificationContext.Provider value={{ notify }}>
+    <NotificationContext.Provider value={value}>
       {children}
-      <Snackbar
-        open={state.open}
-        autoHideDuration={3000}
-        onClose={handleClose}
-        anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
-      >
-        <Alert onClose={handleClose} severity={state.severity} sx={{ width: "100%" }}>
-          {state.message}
-        </Alert>
-      </Snackbar>
+      {notifications.map((notification) => (
+        <Snackbar
+          key={notification.id}
+          open
+          autoHideDuration={notification.duration ?? 5000}
+          onClose={() => closeNotification(notification.id)}
+          anchorOrigin={{ vertical: "top", horizontal: "right" }}
+          sx={{ mt: notification.position * 1.5 }}
+        >
+          <Alert
+            severity={notification.type}
+            onClose={() => closeNotification(notification.id)}
+            sx={{ width: "100%" }}
+          >
+            {notification.message}
+          </Alert>
+        </Snackbar>
+      ))}
     </NotificationContext.Provider>
   );
 }
 
 export function useNotification() {
-  const context = useContext(NotificationContext);
-  if (!context) {
-    throw new Error("useNotification must be used within a NotificationProvider");
+  const ctx = useContext(NotificationContext);
+  if (!ctx) {
+    throw new Error("useNotification must be used within NotificationProvider");
   }
-  return context;
+  return ctx;
 }
