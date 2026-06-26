@@ -29,7 +29,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const positionRef = useRef(0);
 
   const notify = useCallback((notification: Omit<Notification, "id" | "position">) => {
-    const position = positionRef.current++;
+    const position = positionRef.current++ % 10;
     setNotifications((prev) => [...prev, { ...notification, id: generateId(), position }]);
   }, []);
 
@@ -70,7 +70,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 export function useNotification() {
   const ctx = useContext(NotificationContext);
   if (!ctx) {
-    throw new Error("useNotification must be used within NotificationProvider");
+    throw new Error("useNotification 必须在 NotificationProvider 内部使用");
   }
   return ctx;
 }

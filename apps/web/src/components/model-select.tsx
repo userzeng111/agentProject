@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import {
   FormControl,
   InputLabel,
@@ -35,7 +36,8 @@ export function ModelSelect({
     onChange(event.target.value);
   };
 
-  const labelId = `model-select-${label}`;
+  const uniqueId = useId();
+  const labelId = `model-select-${uniqueId}`;
 
   return (
     <FormControl fullWidth size={size} disabled={disabled}>

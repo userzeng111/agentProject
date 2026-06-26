@@ -1,5 +1,6 @@
 "use client";
 
+import { ReactNode } from "react";
 import { Box, Button, Typography } from "@mui/material";
 import InboxIcon from "@mui/icons-material/Inbox";
 
@@ -8,7 +9,7 @@ interface EmptyStateProps {
   description?: string;
   actionLabel?: string;
   onAction?: () => void;
-  icon?: React.ReactNode;
+  icon?: ReactNode;
 }
 
 export function EmptyState({

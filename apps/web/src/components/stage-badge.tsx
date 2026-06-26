@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import { ReactElement } from "react";
 import { Chip } from "@mui/material";
 import { keyframes } from "@mui/material/styles";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
@@ -25,7 +25,7 @@ const pulse = keyframes`
 
 const STATUS_CONFIG: Record<
   StageStatus,
-  { label: string; color: "success" | "warning" | "error" | "default" | "primary"; icon: React.ReactElement }
+  { label: string; color: "success" | "warning" | "error" | "default" | "primary"; icon: ReactElement }
 > = {
   running: { label: "运行中", color: "success", icon: <PlayArrowIcon /> },
   completed: { label: "已完成", color: "success", icon: <CheckCircleIcon /> },

@@ -6,6 +6,7 @@ type DecisionActionColor = "primary" | "error" | "warning" | "secondary";
 type DecisionActionVariant = "contained" | "outlined";
 
 interface DecisionAction {
+  id?: string;
   label: string;
   onClick: () => void;
   variant?: DecisionActionVariant;
@@ -35,7 +36,7 @@ export function DecisionBar({ actions }: DecisionBarProps) {
       <Toolbar sx={{ justifyContent: "flex-end", gap: 2, px: { xs: 2, md: 3 } }}>
         {actions.map((action, index) => (
           <Button
-            key={index}
+            key={action.id ?? `${action.label}-${index}`}
             variant={action.variant ?? "outlined"}
             color={action.color ?? "primary"}
             disabled={action.disabled}
