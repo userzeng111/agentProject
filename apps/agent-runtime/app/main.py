@@ -60,6 +60,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
+        # 本地回环地址或无法获取 IP 时豁免限流，便于开发调试与 E2E 全量测试
+        if client_ip in ("127.0.0.1", "::1", "localhost", "unknown") or client_ip is None:
+            return await call_next(request)
         now = time.time()
 
         # 定期清理过期条目
