@@ -9,7 +9,7 @@ import {
   ReactNode,
 } from "react";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import { getInitialMode, type ThemeMode } from "@/lib/theme-mode";
+import { getInitialMode, STORAGE_KEY, type ThemeMode } from "@/lib/theme-mode";
 
 interface ThemeModeContextValue {
   mode: ThemeMode;
@@ -37,7 +37,7 @@ export function ThemeModeProvider({ children }: { children: ReactNode }) {
   const setMode = useCallback((next: ThemeMode) => {
     setModeState(next);
     if (typeof window !== "undefined") {
-      window.localStorage.setItem("theme-mode", next);
+      window.localStorage.setItem(STORAGE_KEY, next);
     }
   }, []);
 
