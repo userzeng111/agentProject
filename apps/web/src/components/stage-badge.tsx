@@ -25,7 +25,7 @@ const pulse = keyframes`
 
 const STATUS_CONFIG: Record<
   StageStatus,
-  { label: string; color: "success" | "warning" | "error" | "default" | "primary"; icon: React.ReactNode }
+  { label: string; color: "success" | "warning" | "error" | "default" | "primary"; icon: React.ReactElement }
 > = {
   running: { label: "运行中", color: "success", icon: <PlayArrowIcon /> },
   completed: { label: "已完成", color: "success", icon: <CheckCircleIcon /> },
