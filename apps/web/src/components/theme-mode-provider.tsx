@@ -4,12 +4,13 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   ReactNode,
 } from "react";
 import useMediaQuery from "@mui/material/useMediaQuery";
-import { getInitialMode, STORAGE_KEY, type ThemeMode } from "@/lib/theme-mode";
+import { STORAGE_KEY, type ThemeMode } from "@/lib/theme-mode";
 
 interface ThemeModeContextValue {
   mode: ThemeMode;
@@ -20,7 +21,15 @@ interface ThemeModeContextValue {
 const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
 
 export function ThemeModeProvider({ children }: { children: ReactNode }) {
-  const [mode, setModeState] = useState<ThemeMode>(getInitialMode);
+  // 初始状态固定为 system，避免 SSR 与客户端 hydration 不一致
+  const [mode, setModeState] = useState<ThemeMode>("system");
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(STORAGE_KEY);
+    if (stored === "light" || stored === "dark" || stored === "system") {
+      setModeState(stored);
+    }
+  }, []);
 
   // noSsr: true 避免 SSR 期间执行媒体查询；layout.tsx 使用 suppressHydrationWarning 抑制首次渲染差异警告
   const systemPrefersDark = useMediaQuery("(prefers-color-scheme: dark)", {
