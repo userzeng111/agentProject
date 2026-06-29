@@ -1,3 +1,5 @@
+from ipaddress import IPv4Address
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -63,6 +65,27 @@ def test_rate_limit_accepts_configured_thresholds() -> None:
 
     assert client.post("/api/chat/completions").status_code == 200
     assert client.post("/api/chat/completions").status_code == 429
+
+
+def test_loopback_ip_is_exempt_when_accessing_localhost() -> None:
+    client = TestClient(
+        _build_configured_test_app(general_limit=2, chat_limit=1),
+        base_url="http://localhost",
+        client=(str(IPv4Address(0x7F000001)), 50000),
+    )
+
+    assert client.get("/api/ping").status_code == 200
+    assert client.get("/api/ping").status_code == 200
+    assert client.get("/api/ping").status_code == 200
+
+
+def test_ipv4_mapped_loopback_is_exempt() -> None:
+    assert RateLimitMiddleware._is_loopback_host("::ffff:127.0.0.1") is True
+
+
+def test_missing_client_host_is_not_treated_as_loopback() -> None:
+    assert RateLimitMiddleware._is_loopback_host("") is False
+    assert RateLimitMiddleware._is_loopback_host("unknown") is False
 
 
 def test_chat_requests_still_use_chat_rate_limit() -> None:

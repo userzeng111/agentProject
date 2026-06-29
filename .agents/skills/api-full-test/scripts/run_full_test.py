@@ -49,6 +49,35 @@ def request_text(url: str, timeout: float, method: str = "GET", payload: dict | 
         return exc.code, body
 
 
+def is_gateway_unavailable(status: int, body: dict | str | None) -> bool:
+    if status not in {502, 503, 504}:
+        return False
+    if body is None:
+        return status in {502, 503, 504}
+    if isinstance(body, dict):
+        text = json.dumps(body, ensure_ascii=False)
+    else:
+        text = body
+    markers = (
+        "Invalid API Key",
+        "invalid_key",
+        "流式调用失败",
+        "上游",
+    )
+    return any(marker in text for marker in markers)
+
+
+def should_warn_gateway_unavailable(status: int, body: dict | str | None, *, allow_gateway_unavailable: bool) -> bool:
+    return allow_gateway_unavailable and is_gateway_unavailable(status, body)
+
+
+def record_cors_result(stats: "Stats", origin: str, allow_origin: str) -> None:
+    if allow_origin == origin:
+        stats.pass_(f"CORS: {origin} ✓")
+    else:
+        stats.fail(f"CORS: {origin}", f"allow-origin={allow_origin or '<empty>'}")
+
+
 # ── 测试统计 ──
 
 class Stats:
@@ -72,8 +101,19 @@ class Stats:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="全量 API 接口冒烟测试")
-    parser.add_argument("--backend-url", default="http://127.0.0.1:8000", help="后端地址")
+    parser.add_argument("--backend-url", default="http://localhost:8000", help="后端地址")
     parser.add_argument("--frontend-url", default=None, help="前端地址（不传则跳过前端测试）")
+    parser.add_argument(
+        "--cors-origin",
+        action="append",
+        default=[],
+        help="额外 CORS Origin，可重复传入；默认只检查前端地址或 http://localhost:3000",
+    )
+    parser.add_argument(
+        "--allow-gateway-unavailable",
+        action="store_true",
+        help="允许本地模型网关不可用或鉴权失败时将聊天补全记为警告；部署门禁不要启用",
+    )
     parser.add_argument("--timeout", type=float, default=10.0, help="单次请求超时（秒）")
     args = parser.parse_args()
 
@@ -212,6 +252,8 @@ def main() -> int:
         )
         if status == 200:
             stats.pass_(f"PATCH /api/settings/default-model → {model_id}")
+        elif status == 400 and body and "未接入网关" in str(body.get("detail", "")):
+            stats.warning("PATCH /api/settings/default-model", "当前模型列表没有可切换的网关模型，跳过本地画像模型")
         else:
             stats.fail("PATCH /api/settings/default-model", f"status={status}")
     else:
@@ -236,6 +278,8 @@ def main() -> int:
     if status == 200 and body and body.get("choices"):
         content = body["choices"][0].get("message", {}).get("content", "")
         stats.pass_(f"POST /api/chat/completions → {content[:20]}")
+    elif should_warn_gateway_unavailable(status, body, allow_gateway_unavailable=args.allow_gateway_unavailable):
+        stats.warning("POST /api/chat/completions", f"上游模型网关不可用或鉴权失败，接口返回受控错误 status={status}")
     else:
         stats.fail("POST /api/chat/completions", f"status={status}")
 
@@ -268,11 +312,13 @@ def main() -> int:
     # ── 8. CORS 检查 ──
     print("\n── 8. CORS 检查 ──")
 
-    cors_origins = [
-        "https://agentproject.pages.dev",
-        "https://yuegui666.icu",
-        "http://localhost:3000",
-    ]
+    cors_origins = []
+    if frontend:
+        cors_origins.append(frontend)
+    else:
+        cors_origins.append("http://localhost:3000")
+    cors_origins.extend(args.cors_origin)
+    cors_origins = list(dict.fromkeys(cors_origins))
     for origin in cors_origins:
         req = urllib.request.Request(
             url=f"{backend}/api/health",
@@ -285,10 +331,7 @@ def main() -> int:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 allow_origin = resp.headers.get("access-control-allow-origin", "")
-                if allow_origin == origin:
-                    stats.pass_(f"CORS: {origin} ✓")
-                else:
-                    stats.warning(f"CORS: {origin}", f"allow-origin={allow_origin}")
+                record_cors_result(stats, origin, allow_origin)
         except urllib.error.HTTPError as exc:
             stats.fail(f"CORS: {origin}", f"status={exc.code}")
 

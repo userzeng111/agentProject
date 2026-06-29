@@ -14,7 +14,7 @@ RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "小说 Agent Runtime"
-    runtime_origin: str = "http://127.0.0.1:3001"
+    runtime_origin: str = "http://localhost:3001"
     rate_limit_general_per_minute: int = Field(
         default=60,
         validation_alias=AliasChoices("RATE_LIMIT_GENERAL_PER_MINUTE"),

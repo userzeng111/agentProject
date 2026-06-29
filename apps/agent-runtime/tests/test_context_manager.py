@@ -91,6 +91,56 @@ class ContextManagerTests(unittest.TestCase):
         self.assertEqual(first_snapshot.cache_key, second_snapshot.cache_key)
         self.assertEqual(first_snapshot.packet.assembled_text, second_snapshot.packet.assembled_text)
 
+    def test_build_snapshot_rebuilds_when_cached_snapshot_schema_is_stale(self) -> None:
+        class StaleCacheStore:
+            def __init__(self) -> None:
+                self.written_value = None
+
+            def get(self, key: str):
+                return {
+                    "task_id": "task-cache",
+                    "stage": "drafting",
+                    "model_id": "gpt-5.4",
+                    "cache_key": key,
+                    "packet": {"旧字段": "旧缓存结构"},
+                }
+
+            def set(self, key: str, value) -> None:
+                self.written_value = value
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        cache_store = StaleCacheStore()
+        manager = ContextManager(
+            cache_store=cache_store,
+            compressor=self.compressor,
+            assembler=self.assembler,
+        )
+
+        snapshot = manager.build_snapshot(
+            task_id="task-cache",
+            stage="drafting",
+            instruction="生成正文。",
+            model_profile=self.profile,
+            references=[
+                ReferenceMaterial(
+                    source_id="ref-1",
+                    title="素材",
+                    content="线索A。" * 20,
+                    priority=5,
+                )
+            ],
+            memory_items=["已完成章节摘要：主角决定离开故乡。"],
+        )
+
+        self.assertFalse(snapshot.cache_hit)
+        self.assertIsNotNone(cache_store.written_value)
+        self.assertTrue(snapshot.packet.assembled_text.startswith("任务阶段：drafting"))
+
     def test_cache_store_expires_entries_after_ttl(self) -> None:
         current_time = {"value": 100.0}
         cache_store = InMemoryCacheStore(

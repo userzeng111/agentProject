@@ -1,6 +1,6 @@
-const { describe, it } = require('node:test');
-const assert = require('node:assert');
-const { createTheme } = require('@mui/material/styles');
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import { createTheme } from '@mui/material/styles';
 
 describe('MUI custom palette type extension', () => {
   it('should accept custom palette fields', () => {

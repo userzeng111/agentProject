@@ -18,7 +18,7 @@ import {
 } from "@/lib/types";
 import { createChatSseParser, getStreamChatErrorMessage } from "@/lib/stream-chat-events.mjs";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 type RequestLogContext = Record<string, unknown>;
 

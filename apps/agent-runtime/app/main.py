@@ -1,6 +1,7 @@
 import os
 import time
 from collections import defaultdict
+from ipaddress import ip_address
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -59,9 +60,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path.startswith("/_next/") or path.endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2")):
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
-        # 本地回环地址或无法获取 IP 时豁免限流，便于开发调试与 E2E 全量测试
-        if client_ip in ("127.0.0.1", "::1", "localhost", "unknown") or client_ip is None:
+        client_ip = request.client.host if request.client else ""
+        # 本地回环地址豁免限流，便于开发调试与 E2E 全量测试
+        if self._is_loopback_host(client_ip):
             return await call_next(request)
         now = time.time()
 
@@ -101,6 +102,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 timestamps.pop(0)
             if not timestamps:
                 del self._records[key]
+
+    @staticmethod
+    def _is_loopback_host(host: str) -> bool:
+        if host == "localhost":
+            return True
+        try:
+            return ip_address(host).is_loopback
+        except ValueError:
+            return False
 
 
 class CacheControlMiddleware(BaseHTTPMiddleware):
@@ -177,9 +187,7 @@ app.add_middleware(CacheControlMiddleware)
 
 _default_origins = [
     settings.runtime_origin,
-    "http://127.0.0.1:3000",
     "http://localhost:3000",
-    "http://127.0.0.1:3001",
     "http://localhost:3001",
 ]
 _allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "")

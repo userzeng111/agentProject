@@ -125,7 +125,7 @@
 cd apps/agent-runtime && uv sync --locked --dev
 
 # 启动后端
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host localhost --port 8000
 
 # 运行全部测试
 uv run --project apps/agent-runtime pytest apps/agent-runtime/tests/ -v

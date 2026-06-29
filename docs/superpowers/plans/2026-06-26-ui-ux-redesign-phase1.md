@@ -1884,15 +1884,21 @@ Co-Authored-By: Happy <yesreply@happy.engineering>"
 
 ## 验收标准
 
-- [ ] `AppThemeProvider` 支持 light/dark/system 三种模式，`localStorage` 持久化生效。
-- [ ] MUI Theme 自定义 Palette 类型扩展通过 TypeScript 编译。
-- [ ] `shadows` 数组为完整 25 元素，无 `as any`。
-- [ ] `globals.css` 不再包含重复颜色 Token。
-- [ ] 10 个通用组件全部创建并有对应测试文件，测试通过。
-- [ ] `layout.tsx` 接入 `ThemeModeProvider` 和 `NotificationProvider`；本地字体配置结构已建立但阶段 1 暂不启用。
-- [ ] E2E 抽象层（`routes.ts`、`selectors.ts`、`helpers.ts`）已创建。
-- [ ] `npm test`、`npm run build`、`npm run lint` 全部通过。
-- [ ] 至少一个现有 E2E spec 通过，证明主题重构未破坏现有页面。
+- [x] `AppThemeProvider` 支持 light/dark/system 三种模式，`localStorage` 持久化生效。
+- [x] MUI Theme 自定义 Palette 类型扩展通过 TypeScript 编译。
+- [x] `shadows` 数组为完整 25 元素，无 `as any`。
+- [x] `globals.css` 不再包含重复颜色 Token。
+- [x] 10 个通用组件全部创建并有对应测试文件，测试通过。
+- [x] `layout.tsx` 接入 `ThemeModeProvider` 和 `NotificationProvider`；本地字体配置结构已建立但阶段 1 暂不启用。
+- [x] E2E 抽象层（`routes.ts`、`selectors.ts`、`helpers.ts`）已创建。
+- [x] `npm test`、`npm run build`、`npm run lint` 全部通过。
+- [x] 至少一个现有 E2E spec 通过，证明主题重构未破坏现有页面。
+
+## 阶段 1 验收记录
+
+- 阶段 1 已按计划落地设计系统、深色模式基础、通用组件层、Root Layout 接入与 E2E 抽象层。
+- 当前阶段只代表“UI/UX 体验重塑阶段 1”完成；完整体验重塑的阶段 2-4（作品库、`/p/[projectId]` 路由、ProjectShell/StageNav、审核与结果页面重构、大组件拆分）仍需后续独立计划继续实施。
+- 本次收口验证结果为：前端单元测试 86/86、后端测试 340 passed / 1 skipped、Playwright E2E 88/88；`project-interface-smoke` 全部通过，`api-full-test --allow-gateway-unavailable` 17 OK / 4 WARN / 0 FAIL，默认不带该开关时会因本地模型网关不可用退出非 0。
 
 ---
 

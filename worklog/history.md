@@ -1,5 +1,21 @@
 # 历史问题索引
 
+- 标题：UI/UX 体验重塑阶段 1
+  路径：`worklog/archive/UI优化/20260626-01-UIUX体验重塑设计.md`
+  摘要：完成阶段 1 设计系统、深色模式基础、通用组件层、Root Layout 接入与 E2E 抽象层；完整体验重塑阶段 2-4 另行跟进。
+
+- 标题：将后端本地回环地址统一替换为 localhost
+  路径：`worklog/archive/agent-runtime/20260626-02-替换本地回环地址为localhost.md`
+  摘要：统一本地开发、测试、脚本和说明文档默认地址为 localhost，并修复 localhost 解析为回环 IP 时误触发限流的问题。
+
+- 标题：模型 API 配置位置确认
+  路径：`worklog/archive/agent-runtime/20260629-01-模型API配置位置确认.md`
+  摘要：已定位模型 API 的 `.env` 配置、Settings 字段、网关调用、模型目录与前端后端 API 基址位置，未修改实现代码。
+
+- 标题：context 缓存日志与异常降级收口
+  路径：`worklog/archive/agent-runtime/20260629-02-context缓存日志与异常降级.md`
+  摘要：完成 context 缓存读写、清理、多层缓存与旧 schema 命中时的异常降级和中文日志补充。
+
 - 标题：MVP项目审查与修复
   路径：`worklog/archive/项目审查/20260625-001-MVP项目审查与修复.md`
   摘要：全面审查项目，修复硬编码路径、内存泄漏、多中断 resume、E2E 选择器问题，清理死代码，更新 .gitignore，补充前端测试。前端 86/86、后端 334/334、E2E 88/88 全部通过。识别运行时死代码 85 项待清理。

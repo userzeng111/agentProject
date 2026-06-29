@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const frontendURL = process.env.PLAYWRIGHT_FRONTEND_URL ?? "http://127.0.0.1:3000";
-const backendURL = process.env.PLAYWRIGHT_BACKEND_URL ?? "http://127.0.0.1:8000";
+const frontendURL = process.env.PLAYWRIGHT_FRONTEND_URL ?? "http://localhost:3000";
+const backendURL = process.env.PLAYWRIGHT_BACKEND_URL ?? "http://localhost:8000";
 const isCI = Boolean(process.env.CI);
 
 export default defineConfig({
@@ -39,7 +39,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "cd ../.. && RATE_LIMIT_GENERAL_PER_MINUTE=1000 RATE_LIMIT_CHAT_PER_MINUTE=200 uv run --project apps/agent-runtime python -m uvicorn app.main:app --host 127.0.0.1 --port 8000",
+        "cd ../.. && RATE_LIMIT_GENERAL_PER_MINUTE=1000 RATE_LIMIT_CHAT_PER_MINUTE=200 uv run --project apps/agent-runtime python -m uvicorn app.main:app --host localhost --port 8000",
       url: `${backendURL}/api/health`,
       reuseExistingServer: !isCI,
       timeout: 120_000,
@@ -47,7 +47,7 @@ export default defineConfig({
       stderr: "pipe",
     },
     {
-      command: `NEXT_PUBLIC_API_BASE_URL=${backendURL} npm run dev -- --hostname 127.0.0.1 --port 3000`,
+      command: `NEXT_PUBLIC_API_BASE_URL=${backendURL} npm run dev -- --hostname localhost --port 3000`,
       url: frontendURL,
       reuseExistingServer: !isCI,
       timeout: 120_000,

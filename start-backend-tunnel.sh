@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/apps/agent-runtime"
 
-DEFAULT_BACKEND_HOST="127.0.0.1"
+DEFAULT_BACKEND_HOST="localhost"
 DEFAULT_BACKEND_PORT="8000"
 DEFAULT_TUNNEL_CONFIG="$HOME/.cloudflared/config.yml"
 
