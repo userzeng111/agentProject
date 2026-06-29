@@ -127,11 +127,6 @@ export function createTask(payload: TaskCreatePayload) {
   });
 }
 
-export async function getModels(options?: { refresh?: boolean }) {
-  const response = await request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
-  return response.data ?? [];
-}
-
 export function getModelCatalog(options?: { refresh?: boolean }) {
   return request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
 }
@@ -244,27 +239,6 @@ export function getWorkspace(taskId: string) {
   return request<WorkspaceResponse>(`/api/tasks/${taskId}/workspace`);
 }
 
-export function getSupervisor(taskId: string) {
-  return request<{
-    planner_version: string;
-    subtasks: Array<{
-      id: string;
-      kind: string;
-      title: string;
-      status: string;
-      assigned_agent?: string;
-      payload?: Record<string, unknown>;
-    }>;
-    dependencies: Array<{
-      upstream_subtask_id: string;
-      downstream_subtask_id: string;
-      kind: string;
-    }>;
-    metadata?: Record<string, unknown>;
-    agent_runs?: WorkspaceResponse["agent_runs"];
-  }>(`/api/tasks/${taskId}/supervisor`);
-}
-
 export function getReview(taskId: string) {
   return request<ReviewResponse>(`/api/tasks/${taskId}/review`);
 }
@@ -296,15 +270,6 @@ export async function fetchTextRef(ref: string) {
     throw new Error("读取文本引用失败");
   }
   return response.text();
-}
-
-export async function fetchJsonRef<T>(ref: string) {
-  const target = ref.startsWith("http") ? ref : `${API_BASE}${ref.startsWith("/") ? ref : `/${ref}`}`;
-  const response = await fetch(target, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error("读取 JSON 引用失败");
-  }
-  return response.json() as Promise<T>;
 }
 
 export function normalizeModelOptions(models: ModelOption[]) {

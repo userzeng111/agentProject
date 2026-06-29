@@ -44,7 +44,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await page.getByRole("tab", { name: "失败 (1)" }).click();
     await expect(page.getByRole("heading", { name: "自动化测试-failed" })).toBeVisible();
     await page.getByRole("link", { name: /重新创建/ }).click();
-    await expect(page).toHaveURL(/\/create\/\?retry_from=task_failed_fixture/);
+    await expect(page).toHaveURL(/\/new\/?\?retry_from=task_failed_fixture/);
   });
 
   test("首页支持删除失败任务和切换默认模型", async ({ page }) => {
@@ -101,7 +101,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
       await route.fallback();
     });
 
-    await page.goto("/create", { waitUntil: "commit" });
+    await page.goto("/new", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "创建小说任务" })).toBeVisible();
     await page.getByRole("combobox", { name: /^创作模型$/ }).click();
     await page.getByRole("option", { name: /GPT 5.4/ }).click();
@@ -114,7 +114,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await submit.click();
 
     await expect.poll(() => createRequests, { message: "创建页应提交任务" }).toBe(1);
-    await expect(page).toHaveURL(/\/tasks\/\?id=task_created_form_fixture/);
+    await expect(page).toHaveURL(/\/p\/task_created_form_fixture\/?$/);
   });
 
   test("创建页提交失败时展示错误提示", async ({ page }) => {
@@ -126,7 +126,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
       });
     });
 
-    await page.goto("/create", { waitUntil: "commit" });
+    await page.goto("/new", { waitUntil: "commit" });
     await page.getByRole("combobox", { name: /^创作模型$/ }).click();
     await page.getByRole("option", { name: /GPT 5.4/ }).click();
     await expect(page.getByRole("combobox", { name: /^创作模型/ })).toContainText("GPT 5.4");

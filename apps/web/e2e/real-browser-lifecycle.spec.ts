@@ -8,7 +8,7 @@ test.describe("真实浏览器任务生命周期", () => {
 
     try {
       await mockCommonApiRoutes(page);
-      await page.goto("/create", { waitUntil: "commit" });
+      await page.goto("/new", { waitUntil: "commit" });
       await expect(page.getByRole("heading", { name: /创建小说任务/ })).toBeVisible();
 
       await expect(page.getByRole("combobox", { name: /^创作模型/ })).toBeVisible();
@@ -28,9 +28,9 @@ test.describe("真实浏览器任务生命周期", () => {
 
       await expect(page.getByRole("button", { name: "创建并进入任务页" })).toBeEnabled();
       await page.getByRole("button", { name: "创建并进入任务页" }).click();
-      await expect(page).toHaveURL(/\/tasks\/\?id=task_/, { timeout: 30_000 });
+      await expect(page).toHaveURL(/\/p\/task_/, { timeout: 30_000 });
       const currentUrl = new URL(page.url());
-      taskId = currentUrl.searchParams.get("id") ?? "";
+      taskId = currentUrl.pathname.split("/").filter(Boolean).at(1) ?? "";
       expect(taskId, "创建页跳转后应携带任务 id").toMatch(/^task_/);
 
       await expect

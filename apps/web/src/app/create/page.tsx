@@ -1,5 +1,10 @@
-import CreateTaskClient from "@/features/task-create/create-task-client";
+import { Suspense } from "react";
+import LegacyCreatePage from "./legacy-create-page";
 
 export default function CreatePage() {
-  return <CreateTaskClient />;
+  return (
+    <Suspense fallback={null}>
+      <LegacyCreatePage />
+    </Suspense>
+  );
 }

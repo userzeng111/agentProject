@@ -6,7 +6,7 @@ test.describe("真实后端页面导航", () => {
     await page.goto("/", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "小说工坊", level: 4 })).toBeVisible();
 
-    await page.goto("/create", { waitUntil: "commit" });
+    await page.goto("/new", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: /创建小说任务/ })).toBeVisible();
 
     await page.goto("/archive", { waitUntil: "commit" });
@@ -24,8 +24,8 @@ test.describe("真实后端页面导航", () => {
     try {
       const task = await createDraftTask(request, "Playwright 页面导航");
       taskId = task.id;
-      await page.goto(`/tasks/?id=${taskId}`, { waitUntil: "commit" });
-      await expect(page).toHaveURL(new RegExp(`/tasks/\\?id=${taskId}`));
+      await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
+      await expect(page).toHaveURL(new RegExp(`/p/${taskId}/?$`));
       await expect
         .poll(async () => (await request.get(apiPath(`/api/tasks/${taskId}/workspace`))).status(), {
           message: "进入工作台后，后端 workspace 应可读取",

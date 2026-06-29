@@ -21,7 +21,7 @@ test.describe("任务工作台调试中心", () => {
         }
       });
 
-      await page.goto(`/tasks/?id=${taskId}`, { waitUntil: "commit" });
+      await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
       await page.getByRole("tab", { name: /调试/ }).click();
 
       for (const text of [
@@ -253,7 +253,7 @@ test.describe("任务工作台调试中心", () => {
       await route.fulfill({ json: { id: taskId, task_id: taskId, status: "planning" } });
     });
 
-    await page.goto(`/tasks/?id=${taskId}`, { waitUntil: "commit" });
+    await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
     await page.getByRole("tab", { name: /调试/ }).click();
 
     await expectVisibleTexts(page, [

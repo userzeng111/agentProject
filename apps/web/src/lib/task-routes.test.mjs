@@ -1,42 +1,36 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
+import {
+  archiveDetailHref,
+  newProjectHref,
+  resultHref,
+  reviewHref,
+  settingsHref,
+  workspaceHref,
+} from "./task-routes.ts";
+
 describe("任务路由工具函数", () => {
-  // 模拟路由函数
-  function workspaceHref(taskId) {
-    return `/tasks/?id=${encodeURIComponent(taskId)}`;
-  }
-
-  function reviewHref(taskId) {
-    return `/review/?id=${encodeURIComponent(taskId)}`;
-  }
-
-  function resultHref(taskId) {
-    return `/result/?id=${encodeURIComponent(taskId)}`;
-  }
-
-  function archiveDetailHref(taskId) {
-    return `/archive/detail/?id=${encodeURIComponent(taskId)}`;
-  }
-
-  function settingsHref() {
-    return "/settings";
-  }
-
   describe("workspaceHref", () => {
-    it("正确生成任务工作区链接", () => {
-      assert.equal(workspaceHref("task-123"), "/tasks/?id=task-123");
-      assert.equal(workspaceHref("abc-def-456"), "/tasks/?id=abc-def-456");
+    it("生成作品工作台规范链接", () => {
+      assert.equal(workspaceHref("task-123"), "/p/task-123");
+      assert.equal(workspaceHref("abc-def-456"), "/p/abc-def-456");
     });
 
-    it("正确编码特殊字符", () => {
-      assert.equal(workspaceHref("task with spaces"), "/tasks/?id=task%20with%20spaces");
-      assert.equal(workspaceHref("task/with/slashes"), "/tasks/?id=task%2Fwith%2Fslashes");
-      assert.equal(workspaceHref("task?with=query"), "/tasks/?id=task%3Fwith%3Dquery");
+    it("按路径段编码特殊字符", () => {
+      assert.equal(workspaceHref("task with spaces"), "/p/task%20with%20spaces");
+      assert.equal(workspaceHref("task/with/slashes"), "/p/task%2Fwith%2Fslashes");
+      assert.equal(workspaceHref("task?with=query"), "/p/task%3Fwith%3Dquery");
     });
 
     it("处理空字符串", () => {
-      assert.equal(workspaceHref(""), "/tasks/?id=");
+      assert.equal(workspaceHref(""), "/p/");
+    });
+  });
+
+  describe("newProjectHref", () => {
+    it("返回新建作品规范路径", () => {
+      assert.equal(newProjectHref(), "/new");
     });
   });
 

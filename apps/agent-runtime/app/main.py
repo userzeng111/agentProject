@@ -20,7 +20,7 @@ from app.observability import TracingMiddleware, init_logging
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
 from app.services import ChatService
 from app.settings.config import get_settings
-from app.static_files import resolve_static_file
+from app.static_files import resolve_spa_static_file
 from app.style_profiles import StyleProfileService
 from app.storage.task_store import TaskLogStore
 
@@ -246,13 +246,8 @@ if _static_dir.is_dir():
     async def spa_fallback(request: Request, path: str):
         """SPA 回退：静态文件优先，否则返回 index.html 让前端路由接管。"""
         if path:
-            # 尝试匹配静态文件
-            candidate = resolve_static_file(_static_dir, path)
+            candidate = resolve_spa_static_file(_static_dir, path)
             if candidate is not None:
                 return FileResponse(candidate)
-            # 尝试 index.html（如 /archive/ → archive/index.html）
-            index_candidate = resolve_static_file(_static_dir, f"{path.strip('/')}/index.html")
-            if index_candidate is not None:
-                return FileResponse(index_candidate)
         # 所有其他路径回退到 index.html（SPA 路由）
         return FileResponse(_index_html)

@@ -146,3 +146,11 @@ test("continue 请求可把 continue_request_id 透传到结构化日志上下�
     globalThis.fetch = originalFetch;
   }
 });
+
+test("API 客户端不再暴露历史无调用导出", async () => {
+  const api = await loadApiModule();
+
+  assert.equal(Object.hasOwn(api, "getModels"), false);
+  assert.equal(Object.hasOwn(api, "getSupervisor"), false);
+  assert.equal(Object.hasOwn(api, "fetchJsonRef"), false);
+});

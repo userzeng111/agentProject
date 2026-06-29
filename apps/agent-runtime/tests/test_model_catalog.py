@@ -14,6 +14,11 @@ class FakeGatewayClient:
         return self._models
 
 
+class FailingGatewayClient:
+    def list_models(self):
+        raise RuntimeError("gateway down")
+
+
 class ModelCatalogServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         from app.llm.model_catalog import ModelCatalogService
@@ -295,6 +300,32 @@ class ModelCatalogServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "未接入网关"):
             catalog.update_default_model("gpt-5.4")
+
+    def test_invalid_runtime_settings_logs_warning_and_uses_config_default(self) -> None:
+        settings_file = Path(self.settings.tasklog_root) / "settings.json"
+        settings_file.parent.mkdir(parents=True, exist_ok=True)
+        settings_file.write_text("{", encoding="utf-8")
+
+        with self.assertLogs("app.llm.model_catalog", level="WARNING") as logs:
+            catalog = self.catalog_cls(
+                settings=self.settings,
+                gateway_client=FakeGatewayClient([{"id": "gpt-5.4"}]),
+            )
+
+        self.assertEqual(catalog._effective_default_model(), "gpt-5.4")
+        self.assertTrue(any("读取运行时模型设置失败" in message for message in logs.output))
+
+    def test_gateway_model_list_failure_logs_warning_and_returns_fallback_catalog(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FailingGatewayClient(),
+        )
+
+        with self.assertLogs("app.llm.model_catalog", level="WARNING") as logs:
+            payload = catalog.list_models_payload(force_refresh=True)
+
+        self.assertIn("gpt-5.4", {item["id"] for item in payload["data"]})
+        self.assertTrue(any("读取网关模型列表失败" in message for message in logs.output))
 
 
 if __name__ == "__main__":

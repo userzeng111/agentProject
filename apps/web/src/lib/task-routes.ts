@@ -1,5 +1,9 @@
+export function newProjectHref() {
+  return "/new";
+}
+
 export function workspaceHref(taskId: string) {
-  return `/tasks/?id=${encodeURIComponent(taskId)}`;
+  return `/p/${encodeURIComponent(taskId)}`;
 }
 
 export function reviewHref(taskId: string) {

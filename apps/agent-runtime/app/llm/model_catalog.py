@@ -7,12 +7,15 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.observability import get_logger
 from app.llm.model_capabilities_config import (
     apply_context_window_config,
     resolve_generation_max_tokens,
 )
 from app.settings.config import Settings
 
+
+logger = get_logger(__name__)
 
 _CAPABILITY_SCHEMA_VERSION = "v1"
 _CACHE_TTL_SECONDS = 300.0
@@ -458,8 +461,8 @@ class ModelCatalogService:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 self._runtime_default_model = data.get("default_model") or None
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("读取运行时模型设置失败，使用配置默认模型: path=%s error=%s", path, exc)
 
     def _save_runtime_settings(self) -> None:
         """保存运行时设置到 tasklog/settings.json。"""
@@ -561,7 +564,8 @@ class ModelCatalogService:
             return []
         try:
             payload = self.gateway_client.list_models()
-        except Exception:
+        except Exception as exc:
+            logger.warning("读取网关模型列表失败，使用本地模型画像降级: error=%s", exc)
             return []
         if not isinstance(payload, list):
             return []

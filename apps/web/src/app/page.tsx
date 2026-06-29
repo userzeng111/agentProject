@@ -25,7 +25,7 @@ import { Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material"
 import { deleteTask, getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { archiveDetailHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
+import { archiveDetailHref, newProjectHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
 
@@ -148,7 +148,7 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
               {isFailed && (
                 <Button
                   component={Link}
-                  href={`/create/?retry_from=${task.task_id}`}
+                  href={`${newProjectHref()}?retry_from=${encodeURIComponent(task.task_id)}`}
                   size="small"
                   color="warning"
                   startIcon={<ReplayIcon />}
@@ -551,7 +551,7 @@ export default function Home() {
             </Typography>
           </Stack>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ flexShrink: 0 }}>
-            <Button component={Link} href="/create" size="large" variant="contained">
+            <Button component={Link} href={newProjectHref()} size="large" variant="contained">
               创建任务
             </Button>
             <Button component={Link} href="/archive" size="large" variant="outlined">

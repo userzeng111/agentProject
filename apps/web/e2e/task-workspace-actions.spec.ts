@@ -5,7 +5,7 @@ async function openWorkspace(page: import("@playwright/test").Page, status: stri
   await mockCommonApiRoutes(page);
   const workspace = makeWorkspace(status, { task_id: taskId });
   await mockTaskWorkspace(page, workspace);
-  await page.goto(`/tasks/?id=${taskId}`, { waitUntil: "commit" });
+  await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
   return workspace;
 }
 

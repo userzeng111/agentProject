@@ -17,7 +17,7 @@ import { Create as CreateIcon, Home as HomeIcon, Archive as ArchiveIcon, SmartTo
 const NAV_LINKS = [
   { label: "首页", href: "/", icon: <HomeIcon fontSize="small" /> },
   { label: "AI 对话", href: "/chat", icon: <ChatIcon fontSize="small" /> },
-  { label: "创建任务", href: "/create", icon: <CreateIcon fontSize="small" /> },
+  { label: "创建任务", href: "/new", icon: <CreateIcon fontSize="small" /> },
   { label: "归档", href: "/archive", icon: <ArchiveIcon fontSize="small" /> },
   { label: "设置", href: "/settings", icon: <SettingsIcon fontSize="small" /> },
 ];
