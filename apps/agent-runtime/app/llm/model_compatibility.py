@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import threading
@@ -32,6 +33,7 @@ CHECK_LABELS = {
 VALID_REPORT_STATUSES = {"verified", "failed", "unverified"}
 VALID_CHECK_STATUSES = {"pending", "running", "passed", "failed", "skipped"}
 VALIDATOR_VERSION = "2026-06-30"
+LOGGER = logging.getLogger(__name__)
 
 
 def utc_now_iso() -> str:
@@ -79,7 +81,8 @@ class ModelCompatibilityService:
             return {"version": 1, "models": {}}
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("读取模型兼容性报告失败，已忽略损坏文件 %s：%s", self.path, exc)
             return {"version": 1, "models": {}}
         if not isinstance(data, dict):
             return {"version": 1, "models": {}}

@@ -21,7 +21,7 @@ import {
   Tabs,
   Typography,
 } from "@mui/material";
-import { Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
+import { ArrowForward as ArrowForwardIcon, Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
 import { deleteTask, getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
@@ -99,35 +99,50 @@ function resolveTaskHref(task: TaskCardSummary) {
   return workspaceHref(task.task_id);
 }
 
-// 紧凑任务卡片
+// 首页作品库项目卡片
 function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (taskId: string) => void }) {
   const isFailed = task.status === "failed";
   const deletable = isDeletable(task.status);
+  const taskTypeLabel = formatTaskTypeLabel({
+    creativeMode: task.creative_mode,
+    novelSize: task.novel_size,
+    mode: task.mode,
+  });
   return (
     <Card
+      data-testid="project-card"
       variant="outlined"
-      sx={{ borderRadius: 3, transition: "all 0.2s", "&:hover": { borderColor: "primary.main" } }}
+      sx={{
+        borderRadius: 2,
+        transition: "border-color 0.2s, box-shadow 0.2s",
+        "&:hover": { borderColor: "primary.main", boxShadow: 2 },
+      }}
     >
-      <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
-        <Stack spacing={1}>
+      <CardContent sx={{ p: 2.25, "&:last-child": { pb: 2.25 } }}>
+        <Stack spacing={1.5} sx={{ minWidth: 0 }}>
           <Stack
             direction={{ xs: "column", sm: "row" }}
-            spacing={1}
+            spacing={1.25}
             justifyContent="space-between"
-            alignItems={{ xs: "stretch", sm: "center" }}
+            alignItems={{ xs: "stretch", sm: "flex-start" }}
           >
-            <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+            <Stack spacing={0.75} sx={{ minWidth: 0, flex: 1 }}>
               <Typography
-                variant="subtitle1"
-                sx={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                variant="h6"
+                sx={{
+                  fontWeight: 700,
+                  minWidth: 0,
+                  lineHeight: 1.25,
+                  overflowWrap: "anywhere",
+                }}
               >
                 {task.title || task.task_id}
               </Typography>
-              <Chip
-                label={statusLabelMap[task.status] ?? task.status}
-                size="small"
-                sx={{ flexShrink: 0 }}
-              />
+              <Stack direction="row" spacing={0.75} sx={{ flexWrap: "wrap", rowGap: 0.75 }}>
+                <Chip label={statusLabelMap[task.status] ?? task.status} size="small" color={isFailed ? "error" : "default"} />
+                <Chip label={task.current_stage} size="small" variant="outlined" />
+                <Chip label={taskTypeLabel} size="small" variant="outlined" />
+              </Stack>
             </Stack>
             <Box
               sx={{
@@ -142,9 +157,11 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
                 component={Link}
                 href={resolveTaskHref(task)}
                 size="small"
-                sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+                variant="contained"
+                endIcon={<ArrowForwardIcon />}
+                sx={{ flexShrink: 0, minWidth: "auto", px: 1.25 }}
               >
-                查看
+                进入项目
               </Button>
               {isFailed && (
                 <Button
@@ -153,7 +170,8 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
                   size="small"
                   color="warning"
                   startIcon={<ReplayIcon />}
-                  sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+                  variant="outlined"
+                  sx={{ flexShrink: 0, minWidth: "auto", px: 1.25 }}
                 >
                   重新创建
                 </Button>
@@ -164,7 +182,8 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
                   color="error"
                   startIcon={<DeleteIcon />}
                   onClick={() => onDelete(task.task_id)}
-                  sx={{ flexShrink: 0, minWidth: "auto", px: 1 }}
+                  variant="outlined"
+                  sx={{ flexShrink: 0, minWidth: "auto", px: 1.25 }}
                 >
                   删除
                 </Button>
@@ -174,21 +193,24 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
           <Typography
             variant="body2"
             color="text.secondary"
-            sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            sx={{
+              display: "-webkit-box",
+              overflow: "hidden",
+              WebkitBoxOrient: "vertical",
+              WebkitLineClamp: 2,
+              overflowWrap: "anywhere",
+            }}
           >
             {task.summary}
           </Typography>
-          <Typography variant="caption" color="text.secondary">
-            {task.current_stage}
-            {" · "}
-            {formatTaskTypeLabel({
-              creativeMode: task.creative_mode,
-              novelSize: task.novel_size,
-              mode: task.mode,
-            })}
-            {" · "}
-            {new Date(task.updated_at).toLocaleString()}
-          </Typography>
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 0.5 }}>
+            <Typography variant="caption" color="text.secondary">
+              更新时间 {new Date(task.updated_at).toLocaleString()}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              ID {task.task_id}
+            </Typography>
+          </Stack>
         </Stack>
       </CardContent>
     </Card>
@@ -213,6 +235,10 @@ function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; o
   const current = tabConfig[activeTab];
   const totalPages = Math.max(1, Math.ceil(current.total / PAGE_SIZE));
   const pagedList = current.list.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const projectTotal = (dashboard.continue_total ?? dashboard.continue_tasks.length)
+    + (dashboard.running_total ?? dashboard.running_tasks.length)
+    + (dashboard.failed_total ?? dashboard.failed_tasks.length)
+    + (dashboard.completed_total ?? dashboard.completed_tasks?.length ?? 0);
 
   const handleTabChange = (_: React.SyntheticEvent, newValue: number) => {
     setActiveTab(newValue);
@@ -222,14 +248,42 @@ function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; o
   const emptyTexts = ["当前没有需要人工继续处理的任务。", "当前没有运行中的任务。", "当前没有失败任务。", "当前没有已完成的任务。"];
 
   return (
-    <Card sx={{ borderRadius: 4, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-      {/* Tab 栏固定 */}
+    <Box
+      sx={{
+        border: 1,
+        borderColor: "divider",
+        borderRadius: 2,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        bgcolor: "background.paper",
+      }}
+    >
+      <Box sx={{ px: 2, py: 1.75, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", sm: "center" }}
+        >
+          <Typography variant="h5" sx={{ fontFamily: "var(--font-serif-sc)", fontWeight: 700 }}>
+            作品库
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            {projectTotal} 个项目
+          </Typography>
+        </Stack>
+      </Box>
+
       <Box sx={{ borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
         <Tabs
           value={activeTab}
           onChange={handleTabChange}
+          variant="scrollable"
+          allowScrollButtonsMobile
           sx={{
             minHeight: 48,
+            px: 1,
             "& .MuiTab-root": { minHeight: 48, textTransform: "none", fontWeight: 500 },
           }}
         >
@@ -262,7 +316,6 @@ function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; o
         )}
       </Box>
 
-      {/* 分页器固定在底部 */}
       {current.total > PAGE_SIZE && (
         <Box
           sx={{
@@ -283,7 +336,7 @@ function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; o
           />
         </Box>
       )}
-    </Card>
+    </Box>
   );
 }
 
@@ -400,7 +453,7 @@ function SidebarStats({
 // 骨架屏
 function HomeSkeleton() {
   return (
-    <Grid container spacing={3}>
+    <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
       <Grid item xs={12} md={8}>
         <Card sx={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
           <Box sx={{ borderBottom: 1, borderColor: "divider", px: 2, py: 1 }}>
@@ -582,7 +635,7 @@ export default function Home() {
         ) : null}
 
         {dashboard ? (
-          <Grid container spacing={3}>
+          <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
             {/* 主内容区 */}
             <Grid item xs={12} md={8}>
               <TaskTabPanel dashboard={dashboard} onDelete={handleDeleteTask} />

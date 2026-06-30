@@ -4,6 +4,7 @@ except ImportError:
     from datetime import timezone
     UTC = timezone.utc
 
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -447,6 +448,17 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             self.assertEqual(engine.gateway_client._timeout.read, 500.0)
             self.assertEqual(engine.gateway_client._timeout.write, 20.0)
             self.assertEqual(engine.gateway_client._timeout.pool, 25.0)
+
+
+def test_settings_warns_and_returns_empty_overrides_when_protocol_override_json_is_invalid(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        settings = Settings(
+            _env_file=None,
+            MODEL_PROTOCOL_OVERRIDES="{ broken json",
+        )
+
+    assert settings.model_protocol_overrides == {}
+    assert any("MODEL_PROTOCOL_OVERRIDES" in record.message for record in caplog.records)
 
 
 if __name__ == "__main__":

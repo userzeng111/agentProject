@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from app.llm.model_capabilities_config import DEFAULT_MODEL_CAPABILITIES_PATH
 
 DEFAULT_TASKLOG_ROOT = str(Path(__file__).resolve().parents[4] / "tasklog")
 RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+LOGGER = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -248,7 +250,8 @@ class Settings(BaseSettings):
         import json
         try:
             return json.loads(v)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("MODEL_PROTOCOL_OVERRIDES 解析失败，已忽略该环境变量：%s", exc)
             return {}
 
     @property

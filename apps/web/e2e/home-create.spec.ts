@@ -30,6 +30,30 @@ function modelCatalog(defaultModel = "gpt-5.4") {
 }
 
 test.describe("首页 Dashboard 与创建任务", () => {
+  test("首页以作品库项目卡片展示任务并在移动端无横向溢出", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockCommonApiRoutes(page);
+    await page.goto("/", { waitUntil: "commit" });
+
+    await expect(page.getByRole("heading", { name: "作品库" })).toBeVisible();
+
+    const card = page.getByTestId("project-card").filter({ hasText: "自动化测试-created" });
+    await expect(card).toBeVisible();
+    await expect(card.getByText("Playwright fixture 摘要")).toBeVisible();
+    await expect(card.getByText("待启动")).toBeVisible();
+    await expect(card.getByText("created", { exact: true })).toBeVisible();
+    await expect(card.getByText("全新原创 · 短篇")).toBeVisible();
+    await expect(card.getByRole("link", { name: "进入项目" })).toHaveAttribute(
+      "href",
+      /\/p\/task_created_fixture\/?$/,
+    );
+
+    const hasHorizontalOverflow = await page.evaluate(() => (
+      document.documentElement.scrollWidth > document.documentElement.clientWidth
+    ));
+    expect(hasHorizontalOverflow).toBe(false);
+  });
+
   test("首页展示任务分组并支持失败任务重试跳转", async ({ page }) => {
     await mockCommonApiRoutes(page);
     await page.route("**/api/tasks/task_failed_fixture", async (route) => {

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
@@ -244,6 +245,25 @@ class ModelCompatibilityServiceTests(unittest.TestCase):
             self.assertEqual(events[-1]["event"], "validation.error")
             self.assertEqual(events[-1]["data"]["check_id"], "streaming")
             self.assertIn("stream interrupted", events[-1]["data"]["message"])
+
+
+def test_get_report_warns_and_returns_unverified_when_store_json_is_corrupted(caplog) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tasklog_root = Path(tmp_dir) / "tasklog"
+        tasklog_root.mkdir(parents=True)
+        (tasklog_root / "model_compatibility.json").write_text("{ broken json", encoding="utf-8")
+        service = ModelCompatibilityService(
+            tasklog_root=str(tasklog_root),
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+        )
+
+        with caplog.at_level(logging.WARNING):
+            report = service.get_report("K2.7")
+
+        assert report["status"] == "unverified"
+        assert report["model_id"] == "K2.7"
+        assert any("model_compatibility.json" in record.message for record in caplog.records)
 
 
 if __name__ == "__main__":

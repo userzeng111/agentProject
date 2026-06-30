@@ -13,10 +13,11 @@ test.describe("聊天与设置页面", () => {
 
     await page.goto("/chat", { waitUntil: "commit" });
     await expect(page.getByText("默认：gpt-5.4")).toBeVisible();
-    await expect(page.locator("button").last()).toBeDisabled();
+    const sendButton = page.getByRole("button", { name: "发送消息" });
+    await expect(sendButton).toBeDisabled();
     const input = page.getByRole("textbox", { name: "输入消息，按回车发送..." });
     await input.fill("触发错误");
-    await expect(page.locator("button").last()).toBeEnabled();
+    await expect(sendButton).toBeEnabled();
     await input.press("Enter");
     await expect(page.getByText("触发错误").last()).toBeVisible();
     await expect(page.getByText(/错误: .*聊天服务不可用 fixture/)).toBeVisible();
@@ -43,7 +44,7 @@ test.describe("聊天与设置页面", () => {
     await expect(input).toBeVisible();
     await input.fill("你好");
     await expect(input).toHaveValue("你好");
-    await expect(page.locator("button").last()).toBeEnabled();
+    await expect(page.getByRole("button", { name: "发送消息" })).toBeEnabled();
     await input.press("Enter");
     await expect(page.getByText("你好").first()).toBeVisible();
     await expect(page.getByText("自动化回复")).toBeVisible();

@@ -1087,6 +1087,7 @@ export function ChatClient() {
             }}
           />
           <IconButton
+            aria-label="发送消息"
             color="primary"
             onClick={handleSend}
             disabled={!input.trim() || loading}
