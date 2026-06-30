@@ -21,6 +21,7 @@ import { fetchTextRef, getApiBase, getResult } from "@/lib/api";
 import { workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
+import { NovelReader } from "@/components/novel-reader";
 import { ProjectShell } from "@/components/project-shell";
 import { StageNav } from "@/components/stage-nav";
 
@@ -165,6 +166,8 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
           </Stack>
         </CardContent>
       </Card>
+
+      {result.chapter_index.length ? <NovelReader chapters={result.chapter_index} /> : null}
 
       {/* 正文内容 */}
       <Card>

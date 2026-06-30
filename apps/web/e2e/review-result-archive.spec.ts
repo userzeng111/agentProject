@@ -102,7 +102,7 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByText(/缺少任务 ID|读取结果失败/)).toBeVisible();
   });
 
-  test("结果页展示摘要、正文区和章节索引", async ({ page }) => {
+  test("结果页展示摘要、正文区、按章阅读器和章节索引", async ({ page }) => {
     await page.route("**/api/tasks/task_result_fixture/result", async (route) => {
       await route.fulfill({
         json: {
@@ -115,7 +115,10 @@ test.describe("审核、结果、归档页面", () => {
           result_summary: "结果摘要",
           result_markdown: "# 结果正文\n\n正文占位。",
           result_md_ref: "",
-          chapter_index: [{ number: 1, title: "第一章", summary: "章节摘要", content: "正文占位" }],
+          chapter_index: [
+            { number: 1, title: "第一章", summary: "章节摘要", content: "第一章正文占位" },
+            { number: 2, title: "第二章", summary: "章节摘要", content: "第二章正文占位" },
+          ],
           artifact_index: [],
           history_index: [],
         },
@@ -126,6 +129,15 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("结果");
     await expect(page.getByRole("heading", { name: "生成结果" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "结果摘要" })).toBeVisible();
+    const reader = page.getByTestId("novel-reader");
+    await expect(reader).toBeVisible();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("第一章正文占位");
+    await reader.getByRole("button", { name: "下一章" }).first().click();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("第二章正文占位");
+    await expect(page.getByRole("button", { name: "复制全文" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
+    await page.getByRole("button", { name: "复制全文" }).click();
+    await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
     await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();
   });
 
@@ -141,8 +153,23 @@ test.describe("审核、结果、归档页面", () => {
     await page.goto("/archive", { waitUntil: "commit" });
     await expect(page.getByText("归档测试任务")).toBeVisible();
     await page.goto("/archive/detail/?id=task_archive_fixture", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
     await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
     await expect(page.getByRole("tab", { name: /大纲|阅读|原始/ }).first()).toBeVisible();
+
+    await page.goto("/archive/detail/?id=task_archive_fixture&tab=read", { waitUntil: "commit" });
+    const reader = page.getByTestId("novel-reader");
+    await expect(reader).toBeVisible();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("章节内容占位");
+    await reader.getByRole("button", { name: "下一章" }).first().click();
+    await expect(reader.getByRole("heading", { name: /第二章/ })).toBeVisible();
+
+    await page.getByRole("tab", { name: "原始信息" }).click();
+    await expect(page).toHaveURL(/tab=meta/);
+    await expect(page.getByRole("button", { name: "复制全文" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
+    await page.getByRole("button", { name: "复制全文" }).click();
+    await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
   });
 
   test("归档列表空态可渲染", async ({ page }) => {

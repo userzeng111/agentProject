@@ -127,7 +127,7 @@ export function StageNav({
                       flexShrink: 0,
                     }}
                   >
-                    {item.state === "done" ? <CheckCircleIcon fontSize="small" /> : item.icon}
+                    {item.state === "done" ? <CheckCircleIcon fontSize="small" /> : (item.icon ?? item.index + 1)}
                   </Box>
                   <Typography
                     variant="caption"

@@ -1,5 +1,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+
+globalThis.React = React;
 
 describe("StageNav", () => {
   it("resolves done, current and upcoming states from the active step", async () => {
@@ -33,5 +37,18 @@ describe("StageNav", () => {
       resolveStageNavItems(stages, 99).map((item) => item.state),
       ["done", "current"],
     );
+  });
+
+  it("renders a numeric fallback for stages without icons", async () => {
+    const { StageNav } = await import("./stage-nav");
+
+    const html = renderToStaticMarkup(
+      React.createElement(StageNav, {
+        stages: [{ label: "创建" }, { label: "审核" }, { label: "结果" }],
+        activeStep: 1,
+      }),
+    );
+
+    assert.match(html, />2<\/div>/);
   });
 });
