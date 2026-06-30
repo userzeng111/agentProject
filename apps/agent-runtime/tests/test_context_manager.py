@@ -1,7 +1,8 @@
+import tempfile
 import unittest
 
 from app.context.assembler import ContextAssembler
-from app.context.cache_store import InMemoryCacheStore
+from app.context.cache_store import FileBackedCacheStore, InMemoryCacheStore, LayeredCacheStore
 from app.context.compressor import ReferenceCompressor
 from app.context.manager import ContextManager
 from app.context.models import ContextBudget, ModelContextProfile, ReferenceMaterial
@@ -141,6 +142,92 @@ class ContextManagerTests(unittest.TestCase):
         self.assertIsNotNone(cache_store.written_value)
         self.assertTrue(snapshot.packet.assembled_text.startswith("任务阶段：drafting"))
 
+    def test_build_snapshot_warns_and_rebuilds_when_cache_read_fails(self) -> None:
+        class BrokenReadCacheStore:
+            def __init__(self) -> None:
+                self.written_value = None
+
+            def get(self, key: str):
+                raise RuntimeError("cache read broken")
+
+            def set(self, key: str, value) -> None:
+                self.written_value = value
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        cache_store = BrokenReadCacheStore()
+        manager = ContextManager(
+            cache_store=cache_store,
+            compressor=self.compressor,
+            assembler=self.assembler,
+        )
+
+        with self.assertLogs("app.context.manager", level="WARNING") as logs:
+            snapshot = manager.build_snapshot(
+                task_id="task-cache",
+                stage="drafting",
+                instruction="生成正文。",
+                model_profile=self.profile,
+                references=[
+                    ReferenceMaterial(
+                        source_id="ref-1",
+                        title="素材",
+                        content="线索A。" * 20,
+                        priority=5,
+                    )
+                ],
+                memory_items=["已完成章节摘要：主角决定离开故乡。"],
+            )
+
+        self.assertFalse(snapshot.cache_hit)
+        self.assertIsNotNone(cache_store.written_value)
+        self.assertIn("读取上下文缓存失败", "\n".join(logs.output))
+
+    def test_build_snapshot_warns_but_returns_snapshot_when_cache_write_fails(self) -> None:
+        class BrokenWriteCacheStore:
+            def get(self, key: str):
+                return None
+
+            def set(self, key: str, value) -> None:
+                raise RuntimeError("cache write broken")
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        manager = ContextManager(
+            cache_store=BrokenWriteCacheStore(),
+            compressor=self.compressor,
+            assembler=self.assembler,
+        )
+
+        with self.assertLogs("app.context.manager", level="WARNING") as logs:
+            snapshot = manager.build_snapshot(
+                task_id="task-cache",
+                stage="drafting",
+                instruction="生成正文。",
+                model_profile=self.profile,
+                references=[
+                    ReferenceMaterial(
+                        source_id="ref-1",
+                        title="素材",
+                        content="线索A。" * 20,
+                        priority=5,
+                    )
+                ],
+                memory_items=["已完成章节摘要：主角决定离开故乡。"],
+            )
+
+        self.assertFalse(snapshot.cache_hit)
+        self.assertTrue(snapshot.packet.assembled_text.startswith("任务阶段：drafting"))
+        self.assertIn("写入上下文缓存失败", "\n".join(logs.output))
+
     def test_cache_store_expires_entries_after_ttl(self) -> None:
         current_time = {"value": 100.0}
         cache_store = InMemoryCacheStore(
@@ -153,6 +240,92 @@ class ContextManagerTests(unittest.TestCase):
 
         current_time["value"] = 111.0
         self.assertIsNone(cache_store.get("demo"))
+
+    def test_file_backed_cache_store_warns_when_json_is_corrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cache_store = FileBackedCacheStore(tmp_dir, ttl_seconds=60)
+            cache_store.set("demo", {"value": 1})
+            cache_store._path_for_key("demo").write_text("{bad json", encoding="utf-8")
+
+            with self.assertLogs("app.context.cache_store", level="WARNING") as logs:
+                value = cache_store.get("demo")
+
+        self.assertIsNone(value)
+        self.assertIn("读取磁盘缓存失败", "\n".join(logs.output))
+
+    def test_layered_cache_store_warns_and_continues_when_read_layer_fails(self) -> None:
+        class BrokenReadStore:
+            def get(self, key: str):
+                raise RuntimeError("layer read broken")
+
+            def set(self, key: str, value) -> None:
+                pass
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        class HitStore:
+            def get(self, key: str):
+                return {"ok": True}
+
+            def set(self, key: str, value) -> None:
+                pass
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        layered_store = LayeredCacheStore([BrokenReadStore(), HitStore()])
+
+        with self.assertLogs("app.context.cache_store", level="WARNING") as logs:
+            value = layered_store.get("demo")
+
+        self.assertEqual(value, {"ok": True})
+        self.assertIn("缓存层读取失败", "\n".join(logs.output))
+
+    def test_layered_cache_store_warns_and_continues_when_write_layer_fails(self) -> None:
+        class BrokenWriteStore:
+            def get(self, key: str):
+                return None
+
+            def set(self, key: str, value) -> None:
+                raise RuntimeError("layer write broken")
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        class RecordingStore:
+            def __init__(self) -> None:
+                self.writes = []
+
+            def get(self, key: str):
+                return None
+
+            def set(self, key: str, value) -> None:
+                self.writes.append((key, value))
+
+            def clear(self) -> None:
+                pass
+
+            def cleanup(self) -> None:
+                pass
+
+        recording_store = RecordingStore()
+        layered_store = LayeredCacheStore([BrokenWriteStore(), recording_store])
+
+        with self.assertLogs("app.context.cache_store", level="WARNING") as logs:
+            layered_store.set("demo", {"value": 1})
+
+        self.assertEqual(recording_store.writes, [("demo", {"value": 1})])
+        self.assertIn("缓存写入失败", "\n".join(logs.output))
 
     def test_assembler_applies_budget_limit_when_reference_text_is_large(self) -> None:
         budget = ContextBudget.from_profile(self.profile)

@@ -724,6 +724,8 @@ export interface ArchiveEntryRefs {
 export interface ArchiveTaskSummary extends TaskCardSummary {
   current_unit?: string | null;
   progress: number;
+  chapter_count?: number | null;
+  word_count?: number | null;
   storage_state: string;
   entry_refs?: ArchiveEntryRefs;
 }

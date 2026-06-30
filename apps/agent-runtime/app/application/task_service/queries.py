@@ -385,6 +385,7 @@ class TaskServiceQueriesMixin:
         summary = task.events[-1].message if task.events else ""
         model_id = task.model_id or self.engine.settings.default_chat_model
         review_model_meta = self._auto_review_model_metadata(task)
+        chapter_count, word_count = self._archive_metrics(task)
         last_error_detail = task.error_message
         for event in reversed(task.events):
             if event.event_type == "task.error_recorded":
@@ -411,6 +412,8 @@ class TaskServiceQueriesMixin:
             current_stage=task.current_stage,
             current_unit=task.current_unit,
             progress=task.progress,
+            chapter_count=chapter_count,
+            word_count=word_count,
             updated_at=task.updated_at,
             summary=summary,
             error_message=task.error_message,
@@ -423,6 +426,30 @@ class TaskServiceQueriesMixin:
                 "result_json": f"tasklog/{task.storage_state}/{task.id}/result.json",
             },
         )
+
+    def _archive_metrics(self, task: TaskRecord) -> tuple[int | None, int | None]:
+        if task.draft_result is not None:
+            chapters = task.draft_result.chapters
+            return len(chapters), sum(self._count_text_words(chapter.content) for chapter in chapters)
+        if task.story_plan is not None:
+            return len(task.story_plan.chapter_plan), None
+        return None, None
+
+    @staticmethod
+    def _count_text_words(text: str | None) -> int:
+        if not text:
+            return 0
+        chinese_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+        english_words = 0
+        in_word = False
+        for char in text:
+            if char.isascii() and char.isalpha():
+                if not in_word:
+                    english_words += 1
+                    in_word = True
+            else:
+                in_word = False
+        return chinese_chars + english_words
 
     def _model_summary(self) -> dict[str, Any]:
         models = self.model_catalog.list_models()

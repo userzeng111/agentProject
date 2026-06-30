@@ -747,13 +747,19 @@ class ApiContextIntegrationTests(unittest.TestCase):
             logline="档案员调查夜航失踪案。",
             world_notes=["潮湿港口"],
             character_notes=["女档案员"],
-            chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            chapter_plan=[
+                {"number": 1, "title": "起始", "goal": "发现异常"},
+                {"number": 2, "title": "夜航", "goal": "追查失踪船只"},
+            ],
         )
         draft_result = DraftResult(
             title="港口谜案",
             summary="调查开始。",
             body="正文内容",
-            chapters=[{"number": 1, "title": "起始", "summary": "发现异常", "content": "章节正文"}],
+            chapters=[
+                {"number": 1, "title": "起始", "summary": "发现异常", "content": "章节正文"},
+                {"number": 2, "title": "夜航", "summary": "追查船只", "content": "第二章正文"},
+            ],
         )
         artifacts = self.task_service._build_artifacts(story_plan, draft_result)
         self.store.set_completed(task.id, story_plan, draft_result, artifacts)
@@ -772,6 +778,8 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
         self.assertIn("entry_refs", archive_list_payload["items"][0])
+        self.assertEqual(archive_list_payload["items"][0]["chapter_count"], 2)
+        self.assertGreater(archive_list_payload["items"][0]["word_count"], 0)
         self.assertEqual(len(archive_detail_payload["sources"]), 1)
 
     def test_chat_completions_injects_rag_context_before_gateway_call(self) -> None:

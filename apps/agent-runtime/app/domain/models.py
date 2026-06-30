@@ -477,6 +477,8 @@ class TaskSummary(BaseModel):
     current_stage: str
     current_unit: str | None = None
     progress: int
+    chapter_count: int | None = None
+    word_count: int | None = None
     updated_at: datetime
     summary: str
     error_message: str | None = None

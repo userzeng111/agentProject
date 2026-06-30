@@ -151,7 +151,17 @@ test.describe("审核、结果、归档页面", () => {
     });
 
     await page.goto("/archive", { waitUntil: "commit" });
-    await expect(page.getByText("归档测试任务")).toBeVisible();
+    const archiveCard = page.getByTestId("archive-card");
+    await expect(archiveCard).toBeVisible();
+    await expect(archiveCard).toContainText("归档测试任务");
+    await expect(archiveCard).toContainText(/章节[:：]?\s*2|2\s*章/);
+    await expect(archiveCard).toContainText(/字数[:：]?\s*1,?200|1,?200\s*字/);
+    await expect(archiveCard).toContainText("全新原创 · 短篇");
+    await expect(archiveCard).toContainText("gpt-5.4-archive-model-with-a-very-long-unbroken-identifier-20260630");
+    await expect(archiveCard.getByRole("link", { name: "查看归档详情" })).toHaveAttribute(
+      "href",
+      "/archive/detail/?id=task_archive_fixture",
+    );
     await page.goto("/archive/detail/?id=task_archive_fixture", { waitUntil: "commit" });
     await expect(page.getByTestId("project-shell")).toBeVisible();
     await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
@@ -170,6 +180,20 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
     await page.getByRole("button", { name: "复制全文" }).click();
     await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
+  });
+
+  test("归档列表移动端不产生横向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/archive**", async (route) => {
+      await route.fulfill({ json: makeArchiveList() });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    await expect(page.getByTestId("archive-card")).toBeVisible();
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
   });
 
   test("归档列表空态可渲染", async ({ page }) => {
