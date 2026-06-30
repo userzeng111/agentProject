@@ -138,6 +138,11 @@ test.describe("审核、结果、归档页面", () => {
   });
 
   test("结果页展示摘要、正文区、按章阅读器和章节索引", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("theme-mode", "dark");
+    });
+    const codeFence = ["", "```ts", "const chapterSignal = 'dark-code';", "```"].join("\n");
     await page.route("**/api/tasks/task_result_fixture/result", async (route) => {
       await route.fulfill({
         json: {
@@ -148,11 +153,11 @@ test.describe("审核、结果、归档页面", () => {
             summary: "结果摘要",
           },
           result_summary: "结果摘要",
-          result_markdown: "# 结果正文\n\n正文占位。",
+          result_markdown: `# 结果正文\n\n正文占位。${codeFence}`,
           result_md_ref: "",
           chapter_index: [
-            { number: 1, title: "第一章", summary: "章节摘要", content: "第一章正文占位" },
-            { number: 2, title: "第二章", summary: "章节摘要", content: "第二章正文占位" },
+            { number: 1, title: "第一章", summary: "章节摘要", content: `第一章正文占位${codeFence}` },
+            { number: 2, title: "第二章", summary: "章节摘要", content: `第二章正文占位${codeFence}` },
           ],
           artifact_index: [],
           history_index: [],
@@ -167,6 +172,26 @@ test.describe("审核、结果、归档页面", () => {
     const reader = page.getByTestId("novel-reader");
     await expect(reader).toBeVisible();
     await expect(reader.getByTestId("novel-reader-content")).toContainText("第一章正文占位");
+    const readerCodeBlock = reader.getByTestId("novel-reader-content").locator("pre").last();
+    await expect(readerCodeBlock).toBeVisible();
+    await expect
+      .poll(async () =>
+        readerCodeBlock.evaluate((element) => {
+          const color = getComputedStyle(element).backgroundColor;
+          const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([.\d]+))?\)/i);
+          if (!match) {
+            return false;
+          }
+          const [, r, g, b, a] = match;
+          const alpha = a === undefined ? 1 : Number(a);
+          const luminance = 0.2126 * Number(r) + 0.7152 * Number(g) + 0.0722 * Number(b);
+          return alpha > 0.1 && luminance < 96;
+        }),
+      )
+      .toBe(true);
+    await expect
+      .poll(async () => page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth))
+      .toBe(false);
     await reader.getByRole("button", { name: "下一章" }).first().click();
     await expect(reader.getByTestId("novel-reader-content")).toContainText("第二章正文占位");
     await expect(page.getByRole("button", { name: "复制全文" })).toBeVisible();

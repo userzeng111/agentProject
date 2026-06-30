@@ -135,6 +135,31 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
         return tmp_dir, store, service
 
+    def test_graph_state_values_warns_when_get_state_fails(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+
+        class FailingWorkflowEngine:
+            def get_state(self, config):
+                raise RuntimeError("boom")
+
+        service.workflow_engine = FailingWorkflowEngine()
+
+        with self.assertLogs("app.application.task_service.core", level="WARNING") as logs:
+            values = service._graph_state_values(task.id)
+
+        self.assertEqual(values, {})
+        output = "\n".join(logs.output)
+        self.assertIn("读取工作流 checkpoint 状态失败", output)
+        self.assertIn(task.id, output)
+
     def _write_outline_history(
         self,
         store,

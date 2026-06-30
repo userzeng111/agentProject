@@ -599,6 +599,7 @@ class TaskServiceCoreMixin:
         try:
             snapshot = self.workflow_engine.get_state(self._config(task_id))
         except Exception:
+            logger.warning("读取工作流 checkpoint 状态失败 task_id=%s", task_id, exc_info=True)
             return {}
         return snapshot.values if snapshot and hasattr(snapshot, "values") and isinstance(snapshot.values, dict) else {}
 

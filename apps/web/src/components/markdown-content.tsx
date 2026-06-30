@@ -1,7 +1,7 @@
 "use client";
 
-import Markdown from "react-markdown";
-import type { Components } from "react-markdown";
+import Markdown, { defaultUrlTransform } from "react-markdown";
+import type { Components, UrlTransform } from "react-markdown";
 import { Box, Typography, Divider } from "@mui/material";
 import type { SxProps, Theme } from "@mui/material/styles";
 
@@ -21,15 +21,6 @@ interface MarkdownContentProps {
   /** 额外 sx 样式 */
   sx?: SxProps<Theme>;
 }
-
-/** 行内 code 样式（避免 Box component="code" 与 react-markdown ref 冲突） */
-const inlineCodeStyle: React.CSSProperties = {
-  padding: "1px 4px",
-  borderRadius: 4,
-  backgroundColor: "rgba(0,0,0,0.06)",
-  fontSize: "0.9em",
-  fontFamily: "monospace",
-};
 
 /** 危险协议前缀 */
 const DANGEROUS_PROTOCOLS = ["javascript:", "data:", "vbscript:"];
@@ -68,14 +59,35 @@ function isSafeImageSrc(src?: string): boolean {
   return true;
 }
 
+/** 判断 src 是否为允许的图片 data URI */
+function isSafeImageDataUri(src?: string): boolean {
+  if (!src) return false;
+  const lower = src.trim().toLowerCase();
+  return lower.startsWith("data:") && SAFE_IMAGE_DATA_URI_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
 /** 判断是否为外部链接 */
 function isExternalLink(href?: string): boolean {
   if (!href) return false;
   return /^https?:\/\//.test(href.trim());
 }
 
+const markdownUrlTransform: UrlTransform = (url, key, node) => {
+  const tagName = typeof node.tagName === "string" ? node.tagName.toLowerCase() : "";
+  if (key === "src" && tagName === "img" && url.trim().toLowerCase().startsWith("data:")) {
+    return isSafeImageDataUri(url) ? url : "";
+  }
+  return defaultUrlTransform(url);
+};
+
 /** 安全的链接组件 */
-function SafeLink({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+function SafeLink({
+  href,
+  children,
+  node,
+  ...rest
+}: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+  void node;
   if (isDangerousHref(href)) {
     return (
       <a {...rest} href="#" onClick={(e) => e.preventDefault()}>
@@ -97,12 +109,91 @@ function SafeLink({ href, children, ...rest }: React.AnchorHTMLAttributes<HTMLAn
 }
 
 /** 安全的图片组件 */
-function SafeImage({ src, alt, ...rest }: React.ImgHTMLAttributes<HTMLImageElement>) {
+function SafeImage({
+  src,
+  alt,
+  node,
+  ...rest
+}: React.ImgHTMLAttributes<HTMLImageElement> & { node?: unknown }) {
+  void node;
   if (!isSafeImageSrc(src)) {
     return null;
   }
   // eslint-disable-next-line @next/next/no-img-element
   return <img {...rest} src={src} alt={alt || ""} />;
+}
+
+const inlineCodeSx: SxProps<Theme> = (theme) => {
+  const isDark = theme.palette.mode === "dark";
+  return {
+    px: 0.5,
+    py: "1px",
+    borderRadius: 0.5,
+    bgcolor: isDark ? "rgba(15, 23, 42, 0.72)" : "rgba(15, 23, 42, 0.08)",
+    border: "1px solid",
+    borderColor: isDark ? "rgba(148, 163, 184, 0.28)" : "rgba(15, 23, 42, 0.12)",
+    color: "text.primary",
+    fontSize: "0.9em",
+    fontFamily: "monospace",
+    maxWidth: "100%",
+    overflowWrap: "anywhere",
+  };
+};
+
+function codeBlockSx(compact: boolean): SxProps<Theme> {
+  return (theme) => {
+    const isDark = theme.palette.mode === "dark";
+    return {
+      p: compact ? 1.5 : 2,
+      my: compact ? 1 : 1.5,
+      borderRadius: 1,
+      bgcolor: isDark ? "rgba(15, 23, 42, 0.82)" : "rgba(15, 23, 42, 0.06)",
+      color: "text.primary",
+      border: "1px solid",
+      borderColor: isDark ? "rgba(148, 163, 184, 0.24)" : "rgba(15, 23, 42, 0.12)",
+      overflowX: "auto",
+      maxWidth: "100%",
+      minWidth: 0,
+      fontSize: compact ? 13 : 14,
+      lineHeight: compact ? 1.5 : 1.6,
+      fontFamily: "monospace",
+      "& code": {
+        color: "inherit",
+        fontSize: "inherit",
+        fontFamily: "inherit",
+        whiteSpace: "pre",
+      },
+    };
+  };
+}
+
+function InlineCode({ children }: { children: React.ReactNode }) {
+  return (
+    <Box component="code" sx={inlineCodeSx}>
+      {children}
+    </Box>
+  );
+}
+
+function CodeBlock({ children, compact = false }: { children: React.ReactNode; compact?: boolean }) {
+  return (
+    <Box component="pre" sx={codeBlockSx(compact)}>
+      {children}
+    </Box>
+  );
+}
+
+function isBlockCode(className: unknown, children: React.ReactNode): boolean {
+  if (typeof className === "string" && className.startsWith("language-")) {
+    return true;
+  }
+  if (typeof children === "string") {
+    return children.includes("\n");
+  }
+  if (Array.isArray(children)) {
+    return children.some((child) => typeof child === "string" && child.includes("\n"));
+  }
+  return false;
 }
 
 /** 正文变体的组件映射 */
@@ -170,33 +261,12 @@ const articleComponents: Components = {
       {children}
     </Box>
   ),
-  code: ({ className, children, ...rest }) => {
-    const isBlock = typeof className === "string" && className.startsWith("language-");
-    if (isBlock) {
-      return (
-        <Box
-          component="pre"
-          sx={{
-            p: 2,
-            my: 1.5,
-            borderRadius: 1,
-            bgcolor: "grey.100",
-            overflow: "auto",
-            fontSize: 14,
-            lineHeight: 1.6,
-            fontFamily: "monospace",
-          }}
-        >
-          <code className={className}>{children}</code>
-        </Box>
-      );
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+  code: ({ className, children }) => {
+    if (isBlockCode(className, children)) {
+      return <code className={className}>{children}</code>;
     }
-    /* 行内 code 使用原生标签，避免 Box + react-markdown ref 类型冲突 */
-    return (
-      <code style={inlineCodeStyle} {...rest}>
-        {children}
-      </code>
-    );
+    return <InlineCode>{children}</InlineCode>;
   },
 };
 
@@ -265,33 +335,12 @@ const outlineComponents: Components = {
       {children}
     </Box>
   ),
-  code: ({ className, children, ...rest }) => {
-    const isBlock = typeof className === "string" && className.startsWith("language-");
-    if (isBlock) {
-      return (
-        <Box
-          component="pre"
-          sx={{
-            p: 1.5,
-            my: 1,
-            borderRadius: 1,
-            bgcolor: "grey.100",
-            overflow: "auto",
-            fontSize: 13,
-            lineHeight: 1.5,
-            fontFamily: "monospace",
-          }}
-        >
-          <code className={className}>{children}</code>
-        </Box>
-      );
+  pre: ({ children }) => <CodeBlock compact>{children}</CodeBlock>,
+  code: ({ className, children }) => {
+    if (isBlockCode(className, children)) {
+      return <code className={className}>{children}</code>;
     }
-    /* 行内 code 使用原生标签，避免 Box + react-markdown ref 类型冲突 */
-    return (
-      <code style={inlineCodeStyle} {...rest}>
-        {children}
-      </code>
-    );
+    return <InlineCode>{children}</InlineCode>;
   },
 };
 
@@ -303,7 +352,7 @@ function getComponents(variant: Variant): Components {
 export default function MarkdownContent({ children, variant = "article", sx }: MarkdownContentProps) {
   return (
     <Box sx={sx}>
-      <Markdown components={getComponents(variant)}>
+      <Markdown components={getComponents(variant)} urlTransform={markdownUrlTransform}>
         {children}
       </Markdown>
     </Box>
