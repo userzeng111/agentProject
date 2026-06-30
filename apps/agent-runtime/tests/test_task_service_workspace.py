@@ -820,6 +820,90 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertFalse(workspace_without_rag.rag_status["enabled"])
             self.assertFalse(workspace_without_rag.rag_status["ready"])
 
+    def test_workspace_rag_status_warns_when_readiness_check_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class BrokenReadyRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    raise RuntimeError("rag backend down")
+
+                def readiness_error(self) -> str:
+                    return ""
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=BrokenReadyRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            with self.assertLogs("app.application.task_service.queries", level="WARNING") as logs:
+                workspace = service.get_workspace(task.id)
+
+            self.assertTrue(workspace.rag_status["enabled"])
+            self.assertFalse(workspace.rag_status["ready"])
+            self.assertIn("rag backend down", workspace.rag_status["last_error"])
+            self.assertIn("读取 RAG 工作区就绪状态失败", "\n".join(logs.output))
+
+    def test_workspace_rag_status_warns_when_readiness_error_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+
+            class BrokenReadinessErrorRagService:
+                config = type("Config", (), {"enabled": True})()
+
+                def is_ready(self) -> bool:
+                    return False
+
+                def readiness_error(self) -> str:
+                    raise RuntimeError("rag status missing")
+
+            service = TaskService(
+                store=store,
+                engine=engine,
+                model_catalog=model_catalog,
+                rag_service=BrokenReadinessErrorRagService(),
+            )
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="写一部克制风格的都市悬疑小说",
+                    model_id="gpt-5.4",
+                )
+            )
+
+            with self.assertLogs("app.application.task_service.queries", level="WARNING") as logs:
+                workspace = service.get_workspace(task.id)
+
+            self.assertTrue(workspace.rag_status["enabled"])
+            self.assertFalse(workspace.rag_status["ready"])
+            self.assertIn("rag status missing", workspace.rag_status["last_error"])
+            self.assertIn("读取 RAG 工作区未就绪原因失败", "\n".join(logs.output))
+
     def test_workspace_exposes_default_and_last_action_model_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

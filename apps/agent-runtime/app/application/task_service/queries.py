@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 
@@ -21,6 +22,8 @@ from app.domain.models import (
     WorkspaceResponse,
 )
 from app.storage import db_repository
+
+logger = logging.getLogger(__name__)
 
 
 class TaskServiceQueriesMixin:
@@ -915,12 +918,14 @@ class TaskServiceQueriesMixin:
             try:
                 ready = bool(rag_service.is_ready())
             except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                logger.warning("读取 RAG 工作区就绪状态失败: %s", exc)
                 ready = False
                 last_error = str(exc)
             if not ready and not last_error:
                 try:
                     last_error = str(rag_service.readiness_error() or "")
                 except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                    logger.warning("读取 RAG 工作区未就绪原因失败: %s", exc)
                     last_error = str(exc)
 
         last_query_stage = ""

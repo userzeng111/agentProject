@@ -22,6 +22,7 @@ export function ProjectShell({
   metaItems = [],
   actions,
   stageNav,
+  maxWidth = "md",
   children,
 }: {
   breadcrumbs: ProjectShellBreadcrumb[];
@@ -29,10 +30,11 @@ export function ProjectShell({
   metaItems?: ProjectShellMetaItem[];
   actions?: ReactNode;
   stageNav?: ReactNode;
+  maxWidth?: "xs" | "sm" | "md" | "lg" | "xl" | false;
   children: ReactNode;
 }) {
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 }, minWidth: 0 }}>
+    <Container maxWidth={maxWidth} sx={{ py: 3, px: { xs: 2, sm: 3 }, minWidth: 0 }}>
       <Stack data-testid="project-shell" spacing={3} className="page-fade-in" sx={{ minWidth: 0 }}>
         <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
           {breadcrumbs.map((item, index) => {

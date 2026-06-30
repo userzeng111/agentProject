@@ -60,7 +60,7 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByText(/缺少任务 ID|读取审核信息失败/)).toBeVisible();
   });
 
-  test("审核页大纲分支展示审核操作", async ({ page }) => {
+  test("审核页大纲分支展示审核操作", async ({ page }, testInfo) => {
     await mockCommonApiRoutes(page);
     await page.route("**/api/tasks/task_review_fixture/review", async (route) => {
       await route.fulfill({ json: makeReview("outline") });
@@ -70,9 +70,21 @@ test.describe("审核、结果、归档页面", () => {
     const stageNav = page.getByTestId("stage-nav");
     await expect(stageNav).toBeVisible();
     await expect(stageNav.locator('[data-stage-state="current"]')).toContainText("审核");
+    const reviewMain = page.getByTestId("review-main");
+    const reviewAside = page.getByTestId("review-aside");
+    await expect(page.getByTestId("review-split-layout")).toBeVisible();
+    await expect(reviewMain).toBeVisible();
+    await expect(reviewAside).toBeVisible();
+    if (testInfo.project.name === "chromium") {
+      const mainBox = await reviewMain.boundingBox();
+      const asideBox = await reviewAside.boundingBox();
+      expect(mainBox).not.toBeNull();
+      expect(asideBox).not.toBeNull();
+      expect(asideBox!.x).toBeGreaterThan(mainBox!.x + mainBox!.width * 0.5);
+    }
     await expect(page.getByRole("heading", { name: "大纲审核", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
-    await expect(page.getByLabel("审核意见")).toBeVisible();
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
   });
 
   test("审核页章节与验证分支展示对应审核材料", async ({ page }) => {
@@ -84,7 +96,9 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByTestId("project-shell")).toBeVisible();
     await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("审核");
     await expect(page.getByText("章节摘要")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    let reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
 
     await page.route("**/api/tasks/task_review_verification_fixture/review", async (route) => {
       await route.fulfill({ json: makeReview("verification") });
@@ -95,6 +109,27 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByText("验证摘要")).toBeVisible();
     await expect(page.getByRole("heading", { name: "发现的问题" })).toBeVisible();
     await expect(page.getByText("warning")).toBeVisible();
+    reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+  });
+
+  test("审核页移动端不产生横向滚动且保留决策区", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockCommonApiRoutes(page);
+    await page.route("**/api/tasks/task_review_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("outline") });
+    });
+
+    await page.goto("/review/?id=task_review_fixture", { waitUntil: "commit" });
+    await expect(page.getByTestId("review-split-layout")).toBeVisible();
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+    const reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+    await expect(reviewAside.getByRole("button", { name: /通过/ })).toBeVisible();
   });
 
   test("结果页缺少 id 时显示错误兜底", async ({ page }) => {
