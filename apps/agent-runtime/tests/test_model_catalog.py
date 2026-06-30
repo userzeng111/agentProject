@@ -1,8 +1,11 @@
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 
+from app.llm.model_compatibility import ModelCompatibilityService
+from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 
 
@@ -449,6 +452,44 @@ class ModelCatalogServiceTests(unittest.TestCase):
         self.assertEqual(model["metadata"]["compatibility"], "verified")
         with self.assertRaisesRegex(ValueError, "未接入网关"):
             catalog.ensure_runtime_default_model_supported("gpt-5.4")
+
+
+def test_corrupted_compatibility_store_logs_once_during_model_catalog_aggregation(caplog) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        settings = Settings(
+            OPENAI_API_KEY="test-key",
+            DEFAULT_CHAT_MODEL="gpt-5.4",
+            tasklog_root=str(Path(tmp_dir) / "tasklog"),
+        )
+        compatibility_path = Path(settings.tasklog_root) / "model_compatibility.json"
+        compatibility_path.parent.mkdir(parents=True, exist_ok=True)
+        compatibility_path.write_text("{ broken json", encoding="utf-8")
+        provider = ModelCompatibilityService(
+            tasklog_root=settings.tasklog_root,
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+        )
+        catalog = ModelCatalogService(
+            settings=settings,
+            gateway_client=FakeGatewayClient(
+                [
+                    {"id": "K2.7", "object": "model", "owned_by": "moonshot"},
+                    {"id": "another-gateway-model", "object": "model", "owned_by": "custom"},
+                ]
+            ),
+            compatibility_provider=provider,
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.llm.model_compatibility"):
+            payload = catalog.list_models_payload(force_refresh=True)
+
+        assert {item["id"] for item in payload["data"]} >= {"K2.7", "another-gateway-model"}
+        warnings = [
+            record
+            for record in caplog.records
+            if "读取模型兼容性报告失败" in record.message
+        ]
+        assert len(warnings) == 1
 
 
 if __name__ == "__main__":

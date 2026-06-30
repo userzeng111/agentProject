@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { makeTask, makeWorkspace, mockCommonApiRoutes, mockTaskWorkspace } from "./helpers/fixtures";
+import { LONG_CREATED_TASK_ID, makeTask, makeWorkspace, mockCommonApiRoutes, mockTaskWorkspace } from "./helpers/fixtures";
 
 function modelCatalog(defaultModel = "gpt-5.4") {
   return {
@@ -43,15 +43,18 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await expect(card.getByText("待启动")).toBeVisible();
     await expect(card.getByText("created", { exact: true })).toBeVisible();
     await expect(card.getByText("全新原创 · 短篇")).toBeVisible();
+    await expect(card.getByText(`ID ${LONG_CREATED_TASK_ID}`)).toBeVisible();
     await expect(card.getByRole("link", { name: "进入项目" })).toHaveAttribute(
       "href",
-      /\/p\/task_created_fixture\/?$/,
+      new RegExp(`/p/${LONG_CREATED_TASK_ID}/?$`),
     );
 
     const hasHorizontalOverflow = await page.evaluate(() => (
       document.documentElement.scrollWidth > document.documentElement.clientWidth
     ));
     expect(hasHorizontalOverflow).toBe(false);
+    const cardHasHorizontalOverflow = await card.evaluate((element) => element.scrollWidth > element.clientWidth + 1);
+    expect(cardHasHorizontalOverflow).toBe(false);
   });
 
   test("首页展示任务分组并支持失败任务重试跳转", async ({ page }) => {

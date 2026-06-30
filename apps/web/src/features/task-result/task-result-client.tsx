@@ -6,11 +6,9 @@ import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
-  Breadcrumbs,
   Button,
   Card,
   CardContent,
-  Chip,
   Container,
   List,
   ListItem,
@@ -19,23 +17,18 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import {
-  NavigateNext as NavigateNextIcon,
-  CheckCircle as CheckCircleIcon,
-  Edit as EditIcon,
-  PlayArrow as PlayIcon,
-  MenuBook as MenuBookIcon,
-} from "@mui/icons-material";
 import { fetchTextRef, getApiBase, getResult } from "@/lib/api";
 import { workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
+import { ProjectShell } from "@/components/project-shell";
+import { StageNav } from "@/components/stage-nav";
 
 const WORKFLOW_STEPS = [
-  { label: "创建", icon: <EditIcon fontSize="small" /> },
-  { label: "运行", icon: <PlayIcon fontSize="small" /> },
-  { label: "审核", icon: <CheckCircleIcon fontSize="small" /> },
-  { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
+  { label: "创建" },
+  { label: "运行" },
+  { label: "审核" },
+  { label: "结果" },
 ];
 
 export default function TaskResultClient({ taskId }: { taskId?: string }) {
@@ -142,100 +135,24 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
   };
 
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-    <Stack spacing={3} className="page-fade-in">
-      {/* 面包屑 */}
-      <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-        <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-          <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-            首页
-          </Typography>
-        </Link>
-        <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
-          <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-            工作台
-          </Typography>
-        </Link>
-        <Typography variant="body2">生成结果</Typography>
-      </Breadcrumbs>
-
-      {/* 步骤指示器 */}
-      <Card className="glass-card">
-        <CardContent sx={{ py: 2 }}>
-          <Stack direction="row" justifyContent="center" spacing={0} sx={{ width: "100%" }}>
-            {WORKFLOW_STEPS.map((step, index) => {
-              const isDone = index < 3;
-              const isActive = index === 3;
-              return (
-                <Box
-                  key={step.label}
-                  sx={{
-                    display: "flex",
-                    alignItems: "center",
-                    flex: index < WORKFLOW_STEPS.length - 1 ? 1 : 0,
-                    justifyContent: "center",
-                  }}
-                >
-                  <Stack spacing={0.5} alignItems="center" sx={{ minWidth: 64 }}>
-                    <Box
-                      sx={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: "50%",
-                        display: "grid",
-                        placeItems: "center",
-                        backgroundColor: isDone ? "success.main" : isActive ? "primary.main" : "rgba(29,42,39,0.08)",
-                        color: "#fff",
-                        transition: "all 0.3s",
-                      }}
-                    >
-                      {isDone ? <CheckCircleIcon fontSize="small" /> : step.icon}
-                    </Box>
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontWeight: isActive ? 600 : 400,
-                        color: isActive ? "primary.main" : isDone ? "success.main" : "text.secondary",
-                      }}
-                    >
-                      {step.label}
-                    </Typography>
-                  </Stack>
-                  {index < WORKFLOW_STEPS.length - 1 && (
-                    <Box
-                      sx={{
-                        flex: 1,
-                        height: 2,
-                        mx: 1,
-                        mt: -2,
-                        backgroundColor: isDone ? "success.main" : "rgba(29,42,39,0.08)",
-                        transition: "all 0.3s",
-                        borderRadius: 1,
-                      }}
-                    />
-                  )}
-                </Box>
-              );
-            })}
-          </Stack>
-        </CardContent>
-      </Card>
-
-      {/* 标题 + 操作 */}
-      <Stack direction={{ xs: "column", md: "row" }} spacing={2} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }}>
-        <Stack spacing={1}>
-          <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-            生成结果
-          </Typography>
-          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Chip label={result.meta.title || taskId} size="small" />
-            <Chip label={result.meta.status} size="small" variant="outlined" />
-          </Stack>
-        </Stack>
+    <ProjectShell
+      breadcrumbs={[
+        { label: "首页", href: "/" },
+        { label: "工作台", href: workspaceHref(resolvedTaskId) },
+        { label: "生成结果" },
+      ]}
+      title="生成结果"
+      metaItems={[
+        { label: result.meta.title || resolvedTaskId },
+        { label: result.meta.status, variant: "outlined" },
+      ]}
+      actions={
         <Button component={Link} href={workspaceHref(resolvedTaskId)} variant="outlined" size="small">
           返回工作台
         </Button>
-      </Stack>
+      }
+      stageNav={<StageNav stages={WORKFLOW_STEPS} activeStep={3} />}
+    >
 
       {error ? <Alert severity="error">{error}</Alert> : null}
 
@@ -396,7 +313,6 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
           </CardContent>
         </Card>
       ) : null}
-    </Stack>
     {/* 操作反馈提示 */}
     <Snackbar
       open={snackbarOpen}
@@ -405,6 +321,6 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
       message={snackbarMsg}
       anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
     />
-    </Container>
+    </ProjectShell>
   );
 }

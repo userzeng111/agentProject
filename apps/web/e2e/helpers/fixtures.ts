@@ -3,6 +3,8 @@ import { Page, Route } from "@playwright/test";
 type WorkspaceOverrides = Record<string, unknown>;
 
 const now = new Date("2026-06-24T00:00:00.000Z").toISOString();
+export const LONG_CREATED_TASK_ID =
+  "task_created_fixture_with_an_intentionally_long_unbroken_identifier_for_mobile_overflow_checks_20260630";
 
 export function makeTask(status = "created", taskId = "task_playwright_fixture") {
   return {
@@ -32,7 +34,7 @@ export function makeTask(status = "created", taskId = "task_playwright_fixture")
 
 export function makeDashboard() {
   return {
-    continue_tasks: [makeTask("created", "task_created_fixture")],
+    continue_tasks: [makeTask("created", LONG_CREATED_TASK_ID)],
     running_tasks: [makeTask("planning", "task_running_fixture")],
     failed_tasks: [makeTask("failed", "task_failed_fixture")],
     completed_tasks: [makeTask("completed", "task_completed_fixture")],

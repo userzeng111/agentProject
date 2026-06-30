@@ -66,7 +66,11 @@ test.describe("审核、结果、归档页面", () => {
       await route.fulfill({ json: makeReview("outline") });
     });
     await page.goto("/review/?id=task_review_fixture", { waitUntil: "commit" });
-    await expect(page.getByRole("heading", { name: /大纲审核/ })).toBeVisible();
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    const stageNav = page.getByTestId("stage-nav");
+    await expect(stageNav).toBeVisible();
+    await expect(stageNav.locator('[data-stage-state="current"]')).toContainText("审核");
+    await expect(page.getByRole("heading", { name: "大纲审核", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
     await expect(page.getByLabel("审核意见")).toBeVisible();
   });
@@ -77,6 +81,8 @@ test.describe("审核、结果、归档页面", () => {
       await route.fulfill({ json: makeReview("chapter") });
     });
     await page.goto("/review/?id=task_review_chapter_fixture", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("审核");
     await expect(page.getByText("章节摘要")).toBeVisible();
     await expect(page.getByRole("heading", { name: "审核操作" })).toBeVisible();
 
@@ -84,6 +90,8 @@ test.describe("审核、结果、归档页面", () => {
       await route.fulfill({ json: makeReview("verification") });
     });
     await page.goto("/review/?id=task_review_verification_fixture", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("验证");
     await expect(page.getByText("验证摘要")).toBeVisible();
     await expect(page.getByRole("heading", { name: "发现的问题" })).toBeVisible();
     await expect(page.getByText("warning")).toBeVisible();
@@ -114,6 +122,8 @@ test.describe("审核、结果、归档页面", () => {
       });
     });
     await page.goto("/result/?id=task_result_fixture", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("结果");
     await expect(page.getByRole("heading", { name: "生成结果" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "结果摘要" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();

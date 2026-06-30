@@ -48,6 +48,8 @@ import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { resultHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse, VerificationIssue } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
+import { ProjectShell } from "@/components/project-shell";
+import { StageNav } from "@/components/stage-nav";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 
@@ -97,71 +99,6 @@ function ValidationErrorAlert({ message, modelId }: { message: string; modelId: 
     >
       {message}
     </Alert>
-  );
-}
-
-function StepIndicator({ steps, activeStep }: { steps: typeof OUTLINE_STEPS; activeStep: number }) {
-  return (
-    <Card className="glass-card">
-      <CardContent sx={{ py: 2 }}>
-        <Stack direction="row" justifyContent="center" spacing={0} sx={{ width: "100%" }}>
-          {steps.map((step, index) => {
-            const isDone = index < activeStep;
-            const isActive = index === activeStep;
-            return (
-              <Box
-                key={step.label}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  flex: index < steps.length - 1 ? 1 : 0,
-                  justifyContent: "center",
-                }}
-              >
-                <Stack spacing={0.5} alignItems="center" sx={{ minWidth: 64 }}>
-                  <Box
-                    sx={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: "50%",
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: isDone ? "success.main" : isActive ? "primary.main" : "rgba(29,42,39,0.08)",
-                      color: "#fff",
-                      transition: "all 0.3s",
-                    }}
-                  >
-                    {isDone ? <CheckCircleIcon fontSize="small" /> : step.icon}
-                  </Box>
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontWeight: isActive ? 600 : 400,
-                      color: isActive ? "primary.main" : isDone ? "success.main" : "text.secondary",
-                    }}
-                  >
-                    {step.label}
-                  </Typography>
-                </Stack>
-                {index < steps.length - 1 && (
-                  <Box
-                    sx={{
-                      flex: 1,
-                      height: 2,
-                      mx: 1,
-                      mt: -2,
-                      backgroundColor: isDone ? "success.main" : "rgba(29,42,39,0.08)",
-                      transition: "all 0.3s",
-                      borderRadius: 1,
-                    }}
-                  />
-                )}
-              </Box>
-            );
-          })}
-        </Stack>
-      </CardContent>
-    </Card>
   );
 }
 
@@ -1641,25 +1578,20 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           : "审核";
 
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-      <Stack spacing={3} className="page-fade-in">
-        {/* 面包屑 */}
-        <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-          <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              首页
-            </Typography>
-          </Link>
-          <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              工作台
-            </Typography>
-          </Link>
-          <Typography variant="body2">{breadcrumbLabel}</Typography>
-        </Breadcrumbs>
-
-        {/* 步骤指示器 */}
-        <StepIndicator steps={steps} activeStep={activeStep} />
+    <ProjectShell
+      breadcrumbs={[
+        { label: "首页", href: "/" },
+        { label: "工作台", href: workspaceHref(resolvedTaskId) },
+        { label: breadcrumbLabel },
+      ]}
+      title={breadcrumbLabel}
+      metaItems={[
+        { label: review.meta.title || resolvedTaskId },
+        { label: review.meta.status, variant: "outlined" },
+        ...(currentTaskModelId ? [{ label: `创作模型 ${currentTaskModelId}`, variant: "outlined" as const }] : []),
+      ]}
+      stageNav={<StageNav stages={steps} activeStep={activeStep} />}
+    >
 
         {error ? <ValidationErrorAlert message={error} modelId={currentTaskModelId} /> : null}
         {review.state_reconciled ? (
@@ -1757,7 +1689,6 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           onCancel={() => setRecoveryDialogOpen(false)}
           onConfirm={() => void handleRecover()}
         />
-      </Stack>
-    </Container>
+    </ProjectShell>
   );
 }

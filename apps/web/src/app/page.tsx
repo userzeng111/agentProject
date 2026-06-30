@@ -203,11 +203,11 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
           >
             {task.summary}
           </Typography>
-          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 0.5 }}>
-            <Typography variant="caption" color="text.secondary">
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 0.5, minWidth: 0 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
               更新时间 {new Date(task.updated_at).toLocaleString()}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
+            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
               ID {task.task_id}
             </Typography>
           </Stack>

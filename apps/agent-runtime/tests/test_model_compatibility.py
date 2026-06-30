@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 import tempfile
 import unittest
 from pathlib import Path
@@ -264,6 +265,122 @@ def test_get_report_warns_and_returns_unverified_when_store_json_is_corrupted(ca
         assert report["status"] == "unverified"
         assert report["model_id"] == "K2.7"
         assert any("model_compatibility.json" in record.message for record in caplog.records)
+
+
+def test_save_report_warns_when_model_catalog_cache_invalidation_fails(caplog) -> None:
+    def raise_invalidator() -> None:
+        raise RuntimeError("invalidate failed")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = ModelCompatibilityService(
+            tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+            model_catalog_invalidator=raise_invalidator,
+        )
+
+        report = service.build_report(
+            model_id="K2.7",
+            status="verified",
+            summary="验证通过",
+            checks=[],
+        )
+
+        with caplog.at_level(logging.WARNING):
+            saved = service.save_report(report)
+
+        assert saved["status"] == "verified"
+        assert any("刷新模型目录缓存失败" in record.message for record in caplog.records)
+
+
+def test_gateway_visible_warns_and_returns_false_when_catalog_resolver_fails(caplog) -> None:
+    def raise_resolver():
+        raise RuntimeError("catalog down")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = ModelCompatibilityService(
+            tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            gateway_client=None,
+            model_catalog_resolver=raise_resolver,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            visible = service._gateway_visible("K2.7")
+
+        assert visible is False
+        assert any("读取模型目录失败" in record.message for record in caplog.records)
+
+
+def test_get_report_reloads_when_store_file_changes_externally() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tasklog_root = Path(tmp_dir) / "tasklog"
+        tasklog_root.mkdir(parents=True)
+        path = tasklog_root / "model_compatibility.json"
+        path.write_text(
+            json.dumps({"version": 1, "models": {"K2.7": {"status": "failed", "summary": "旧报告"}}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        service = ModelCompatibilityService(
+            tasklog_root=str(tasklog_root),
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+        )
+
+        assert service.get_report("K2.7")["status"] == "failed"
+
+        time.sleep(0.001)
+        path.write_text(
+            json.dumps({"version": 1, "models": {"K2.7": {"status": "verified", "summary": "新报告"}}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        report = service.get_report("K2.7")
+
+        assert report["status"] == "verified"
+        assert report["summary"] == "新报告"
+
+
+def test_clear_report_updates_store_cache_immediately() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        service = ModelCompatibilityService(
+            tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+        )
+        service.save_report(service.build_report("K2.7", "verified", "验证通过", []))
+
+        assert service.get_report("K2.7")["status"] == "verified"
+
+        service.clear_report("K2.7")
+
+        assert service.get_report("K2.7")["status"] == "unverified"
+
+
+def test_corrupted_store_can_be_repaired_and_reloaded(caplog) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tasklog_root = Path(tmp_dir) / "tasklog"
+        tasklog_root.mkdir(parents=True)
+        path = tasklog_root / "model_compatibility.json"
+        path.write_text("{ broken json", encoding="utf-8")
+        service = ModelCompatibilityService(
+            tasklog_root=str(tasklog_root),
+            gateway_client=None,
+            model_catalog_resolver=lambda: [],
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert service.get_report("K2.7")["status"] == "unverified"
+
+        time.sleep(0.001)
+        path.write_text(
+            json.dumps({"version": 1, "models": {"K2.7": {"status": "verified", "summary": "已修复"}}}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        report = service.get_report("K2.7")
+
+        assert report["status"] == "verified"
+        assert report["summary"] == "已修复"
 
 
 if __name__ == "__main__":

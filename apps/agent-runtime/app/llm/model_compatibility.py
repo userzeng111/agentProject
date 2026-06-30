@@ -5,6 +5,7 @@ import logging
 import os
 import secrets
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -75,34 +76,57 @@ class ModelCompatibilityService:
         self.model_catalog_invalidator = model_catalog_invalidator
         self.path = self.tasklog_root / "model_compatibility.json"
         self._store_lock = threading.RLock()
+        self._store_cache: dict[str, Any] | None = None
+        self._store_cache_fingerprint: tuple[int, int] | None = None
+        self._store_warning_fingerprint: tuple[int, int] | None = None
+
+    def _store_fingerprint(self) -> tuple[int, int] | None:
+        try:
+            stat = self.path.stat()
+        except FileNotFoundError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _cache_store(self, data: dict[str, Any], fingerprint: tuple[int, int] | None) -> dict[str, Any]:
+        self._store_cache = deepcopy(data)
+        self._store_cache_fingerprint = fingerprint
+        return deepcopy(data)
 
     def _load_store(self) -> dict[str, Any]:
+        fingerprint = self._store_fingerprint()
+        if self._store_cache is not None and self._store_cache_fingerprint == fingerprint:
+            return deepcopy(self._store_cache)
         if not self.path.exists():
-            return {"version": 1, "models": {}}
+            return self._cache_store({"version": 1, "models": {}}, fingerprint)
         try:
             data = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception as exc:
-            LOGGER.warning("读取模型兼容性报告失败，已忽略损坏文件 %s：%s", self.path, exc)
-            return {"version": 1, "models": {}}
+            if self._store_warning_fingerprint != fingerprint:
+                LOGGER.warning("读取模型兼容性报告失败，已忽略损坏文件 %s：%s", self.path, exc)
+                self._store_warning_fingerprint = fingerprint
+            return self._cache_store({"version": 1, "models": {}}, fingerprint)
         if not isinstance(data, dict):
-            return {"version": 1, "models": {}}
+            return self._cache_store({"version": 1, "models": {}}, fingerprint)
         models = data.get("models")
         if not isinstance(models, dict):
             models = {}
-        return {"version": 1, "models": models}
+        return self._cache_store({"version": 1, "models": models}, fingerprint)
 
     def _save_store(self, data: dict[str, Any]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
         tmp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp_path.replace(self.path)
+        self._store_warning_fingerprint = None
+        self._cache_store(data, self._store_fingerprint())
 
     def _invalidate_model_catalog_cache(self) -> None:
         if self.model_catalog_invalidator is None:
             return
         try:
             self.model_catalog_invalidator()
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("刷新模型目录缓存失败，已继续: error=%s", exc)
             return
 
     def build_report(
@@ -344,7 +368,8 @@ class ModelCompatibilityService:
             return False
         try:
             payload = self.model_catalog_resolver()
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("读取模型目录失败，模型兼容性验证将按不可见处理: model=%s error=%s", model_id, exc)
             return False
         items = payload.get("data", []) if isinstance(payload, dict) else payload
         if not isinstance(items, list):

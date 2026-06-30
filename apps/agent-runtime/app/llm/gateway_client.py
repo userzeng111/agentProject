@@ -147,7 +147,8 @@ class OpenAICompatibleGatewayClient:
         if self.protocol_overrides_resolver is not None:
             try:
                 dynamic_overrides = self.protocol_overrides_resolver() or {}
-            except Exception:
+            except Exception as exc:
+                logger.warning("读取动态模型协议覆盖失败，使用静态协议配置降级: error=%s", exc)
                 dynamic_overrides = {}
             if isinstance(dynamic_overrides, dict):
                 overrides.update({

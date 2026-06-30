@@ -147,6 +147,24 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
         self.assertIsInstance(client._get_adapter("K2.6"), AnthropicAdapter)
         self.assertIsInstance(client._get_adapter("mimo-v2.5-pro"), OpenAIAdapter)
 
+    def test_gateway_protocol_override_resolver_failure_logs_warning_and_uses_default_protocol(self) -> None:
+        def raise_resolver():
+            raise RuntimeError("runtime overrides broken")
+
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+            protocol_overrides_resolver=raise_resolver,
+        )
+
+        with self.assertLogs("app.llm.gateway_client", level="WARNING") as logs:
+            protocol = client._resolve_protocol("K2.7")
+
+        self.assertEqual(protocol, "openai")
+        self.assertTrue(any("读取动态模型协议覆盖失败" in message for message in logs.output))
+
     def test_settings_accept_anthropic_key_alias_without_forcing_protocol(self) -> None:
         settings = Settings(
             _env_file=None,
