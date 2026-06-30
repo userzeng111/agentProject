@@ -19,6 +19,14 @@ class FailingGatewayClient:
         raise RuntimeError("gateway down")
 
 
+class FakeCompatibilityProvider:
+    def __init__(self, reports):
+        self.reports = reports
+
+    def get_report(self, model_id):
+        return self.reports.get(model_id, {"model_id": model_id, "status": "unverified", "summary": "尚未验证"})
+
+
 class ModelCatalogServiceTests(unittest.TestCase):
     def setUp(self) -> None:
         from app.llm.model_catalog import ModelCatalogService
@@ -326,6 +334,121 @@ class ModelCatalogServiceTests(unittest.TestCase):
 
         self.assertIn("gpt-5.4", {item["id"] for item in payload["data"]})
         self.assertTrue(any("读取网关模型列表失败" in message for message in logs.output))
+
+    def test_gateway_only_model_can_be_verified_by_local_compatibility_report(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient([{"id": "K2.7", "object": "model", "owned_by": "moonshot"}]),
+            compatibility_provider=FakeCompatibilityProvider(
+                {
+                    "K2.7": {
+                        "model_id": "K2.7",
+                        "status": "verified",
+                        "validated_at": "2026-06-30T10:00:00Z",
+                        "validator_version": "2026-06-30",
+                        "summary": "验证通过",
+                        "failure_reason": "",
+                        "checks": [],
+                        "evidence": {"chunk_count": 2},
+                    }
+                }
+            ),
+        )
+
+        profile = catalog.ensure_novel_generation_model_supported("K2.7")
+
+        self.assertEqual(profile["metadata"]["source"], "gateway")
+        self.assertEqual(profile["metadata"]["compatibility"], "verified")
+        self.assertEqual(profile["metadata"]["validation"]["status"], "verified")
+        self.assertTrue(profile["capabilities"]["features"]["novel_task_supported"])
+
+    def test_saved_compatibility_report_invalidates_cached_catalog(self) -> None:
+        from app.llm.model_compatibility import ModelCompatibilityService
+
+        catalog = None
+        service = ModelCompatibilityService(
+            tasklog_root=self.settings.tasklog_root,
+            gateway_client=None,
+            model_catalog_resolver=lambda: catalog.list_models(force_refresh=True),
+            model_catalog_invalidator=lambda: catalog.invalidate_cache(),
+        )
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient([{"id": "K2.7", "object": "model", "owned_by": "moonshot"}]),
+            compatibility_provider=service,
+        )
+
+        cached_model = next(item for item in catalog.list_models_payload(force_refresh=True)["data"] if item["id"] == "K2.7")
+        self.assertEqual(cached_model["metadata"]["compatibility"], "unverified")
+
+        service.save_report(
+            service.build_report(
+                model_id="K2.7",
+                status="verified",
+                summary="验证通过",
+                checks=[],
+                evidence={"chunk_count": 1},
+            )
+        )
+
+        profile = catalog.ensure_novel_generation_model_supported("K2.7")
+        self.assertEqual(profile["metadata"]["compatibility"], "verified")
+        self.assertTrue(profile["capabilities"]["features"]["novel_task_supported"])
+
+    def test_failed_compatibility_report_does_not_enable_novel_workflow(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient([{"id": "K2.7", "object": "model", "owned_by": "moonshot"}]),
+            compatibility_provider=FakeCompatibilityProvider(
+                {
+                    "K2.7": {
+                        "model_id": "K2.7",
+                        "status": "failed",
+                        "validated_at": "2026-06-30T10:00:00Z",
+                        "validator_version": "2026-06-30",
+                        "summary": "验证失败",
+                        "failure_reason": "未收到推理信号",
+                        "checks": [],
+                        "evidence": {},
+                    }
+                }
+            ),
+        )
+
+        model = next(item for item in catalog.list_models_payload()["data"] if item["id"] == "K2.7")
+
+        self.assertEqual(model["metadata"]["compatibility"], "unverified")
+        self.assertEqual(model["metadata"]["validation"]["status"], "failed")
+        self.assertFalse(model["capabilities"]["features"]["novel_task_supported"])
+        with self.assertRaisesRegex(ValueError, "未完成兼容性验证"):
+            catalog.ensure_novel_generation_model_supported("K2.7")
+
+    def test_registry_only_model_is_not_enabled_by_verified_compatibility_report(self) -> None:
+        catalog = self.catalog_cls(
+            settings=self.settings,
+            gateway_client=FakeGatewayClient([]),
+            compatibility_provider=FakeCompatibilityProvider(
+                {
+                    "gpt-5.4": {
+                        "model_id": "gpt-5.4",
+                        "status": "verified",
+                        "validated_at": "2026-06-30T10:00:00Z",
+                        "validator_version": "2026-06-30",
+                        "summary": "验证通过",
+                        "failure_reason": "",
+                        "checks": [],
+                        "evidence": {},
+                    }
+                }
+            ),
+        )
+
+        model = next(item for item in catalog.list_models_payload()["data"] if item["id"] == "gpt-5.4")
+
+        self.assertEqual(model["metadata"]["source"], "registry")
+        self.assertEqual(model["metadata"]["compatibility"], "verified")
+        with self.assertRaisesRegex(ValueError, "未接入网关"):
+            catalog.ensure_runtime_default_model_supported("gpt-5.4")
 
 
 if __name__ == "__main__":

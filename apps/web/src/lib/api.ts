@@ -3,6 +3,8 @@ import {
   ArchiveIndexResponse,
   ContinueDraftPayload,
   ModelListResponse,
+  ModelValidationEvent,
+  ModelValidationReport,
   ModelOption,
   DashboardResponse,
   RecoverTaskPayload,
@@ -17,6 +19,7 @@ import {
   WorkspaceResponse,
 } from "@/lib/types";
 import { createChatSseParser, getStreamChatErrorMessage } from "@/lib/stream-chat-events.mjs";
+import { createModelValidationSseParser } from "@/lib/model-validation-events.mjs";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
@@ -133,6 +136,17 @@ export function getModelCatalog(options?: { refresh?: boolean }) {
 
 export function getProtocolSettings() {
   return request<{ default_protocol: string; overrides: Record<string, string> }>("/api/settings/protocols");
+}
+
+export function getModelValidation(modelId: string) {
+  return request<ModelValidationReport>(`/api/model-validation?model_id=${encodeURIComponent(modelId)}`);
+}
+
+export function clearModelValidation(modelId: string) {
+  return request<ModelValidationReport>("/api/model-validation", {
+    method: "DELETE",
+    body: JSON.stringify({ model_id: modelId }),
+  });
 }
 
 export function setModelProtocol(modelId: string, protocol: string) {
@@ -330,6 +344,10 @@ export function normalizeModelOptions(models: ModelOption[]) {
               typeof item.metadata.profile_version === "string" && item.metadata.profile_version.trim()
                 ? item.metadata.profile_version.trim()
                 : undefined,
+            validation:
+              item.metadata.validation && typeof item.metadata.validation === "object"
+                ? item.metadata.validation
+                : undefined,
           }
         : undefined,
     }));
@@ -422,5 +440,73 @@ export async function streamChat(
     const msg = err instanceof Error ? err.message : "流式读取中断";
     console.error("streamChat 流式读取异常:", msg);
     onError(msg);
+  }
+}
+
+export async function streamModelValidation(
+  modelId: string,
+  callbacks: {
+    onEvent: (event: ModelValidationEvent) => void;
+    onError: (message: string) => void;
+    onDone?: () => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/model-validation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId }),
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      callbacks.onDone?.();
+      return;
+    }
+    callbacks.onError(getStreamChatErrorMessage(err));
+    return;
+  }
+
+  if (!response.ok) {
+    let errorMessage = "模型验证请求失败";
+    try {
+      const data = await response.json();
+      errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+    } catch {
+      const text = await response.text();
+      errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
+    }
+    callbacks.onError(errorMessage);
+    return;
+  }
+
+  if (!response.body) {
+    callbacks.onError("模型验证响应体为空");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createModelValidationSseParser({
+    onEvent: callbacks.onEvent,
+    onError: callbacks.onError,
+  });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.flush();
+    callbacks.onDone?.();
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      callbacks.onDone?.();
+      return;
+    }
+    callbacks.onError(err instanceof Error ? err.message : "模型验证流式读取中断");
   }
 }

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  getModelValidationLabel,
   isGatewayBackedModel,
   resolveChatSelectValue,
   resolveConversationModel,
@@ -45,4 +46,11 @@ test("resolveChatSelectValue 避免选择器使用不存在的模型值", () => 
   assert.equal(resolveChatSelectValue("outline-local", mixedModels, "gateway-chat"), "gateway-chat");
   assert.equal(resolveChatSelectValue("missing-model", mixedModels, "gateway-chat"), "gateway-chat");
   assert.equal(resolveChatSelectValue("gateway-alt", mixedModels, "gateway-chat"), "gateway-alt");
+});
+
+test("getModelValidationLabel 返回验证状态标签", () => {
+  assert.equal(getModelValidationLabel({ metadata: { compatibility: "verified" } }), "已验证");
+  assert.equal(getModelValidationLabel({ metadata: { validation: { status: "failed" } } }), "最近验证失败");
+  assert.equal(getModelValidationLabel({ metadata: { compatibility: "unverified" } }), "未验证");
+  assert.equal(getModelValidationLabel({ metadata: {} }), "未验证");
 });

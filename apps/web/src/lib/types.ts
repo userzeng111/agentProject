@@ -115,11 +115,64 @@ export interface ModelCapabilities {
   features?: string[] | Record<string, boolean>;
 }
 
+export type ModelValidationCheckStatus = "pending" | "running" | "passed" | "failed" | "skipped";
+export type ModelValidationReportStatus = "unverified" | "running" | "verified" | "failed";
+export type ModelValidationStatus = ModelValidationReportStatus | "cancelled";
+
+export interface ModelValidationCheck {
+  id: string;
+  label?: string;
+  status: ModelValidationCheckStatus;
+  summary?: string;
+  failure_reason?: string;
+  evidence?: Record<string, unknown>;
+}
+
+export interface ModelValidationReport {
+  model_id?: string;
+  status: ModelValidationReportStatus;
+  validated_at?: string;
+  validator_version?: string;
+  summary?: string;
+  failure_reason?: string;
+  last_error?: string;
+  checks?: ModelValidationCheck[];
+  evidence?: Record<string, unknown>;
+}
+
+export type ModelValidationEvent =
+  | { type: "validation.started"; data: { model_id?: string; run_id?: string; validator_version?: string; status?: "running" } }
+  | { type: "validation.check"; data: { model_id?: string; run_id?: string; check?: ModelValidationCheck } }
+  | {
+      type: "validation.chat_chunk";
+      data: {
+        model_id?: string;
+        run_id?: string;
+        content?: string;
+        reasoning_signal?: boolean;
+        reasoning_chars_delta?: number;
+        usage?: Record<string, number>;
+      };
+    }
+  | { type: "validation.done"; data: { model_id?: string; run_id?: string; status?: "verified"; report?: ModelValidationReport } }
+  | {
+      type: "validation.error";
+      data: {
+        model_id?: string;
+        run_id?: string;
+        status?: "failed";
+        message?: string;
+        check_id?: string;
+        report?: ModelValidationReport;
+      };
+    };
+
 export interface ModelMetadata {
   source?: string;
   compatibility?: string;
   profile_version?: string;
   protocol?: string;
+  validation?: ModelValidationReport;
 }
 
 export interface StyleProfile {

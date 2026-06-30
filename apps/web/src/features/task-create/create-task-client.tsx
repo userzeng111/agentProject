@@ -27,6 +27,7 @@ import { formatModelRefreshStatus, isCurrentSelectionValid, resolveSelectionAfte
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
 import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
 import { CreativeMode, ModelOption, ModelRefreshState, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 
 const defaultPayload: TaskCreatePayload = {
   creative_mode: "original",
@@ -307,6 +308,10 @@ export default function CreateTaskClient() {
     !payload.auto_review ||
     payload.auto_review_model_mode !== "fixed" ||
     isCurrentSelectionValid(payload.review_model_id, selectableModels);
+  const validationErrorHref = getValidationLinkFromError(
+    error,
+    error.includes("固定审核") ? payload.review_model_id : payload.model_id,
+  );
 
   const selectedModelCapabilities = selectedModel?.capabilities;
   const selectedStyleProfile = useMemo(
@@ -459,7 +464,20 @@ export default function CreateTaskClient() {
         </Alert>
       ) : null}
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? (
+        <Alert
+          severity="error"
+          action={
+            validationErrorHref ? (
+              <Button component={Link} href={validationErrorHref} color="inherit" size="small">
+                去 AI 对话验证
+              </Button>
+            ) : undefined
+          }
+        >
+          {error}
+        </Alert>
+      ) : null}
 
       {/* 表单卡片 */}
       <Card>

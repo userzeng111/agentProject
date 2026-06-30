@@ -24,6 +24,7 @@ import {
   useTheme,
   Snackbar,
   Alert,
+  Stack,
 } from "@mui/material";
 import {
   Send as SendIcon,
@@ -36,15 +37,25 @@ import {
   Add as AddIcon,
   ChatBubbleOutline as ChatIcon,
   Menu as MenuIcon,
+  FactCheck as ValidationIcon,
 } from "@mui/icons-material";
-import { getModelCatalog, getRagSettings, streamChat } from "@/lib/api";
+import { clearModelValidation, getModelCatalog, getModelValidation, getRagSettings, streamChat, streamModelValidation } from "@/lib/api";
 import type { ChatStreamChunk, ChatMessage, ModelOption } from "@/lib/types";
 import {
+  getModelValidationLabel,
   isGatewayBackedModel,
   resolveChatSelectValue,
   resolveConversationModel,
   resolveDefaultChatModelId,
 } from "./model-selection.mjs";
+import ModelValidationPanel from "./model-validation-panel";
+import {
+  applyValidationChatChunkToMessage,
+  buildValidationSessionMessages,
+  createInitialValidationState,
+  parseValidationSearch,
+  reduceValidationEvent,
+} from "./model-validation-state.mjs";
 import {
   type StoredMessage,
   listConversations,
@@ -62,6 +73,11 @@ interface DisplayMessage extends ChatMessage {
   isStreaming?: boolean;
   isThinking?: boolean;
   tokens?: number;
+  validation_meta?: {
+    reasoningSignal?: boolean;
+    reasoningChars?: number;
+    runId?: string;
+  };
 }
 
 /** 将持久化消息恢复为显示消息（重设运行时默认值） */
@@ -104,6 +120,7 @@ function formatTime(ts: number): string {
 
 /** 侧边栏宽度 */
 const SIDEBAR_WIDTH = 280;
+const VALIDATION_PANEL_WIDTH = 340;
 
 export function ChatClient() {
   const theme = useTheme();
@@ -123,6 +140,9 @@ export function ChatClient() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [defaultModelId, setDefaultModelId] = useState("");
   const [currentModel, setCurrentModel] = useState("");
+  const [validationPanelOpen, setValidationPanelOpen] = useState(false);
+  const [validationState, setValidationState] = useState(() => createInitialValidationState(""));
+  const [validationRunning, setValidationRunning] = useState(false);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" | "info" }>({
     open: false,
     message: "",
@@ -132,7 +152,10 @@ export function ChatClient() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // 用于标记是否正在流式输出中（避免在流式期间写入 localStorage）
   const streamingRef = useRef(false);
+  const activeStreamCountRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const validationAbortControllerRef = useRef<AbortController | null>(null);
+  const queryModelRef = useRef("");
 
   const scrollToBottom = useCallback(() => {
     setTimeout(() => {
@@ -175,6 +198,18 @@ export function ChatClient() {
   }, []);
 
   useEffect(() => {
+    const parsed = parseValidationSearch(window.location.search);
+    if (parsed.modelId) {
+      queryModelRef.current = parsed.modelId;
+      setCurrentModel(parsed.modelId);
+      setValidationState(createInitialValidationState(parsed.modelId));
+    }
+    if (parsed.shouldOpen) {
+      setValidationPanelOpen(true);
+    }
+  }, []);
+
+  useEffect(() => {
     async function loadModelCatalog() {
       try {
         const catalog = await getModelCatalog();
@@ -193,6 +228,14 @@ export function ChatClient() {
 
   useEffect(() => {
     if (!currentConvId) {
+      return;
+    }
+    const queryModelId = queryModelRef.current;
+    if (queryModelId && models.some((item) => item.id === queryModelId && isGatewayBackedModel(item))) {
+      queryModelRef.current = "";
+      if (currentModel !== queryModelId) {
+        setCurrentModel(queryModelId);
+      }
       return;
     }
     const conv = getConversation(currentConvId);
@@ -214,6 +257,33 @@ export function ChatClient() {
     }
     void loadRagStatus();
   }, []);
+
+  useEffect(() => {
+    if (!currentModel) {
+      setValidationState(createInitialValidationState(""));
+      return;
+    }
+    let disposed = false;
+    const initialState = createInitialValidationState(currentModel);
+    setValidationState(initialState);
+    void getModelValidation(currentModel)
+      .then((report) => {
+        if (disposed || !report || report.status === "unverified") {
+          return;
+        }
+        setValidationState(
+          reduceValidationEvent(initialState, report.status === "failed"
+            ? { type: "validation.error", data: { model_id: currentModel, status: "failed", message: report.failure_reason, report } }
+            : { type: "validation.done", data: { model_id: currentModel, status: "verified", report } }),
+        );
+      })
+      .catch(() => {
+        // 验证结果读取失败不影响普通聊天。
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [currentModel]);
 
   // ── 消息变化后持久化（非流式期间） ──
   useEffect(() => {
@@ -244,6 +314,7 @@ export function ChatClient() {
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      validationAbortControllerRef.current?.abort();
     };
   }, []);
 
@@ -313,12 +384,27 @@ export function ChatClient() {
     [currentConvId, defaultModelId, showSnackbar],
   );
 
+  const selectableModels = models.filter((item) => isGatewayBackedModel(item));
+  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels, defaultModelId);
+  const selectedModel = selectableModels.find((item) => item.id === chatSelectValue) ?? null;
+
+  const beginStreaming = useCallback(() => {
+    activeStreamCountRef.current += 1;
+    streamingRef.current = true;
+  }, []);
+
+  const endStreaming = useCallback(() => {
+    activeStreamCountRef.current = Math.max(0, activeStreamCountRef.current - 1);
+    streamingRef.current = activeStreamCountRef.current > 0;
+  }, []);
+
   // ── 发送消息 ──
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
 
     abortControllerRef.current?.abort();
+    validationAbortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
 
     const userMsg: DisplayMessage = { role: "user", content: text };
@@ -333,7 +419,7 @@ export function ChatClient() {
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
     setLoading(true);
-    streamingRef.current = true;
+    beginStreaming();
 
     const apiMessages = [...messages, userMsg].map((m) => ({
       role: m.role,
@@ -390,7 +476,7 @@ export function ChatClient() {
           return updated;
         });
         setLoading(false);
-        streamingRef.current = false;
+        endStreaming();
       },
       (msg: string) => {
         setMessages((prev) => {
@@ -407,11 +493,129 @@ export function ChatClient() {
           return updated;
         });
         setLoading(false);
-        streamingRef.current = false;
+        endStreaming();
       },
       abortControllerRef.current?.signal,
     );
-  }, [currentModel, input, loading, messages, ragAvailable]);
+  }, [beginStreaming, currentModel, endStreaming, input, loading, messages, ragAvailable]);
+
+  const refreshModelCatalog = useCallback(async (refresh = true) => {
+    const catalog = await getModelCatalog({ refresh });
+    const nextModels = catalog.data ?? [];
+    setModels(nextModels);
+    setDefaultModelId(resolveDefaultChatModelId(nextModels, catalog.meta?.default_model ?? ""));
+  }, []);
+
+  const updateValidationAssistant = useCallback((runId: string, update: (message: DisplayMessage) => DisplayMessage) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      for (let idx = updated.length - 1; idx >= 0; idx -= 1) {
+        const message = updated[idx];
+        if (message.role === "assistant" && message.validation_meta?.runId === runId) {
+          updated[idx] = update(message);
+          break;
+        }
+      }
+      return updated;
+    });
+  }, []);
+
+  const handleRunValidation = useCallback(async () => {
+    const modelId = currentModel || chatSelectValue;
+    if (!modelId || validationRunning) {
+      return;
+    }
+
+    abortControllerRef.current?.abort();
+    validationAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    validationAbortControllerRef.current = controller;
+    const runId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `validation-${Date.now()}`;
+    const [userMsg, assistantMsg] = buildValidationSessionMessages(modelId, runId) as DisplayMessage[];
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    setValidationState(createInitialValidationState(modelId));
+    setValidationPanelOpen(true);
+    setValidationRunning(true);
+    beginStreaming();
+
+    try {
+      await streamModelValidation(
+        modelId,
+        {
+          onEvent: (event) => {
+            setValidationState((prev) => reduceValidationEvent(prev, event));
+            if (event.type === "validation.chat_chunk") {
+              updateValidationAssistant(runId, (message) =>
+                applyValidationChatChunkToMessage(message, event.data) as DisplayMessage,
+              );
+            }
+            if (event.type === "validation.done" || event.type === "validation.error") {
+              updateValidationAssistant(runId, (message) => ({ ...message, isStreaming: false, isThinking: false }));
+            }
+            if (event.type === "validation.done") {
+              void refreshModelCatalog(true);
+            }
+          },
+          onError: (message) => {
+            setValidationState((prev) =>
+              reduceValidationEvent(prev, {
+                type: "validation.error",
+                data: { model_id: modelId, status: "failed", message },
+              }),
+            );
+            updateValidationAssistant(runId, (assistant) => ({
+              ...assistant,
+              content: assistant.content || `错误: ${message}`,
+              isStreaming: false,
+              isThinking: false,
+            }));
+          },
+        },
+        controller.signal,
+      );
+    } finally {
+      setValidationRunning(false);
+      endStreaming();
+      updateValidationAssistant(runId, (message) => ({ ...message, isStreaming: false, isThinking: false }));
+    }
+  }, [beginStreaming, chatSelectValue, currentModel, endStreaming, refreshModelCatalog, updateValidationAssistant, validationRunning]);
+
+  const handleCancelValidation = useCallback(() => {
+    validationAbortControllerRef.current?.abort();
+    validationAbortControllerRef.current = null;
+    setValidationRunning(false);
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.role === "assistant" && message.validation_meta
+          ? { ...message, isStreaming: false, isThinking: false }
+          : message,
+      ),
+    );
+    setValidationState((prev) =>
+      reduceValidationEvent(prev, { type: "validation.cancelled", data: { message: "用户取消验证" } }),
+    );
+  }, []);
+
+  const handleClearValidation = useCallback(async () => {
+    const modelId = currentModel || chatSelectValue;
+    if (!modelId || validationRunning) {
+      return;
+    }
+    try {
+      const report = await clearModelValidation(modelId);
+      setValidationState(createInitialValidationState(modelId));
+      if (report?.status === "unverified") {
+        await refreshModelCatalog(true);
+      }
+      showSnackbar("验证记录已清除", "success");
+    } catch (err) {
+      showSnackbar(err instanceof Error ? err.message : "清除验证记录失败", "error");
+    }
+  }, [chatSelectValue, currentModel, refreshModelCatalog, showSnackbar, validationRunning]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -426,9 +630,6 @@ export function ChatClient() {
   const toggleThinking = useCallback((idx: number) => {
     setExpandedThinking((prev) => ({ ...prev, [idx]: !prev[idx] }));
   }, []);
-
-  const selectableModels = models.filter((item) => isGatewayBackedModel(item));
-  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels, defaultModelId);
 
   const handleModelChange = useCallback(
     (modelId: string) => {
@@ -598,27 +799,48 @@ export function ChatClient() {
               AI 对话
             </Typography>
           </Box>
-          <TextField
-            select
-            size="small"
-            label="聊天模型"
-            value={chatSelectValue}
-            onChange={(event) => handleModelChange(event.target.value)}
-            sx={{ minWidth: { xs: 160, sm: 220 } }}
-            helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
-          >
-            {selectableModels.length ? (
-              selectableModels.map((item) => (
-                <MenuItem key={item.id} value={item.id}>
-                  {item.display_name || item.id}
+          <Stack direction="row" spacing={1} alignItems="flex-start">
+            {isMobile ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ValidationIcon />}
+                onClick={() => setValidationPanelOpen(true)}
+                sx={{ minHeight: 40 }}
+              >
+                验证
+              </Button>
+            ) : null}
+            <TextField
+              select
+              size="small"
+              label="聊天模型"
+              value={chatSelectValue}
+              onChange={(event) => handleModelChange(event.target.value)}
+              sx={{ minWidth: { xs: 160, sm: 220 } }}
+              helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
+            >
+              {selectableModels.length ? (
+                selectableModels.map((item) => (
+                  <MenuItem key={item.id} value={item.id}>
+                    <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {item.display_name || item.id}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {getModelValidationLabel(item)}
+                        {item.provider ? ` · ${item.provider}` : ""}
+                      </Typography>
+                    </Stack>
+                  </MenuItem>
+                ))
+              ) : (
+                <MenuItem value="" disabled>
+                  暂无可用模型
                 </MenuItem>
-              ))
-            ) : (
-              <MenuItem value="" disabled>
-                暂无可用模型
-              </MenuItem>
-            )}
-          </TextField>
+              )}
+            </TextField>
+          </Stack>
         </Box>
 
         {ragAvailable === false ? (
@@ -810,6 +1032,21 @@ export function ChatClient() {
                   {msg.tokens != null && msg.tokens > 0 && (
                     <Chip size="small" label={`${msg.tokens} tokens`} sx={{ mt: 1, fontSize: "0.7rem" }} />
                   )}
+                  {msg.validation_meta ? (
+                    <Box sx={{ mt: 1 }}>
+                      <Chip
+                        size="small"
+                        color={msg.validation_meta.reasoningSignal ? "info" : "default"}
+                        variant="outlined"
+                        label={
+                          msg.validation_meta.reasoningSignal
+                            ? `推理信号元数据：累计 ${msg.validation_meta.reasoningChars ?? 0} 字符`
+                            : "推理信号元数据：暂未收到"
+                        }
+                        sx={{ fontSize: "0.7rem" }}
+                      />
+                    </Box>
+                  ) : null}
                 </Paper>
               )}
             </Box>
@@ -865,6 +1102,44 @@ export function ChatClient() {
           </IconButton>
         </Paper>
       </Box>
+
+      {isMobile ? (
+        <Drawer
+          anchor="right"
+          open={validationPanelOpen}
+          onClose={() => setValidationPanelOpen(false)}
+          sx={{ "& .MuiDrawer-paper": { width: "min(100vw, 360px)", p: 1.5 } }}
+        >
+          <ModelValidationPanel
+            model={selectedModel}
+            state={validationState}
+            running={validationRunning}
+            onRun={handleRunValidation}
+            onClear={handleClearValidation}
+            onCancel={handleCancelValidation}
+          />
+        </Drawer>
+      ) : (
+        <Box
+          sx={{
+            width: VALIDATION_PANEL_WIDTH,
+            flexShrink: 0,
+            borderLeft: "1px solid",
+            borderColor: "divider",
+            p: 1.5,
+            height: "100%",
+          }}
+        >
+          <ModelValidationPanel
+            model={selectedModel}
+            state={validationState}
+            running={validationRunning}
+            onRun={handleRunValidation}
+            onClear={handleClearValidation}
+            onCancel={handleCancelValidation}
+          />
+        </Box>
+      )}
 
       {/* 提示条 */}
       <Snackbar

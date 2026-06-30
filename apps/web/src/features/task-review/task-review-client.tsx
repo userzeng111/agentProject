@@ -49,6 +49,7 @@ import { resultHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse, VerificationIssue } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -80,6 +81,24 @@ const VERIFY_STEPS = [
   { label: "验证", icon: <VerifiedIcon fontSize="small" /> },
   { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
 ];
+
+function ValidationErrorAlert({ message, modelId }: { message: string; modelId: string }) {
+  const href = getValidationLinkFromError(message, modelId);
+  return (
+    <Alert
+      severity="error"
+      action={
+        href ? (
+          <Button component={Link} href={href} color="inherit" size="small">
+            去 AI 对话验证
+          </Button>
+        ) : undefined
+      }
+    >
+      {message}
+    </Alert>
+  );
+}
 
 function StepIndicator({ steps, activeStep }: { steps: typeof OUTLINE_STEPS; activeStep: number }) {
   return (
@@ -904,7 +923,7 @@ function OutlineReview({
       {/* Agent 审核追踪面板 */}
       <AgentTracePanel trace={review.auto_review_trace ?? []} />
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
 
       {/* 总纲区 */}
       <MasterOutlineSection storyPlan={storyPlan} readOnly={isBatchPhase} />
@@ -1053,7 +1072,7 @@ function ChapterPairReview({
       {/* Agent 审核追踪面板 */}
       <AgentTracePanel trace={review.auto_review_trace ?? []} />
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
 
       <Card>
         <CardContent>
@@ -1191,7 +1210,7 @@ function VerificationReview({
       {/* Agent 审核追踪面板 */}
       <AgentTracePanel trace={review.auto_review_trace ?? []} />
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
 
       <Card>
         <CardContent>
@@ -1642,7 +1661,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
         {/* 步骤指示器 */}
         <StepIndicator steps={steps} activeStep={activeStep} />
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <ValidationErrorAlert message={error} modelId={currentTaskModelId} /> : null}
         {review.state_reconciled ? (
           <Alert severity="info">
             {review.reconciliation_summary || "当前审核状态已自动校正到最新稳定状态。"}

@@ -18,6 +18,60 @@ from app.storage.task_store import TaskLogStore
 from tests.fakes import FakeRagService
 
 
+class FakeModelCompatibilityService:
+    def __init__(self) -> None:
+        self.reports = {
+            "K2.7": {
+                "model_id": "K2.7",
+                "status": "failed",
+                "summary": "验证失败",
+                "failure_reason": "未收到推理信号",
+                "checks": [],
+                "evidence": {},
+            }
+        }
+
+    def get_report(self, model_id: str):
+        return self.reports.get(model_id, {"model_id": model_id, "status": "unverified", "summary": "尚未验证"})
+
+    def clear_report(self, model_id: str):
+        self.reports.pop(model_id, None)
+        return self.get_report(model_id)
+
+    async def run_validation_stream(self, model_id: str, context_marker: str | None = None):
+        yield {
+            "event": "validation.started",
+            "data": {
+                "model_id": model_id,
+                "context_marker": context_marker or "CTX-api",
+            },
+        }
+        yield {
+            "event": "validation.check",
+            "data": {
+                "model_id": model_id,
+                "check": {"id": "streaming", "status": "passed", "summary": "收到 chunk"},
+            },
+        }
+        yield {
+            "event": "validation.chat_chunk",
+            "data": {
+                "model_id": model_id,
+                "content": "验证正文",
+                "reasoning_signal": True,
+                "reasoning_chars_delta": 12,
+            },
+        }
+        yield {
+            "event": "validation.done",
+            "data": {
+                "model_id": model_id,
+                "status": "verified",
+                "report": {"model_id": model_id, "status": "verified"},
+            },
+        }
+
+
 class ApiContextIntegrationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -71,6 +125,31 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["default_protocol"], "anthropic")
+
+    def test_model_validation_get_delete_and_stream_endpoints(self) -> None:
+        app = FastAPI()
+        service = FakeModelCompatibilityService()
+        app.include_router(
+            build_router(self.task_service, model_compatibility_service=service),
+            prefix="/api",
+        )
+        client = TestClient(app)
+
+        get_response = client.get("/api/model-validation", params={"model_id": "K2.7"})
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["status"], "failed")
+
+        stream_response = client.post("/api/model-validation", json={"model_id": "K2.7"})
+        self.assertEqual(stream_response.status_code, 200)
+        self.assertIn("text/event-stream", stream_response.headers["content-type"])
+        self.assertIn("event: validation.started", stream_response.text)
+        self.assertIn("event: validation.check", stream_response.text)
+        self.assertIn("event: validation.chat_chunk", stream_response.text)
+        self.assertIn("event: validation.done", stream_response.text)
+
+        delete_response = client.request("DELETE", "/api/model-validation", json={"model_id": "K2.7"})
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["status"], "unverified")
 
     def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
         response = self.client.post(

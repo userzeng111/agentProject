@@ -63,6 +63,7 @@ import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 import {
   ContextStatus,
   ModelCapabilities,
@@ -361,6 +362,24 @@ function buildSystemStages(events: WorkspaceEvent[]) {
   return events.filter((event) => !event.event_type.startsWith("chapter.") && event.event_type !== "model.thinking").slice(-10);
 }
 
+function ValidationErrorAlert({ message, modelId }: { message: string; modelId: string }) {
+  const href = getValidationLinkFromError(message, modelId);
+  return (
+    <Alert
+      severity="error"
+      action={
+        href ? (
+          <Button component={Link} href={href} color="inherit" size="small">
+            去 AI 对话验证
+          </Button>
+        ) : undefined
+      }
+    >
+      {message}
+    </Alert>
+  );
+}
+
 export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -563,6 +582,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const resolvedActionModelId = selectableModels.some((item) => item.id === actionModelId)
     ? actionModelId
     : "";
+  const validationErrorModelId = resolvedActionModelId || actionModelId || currentTaskModelId;
   const recoveryPreview = resolveRecoveryPreview(workspace, selectedRecoveryAction);
   const recoverySelectableModels = filterRecoveryModels(selectableModels, recoveryPreview?.allowed_model_ids);
   const defaultRecoveryModelId =
@@ -862,7 +882,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Stack spacing={2} sx={{ py: 6 }}>
-          <Alert severity="error">{error || "读取工作台失败"}</Alert>
+          <ValidationErrorAlert message={error || "读取工作台失败"} modelId={validationErrorModelId} />
           <Box>
             <Button variant="outlined" onClick={() => void refreshWorkspace()}>
               重新加载
@@ -902,6 +922,10 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     ? `章节计划设计中（已确认 ${workspace.outline_completed_count ?? 0} / ${workspace.outline_total_count ?? 0} 章）`
     : null;
   const debugStreamPath = resolvedTaskId ? streamPathCandidates(resolvedTaskId)[0] : undefined;
+  const manualActionValidationHref = getValidationLinkFromError(
+    workspace.meta.error_message || "",
+    validationErrorModelId,
+  );
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -919,14 +943,23 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         <Chip color={status.color} label={status.label} />
       </Stack>
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? <ValidationErrorAlert message={error} modelId={validationErrorModelId} /> : null}
       {!error && workspace.state_reconciled ? (
         <Alert severity="info">
           {workspace.reconciliation_summary || "当前页面已自动校正到最新稳定状态。"}
         </Alert>
       ) : null}
       {!error && workspace.meta.status === "waiting_manual_action" && workspace.meta.error_message ? (
-        <Alert severity="warning">
+        <Alert
+          severity="warning"
+          action={
+            manualActionValidationHref ? (
+              <Button component={Link} href={manualActionValidationHref} color="inherit" size="small">
+                去 AI 对话验证
+              </Button>
+            ) : undefined
+          }
+        >
           <Stack spacing={1}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
               当前任务需要人工处理

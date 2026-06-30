@@ -22,6 +22,7 @@ def build_router(
     style_profile_service=None,
     novel_skill_service=None,
     settings=None,
+    model_compatibility_service=None,
 ) -> APIRouter:
     router = APIRouter()
     active_style_service = novel_skill_service or style_profile_service
@@ -76,6 +77,54 @@ def build_router(
         except Exception as exc:  # pragma: no cover
             logger.exception("读取模型列表失败")
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
+
+    @router.get("/model-validation")
+    def get_model_validation(model_id: str = Query(..., description="模型 ID")):
+        if model_compatibility_service is None:
+            raise HTTPException(status_code=503, detail="模型兼容性验证服务未配置。")
+        candidate = (model_id or "").strip()
+        if not candidate:
+            raise HTTPException(status_code=400, detail="model_id 不能为空。")
+        return model_compatibility_service.get_report(candidate)
+
+    async def _stream_model_validation_response(payload: dict[str, str]):
+        if model_compatibility_service is None:
+            raise HTTPException(status_code=503, detail="模型兼容性验证服务未配置。")
+        model_id = str((payload or {}).get("model_id") or "").strip()
+        if not model_id:
+            raise HTTPException(status_code=400, detail="model_id 不能为空。")
+        context_marker = str((payload or {}).get("context_marker") or "").strip() or None
+
+        async def event_stream():
+            async for event in model_compatibility_service.run_validation_stream(model_id, context_marker=context_marker):
+                yield _sse_payload(event["event"], event.get("data") or {})
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @router.post("/model-validation")
+    async def stream_model_validation(payload: dict[str, str]):
+        return await _stream_model_validation_response(payload)
+
+    @router.post("/model-validation/stream")
+    async def stream_model_validation_legacy(payload: dict[str, str]):
+        return await _stream_model_validation_response(payload)
+
+    @router.delete("/model-validation")
+    def delete_model_validation(payload: dict[str, str]):
+        if model_compatibility_service is None:
+            raise HTTPException(status_code=503, detail="模型兼容性验证服务未配置。")
+        model_id = str((payload or {}).get("model_id") or "").strip()
+        if not model_id:
+            raise HTTPException(status_code=400, detail="model_id 不能为空。")
+        return model_compatibility_service.clear_report(model_id)
 
     @router.patch("/settings/default-model")
     def update_default_model(payload: dict[str, str]):

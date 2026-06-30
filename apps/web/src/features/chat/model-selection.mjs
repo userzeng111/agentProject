@@ -3,6 +3,21 @@ export function isGatewayBackedModel(model) {
   return source.includes("gateway");
 }
 
+export function getModelValidationLabel(model) {
+  const validationStatus = model?.metadata?.validation?.status;
+  const compatibility = model?.metadata?.compatibility;
+  if (validationStatus === "failed") {
+    return "最近验证失败";
+  }
+  if (validationStatus === "running") {
+    return "验证中";
+  }
+  if (validationStatus === "verified" || compatibility === "verified") {
+    return "已验证";
+  }
+  return "未验证";
+}
+
 export function resolveDefaultChatModelId(models, requestedDefault = "") {
   const gatewayBackedModels = (models || []).filter((item) => isGatewayBackedModel(item));
   const requestedDefaultAvailable = gatewayBackedModels.some((item) => item.id === requestedDefault);

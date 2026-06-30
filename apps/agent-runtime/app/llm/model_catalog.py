@@ -439,11 +439,13 @@ class ModelCatalogService:
         gateway_client: Any | None = None,
         registry: dict[str, dict[str, Any]] | None = None,
         cache_ttl_seconds: float = _CACHE_TTL_SECONDS,
+        compatibility_provider: Any | None = None,
     ) -> None:
         self.settings = settings
         self.gateway_client = gateway_client
         self.registry = registry or _PROFILE_REGISTRY
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.compatibility_provider = compatibility_provider
         self._cached_payload: dict[str, Any] | None = None
         self._cached_at: float = 0.0
         # 运行时默认模型覆盖，持久化到 tasklog/settings.json
@@ -505,6 +507,10 @@ class ModelCatalogService:
 
     def list_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         return self.list_models_payload(force_refresh=force_refresh)["data"]
+
+    def invalidate_cache(self) -> None:
+        self._cached_payload = None
+        self._cached_at = 0.0
 
     def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
         cache_age_seconds = monotonic() - self._cached_at
@@ -653,7 +659,7 @@ class ModelCatalogService:
         capabilities.setdefault("features", {})
         if isinstance(capabilities["features"], dict):
             capabilities["features"].setdefault("novel_task_supported", compatibility == "verified")
-        return {
+        item = {
             "id": model_id,
             "object": raw.get("object", "model"),
             "owned_by": raw.get("owned_by", "unknown"),
@@ -667,6 +673,48 @@ class ModelCatalogService:
                 "profile_version": "2026-03-31",
                 "last_refreshed_at": None,
             },
+        }
+        return self._apply_compatibility_override(item, source)
+
+    def _apply_compatibility_override(self, item: dict[str, Any], source: str) -> dict[str, Any]:
+        if self.compatibility_provider is None:
+            return item
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            return item
+        try:
+            report = self.compatibility_provider.get_report(model_id)
+        except Exception as exc:
+            logger.warning("读取模型兼容性覆盖失败: model=%s error=%s", model_id, exc)
+            return item
+        if not isinstance(report, dict):
+            return item
+        status = str(report.get("status") or "").strip()
+        if status not in {"verified", "failed"}:
+            return item
+
+        metadata = item.setdefault("metadata", {})
+        features = item.setdefault("capabilities", {}).setdefault("features", {})
+        metadata["validation"] = self._validation_summary(report)
+        source_value = str(metadata.get("source") or source or "")
+        if status == "verified" and "gateway" in source_value:
+            metadata["compatibility"] = "verified"
+            features["novel_task_supported"] = True
+        elif status == "failed":
+            metadata["compatibility"] = "unverified"
+            features["novel_task_supported"] = False
+        return item
+
+    @staticmethod
+    def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": str(report.get("status") or "unverified"),
+            "validated_at": str(report.get("validated_at") or ""),
+            "validator_version": str(report.get("validator_version") or ""),
+            "summary": str(report.get("summary") or ""),
+            "last_error": str(report.get("failure_reason") or ""),
+            "checks": report.get("checks") if isinstance(report.get("checks"), list) else [],
+            "evidence": report.get("evidence") if isinstance(report.get("evidence"), dict) else {},
         }
 
     def _unknown_capabilities(self, model_id: str | None = None) -> dict[str, Any]:

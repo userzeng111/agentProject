@@ -13,6 +13,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.api.routes import build_router
 from app.api.dynamic_routes import build_dynamic_router
 from app.application.task_service import TaskService
+from app.llm.model_compatibility import ModelCompatibilityService
 from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.novel_skills import NovelSkillService
@@ -136,7 +137,17 @@ init_logging()
 settings = get_settings()
 store = TaskLogStore(root_dir=settings.tasklog_root)
 engine = StoryEngine(settings)
-model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+model_compatibility_service = ModelCompatibilityService(
+    tasklog_root=settings.tasklog_root,
+    gateway_client=engine.gateway_client,
+    model_catalog_resolver=lambda: model_catalog.list_models(force_refresh=True),
+    model_catalog_invalidator=lambda: model_catalog.invalidate_cache(),
+)
+model_catalog = ModelCatalogService(
+    settings=settings,
+    gateway_client=engine.gateway_client,
+    compatibility_provider=model_compatibility_service,
+)
 rag_service = RagService(RagConfig.from_env())
 rag_rebuild_service = NovelCorpusRebuildService(RagConfig.from_env())
 style_profile_service = StyleProfileService()
@@ -217,6 +228,7 @@ app.include_router(
         novel_skill_service=novel_skill_service,
         style_profile_service=style_profile_service,
         settings=settings,
+        model_compatibility_service=model_compatibility_service,
     ),
     prefix="/api",
 )

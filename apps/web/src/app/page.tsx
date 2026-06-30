@@ -28,6 +28,7 @@ import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, newProjectHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -439,6 +440,7 @@ export default function Home() {
     error: "",
   });
   const [error, setError] = useState("");
+  const [validationErrorHref, setValidationErrorHref] = useState<string | null>(null);
   const [modelUpdating, setModelUpdating] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
@@ -453,6 +455,7 @@ export default function Home() {
       .then((response) => {
         setDashboard(response);
         setError("");
+        setValidationErrorHref(null);
       })
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : "读取首页聚合数据失败");
@@ -519,11 +522,14 @@ export default function Home() {
     void updateDefaultModel(modelId)
       .then(() => {
         // 更新成功后刷新 dashboard 和模型列表
+        setValidationErrorHref(null);
         fetchDashboard();
         fetchModels(false);
       })
       .catch((reason) => {
-        setError(`切换模型失败：${reason instanceof Error ? reason.message : "未知错误"}`);
+        const message = reason instanceof Error ? reason.message : "未知错误";
+        setError(`切换模型失败：${message}`);
+        setValidationErrorHref(getValidationLinkFromError(message, modelId));
       })
       .finally(() => setModelUpdating(false));
   };
@@ -560,7 +566,20 @@ export default function Home() {
           </Stack>
         </Stack>
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? (
+          <Alert
+            severity="error"
+            action={
+              validationErrorHref ? (
+                <Button component={Link} href={validationErrorHref} color="inherit" size="small">
+                  去 AI 对话验证
+                </Button>
+              ) : undefined
+            }
+          >
+            {error}
+          </Alert>
+        ) : null}
 
         {dashboard ? (
           <Grid container spacing={3}>
