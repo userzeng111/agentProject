@@ -75,6 +75,40 @@ test.describe("任务工作台状态分支", () => {
     expect(scrollWidth).toBeLessThanOrEqual(viewportWidth);
   });
 
+  test("暗色移动端工作流图谱不使用旧浅色节点", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("theme-mode", "dark");
+    });
+    await mockCommonApiRoutes(page);
+    const workspace = makeWorkspace("ready_for_batch", {
+      task_id: "task_dark_workflow_graph_mobile_fixture",
+    });
+    await mockTaskWorkspace(page, workspace);
+
+    await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+
+    const graphCard = page.getByTestId("workflow-overview-card");
+    await expect(graphCard).toBeVisible();
+    await expect(graphCard.locator(".react-flow").first()).toBeVisible();
+
+    await expect
+      .poll(async () => {
+        const nodeBackground = await graphCard
+          .locator(".react-flow__node")
+          .first()
+          .locator("> div")
+          .evaluate((node) => window.getComputedStyle(node).backgroundColor);
+        const channels = nodeBackground.match(/\d+(\.\d+)?/g)?.slice(0, 3).map(Number) ?? [];
+        return channels.length === 3 && !channels.every((value) => value >= 230);
+      })
+      .toBe(true);
+
+    const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(scrollWidth).toBeLessThanOrEqual(viewportWidth);
+  });
+
   test("移动端章节进度可以打开正文并通过可访问名称关闭", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockCommonApiRoutes(page);

@@ -22,6 +22,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
 import {
   AccountTree as WorkflowIcon,
   AutoAwesome as AgentIcon,
@@ -34,6 +35,7 @@ import type { WorkspaceResponse } from "@/lib/types";
 import { buildAgentDispatchGraph, buildWorkflowGraph } from "@/features/task-run/task-run-state.mjs";
 
 type GraphState = "done" | "active" | "pending" | "error";
+type ThemeMode = "light" | "dark";
 
 interface StatusNodeData extends Record<string, unknown> {
   label: string;
@@ -61,7 +63,40 @@ function stateLabel(state: GraphState) {
   return "待执行";
 }
 
-function stateStyles(state: GraphState) {
+function stateStyles(state: GraphState, mode: ThemeMode) {
+  if (mode === "dark") {
+    if (state === "done") {
+      return {
+        borderColor: "rgba(76, 175, 132, 0.72)",
+        backgroundColor: "rgba(15, 59, 45, 0.96)",
+        color: "success.light",
+        shadow: "0 10px 24px rgba(0, 0, 0, 0.34)",
+      };
+    }
+    if (state === "active") {
+      return {
+        borderColor: "rgba(115, 191, 150, 0.86)",
+        backgroundColor: "rgba(18, 69, 54, 0.98)",
+        color: "primary.light",
+        shadow: "0 12px 28px rgba(34, 197, 94, 0.18)",
+      };
+    }
+    if (state === "error") {
+      return {
+        borderColor: "rgba(244, 118, 102, 0.78)",
+        backgroundColor: "rgba(87, 34, 32, 0.96)",
+        color: "error.light",
+        shadow: "0 10px 24px rgba(0, 0, 0, 0.36)",
+      };
+    }
+    return {
+      borderColor: "rgba(148, 163, 184, 0.32)",
+      backgroundColor: "rgba(18, 25, 33, 0.94)",
+      color: "text.secondary",
+      shadow: "0 8px 20px rgba(0, 0, 0, 0.28)",
+    };
+  }
+
   if (state === "done") {
     return {
       borderColor: "rgba(46, 125, 91, 0.70)",
@@ -102,7 +137,8 @@ function stateIcon(state: GraphState) {
 }
 
 function StatusNode({ data }: NodeProps<Node<StatusNodeData>>) {
-  const styles = stateStyles(data.state);
+  const theme = useTheme();
+  const styles = stateStyles(data.state, theme.palette.mode);
   const isAgent = data.kind && data.kind !== "workflow";
 
   return (
@@ -166,34 +202,43 @@ const nodeTypes = {
   statusNode: StatusNode,
 };
 
-function edgeColor(state?: string) {
+function edgeColor(state: string | undefined, mode: ThemeMode) {
+  if (mode === "dark") {
+    if (state === "done") return "#73bf96";
+    if (state === "active") return "#8fd9ad";
+    if (state === "error") return "#f47666";
+    return "rgba(148, 163, 184, 0.42)";
+  }
   if (state === "done") return "#2e7d5b";
   if (state === "active") return "#276451";
   if (state === "error") return "#b44a3f";
   return "rgba(29, 42, 39, 0.28)";
 }
 
-function decorateEdges(edges: Edge[]) {
+function decorateEdges(edges: Edge[], mode: ThemeMode) {
+  const labelFill = mode === "dark" ? "#e8f5ee" : "#1d2a27";
+  const labelBgFill = mode === "dark" ? "#101821" : "#fffaf2";
   return edges.map((edge) => {
     const state = typeof edge.data?.state === "string" ? edge.data.state : "pending";
+    const color = edgeColor(state, mode);
     return {
       ...edge,
       markerEnd: {
         type: MarkerType.ArrowClosed,
-        color: edgeColor(state),
+        color,
       },
       style: {
-        stroke: edgeColor(state),
+        stroke: color,
         strokeWidth: state === "active" ? 3 : 2,
       },
       labelStyle: {
-        fill: "#1d2a27",
+        fill: labelFill,
         fontSize: 12,
         fontWeight: 600,
       },
       labelBgStyle: {
-        fill: "#fffaf2",
-        fillOpacity: 0.88,
+        fill: labelBgFill,
+        fillOpacity: mode === "dark" ? 0.92 : 0.88,
       },
     };
   });
@@ -203,13 +248,40 @@ function GraphCanvas({
   nodes,
   edges,
   height,
+  label,
 }: {
   nodes: Node<StatusNodeData>[];
   edges: Edge[];
   height: number;
+  label: string;
 }) {
+  const theme = useTheme();
+  const mode = theme.palette.mode;
+  const canvasStyles =
+    mode === "dark"
+      ? {
+          borderColor: "rgba(148, 163, 184, 0.22)",
+          backgroundColor: "rgba(2, 6, 23, 0.58)",
+          backgroundColorGrid: "rgba(148, 163, 184, 0.18)",
+          miniMapBg: "rgba(15, 23, 42, 0.94)",
+          miniMapMask: "rgba(2, 6, 23, 0.58)",
+          miniMapNode: "rgba(34, 197, 94, 0.36)",
+          miniMapStroke: "rgba(203, 213, 225, 0.72)",
+        }
+      : {
+          borderColor: "rgba(29,42,39,0.10)",
+          backgroundColor: "rgba(255, 250, 242, 0.52)",
+          backgroundColorGrid: "rgba(29,42,39,0.10)",
+          miniMapBg: "rgba(255,250,242,0.90)",
+          miniMapMask: "rgba(255,250,242,0.36)",
+          miniMapNode: "rgba(46, 125, 91, 0.30)",
+          miniMapStroke: "rgba(29,42,39,0.46)",
+        };
+
   return (
     <Box
+      role="region"
+      aria-label={label}
       sx={{
         height,
         minHeight: height,
@@ -217,17 +289,19 @@ function GraphCanvas({
         maxWidth: "100%",
         minWidth: 0,
         border: "1px solid",
-        borderColor: "rgba(29,42,39,0.10)",
+        borderColor: canvasStyles.borderColor,
         borderRadius: 2,
         overflow: "hidden",
         contain: "layout paint",
-        backgroundColor: "rgba(255, 250, 242, 0.52)",
+        backgroundColor: canvasStyles.backgroundColor,
       }}
     >
       <ReactFlow
         nodes={nodes}
-        edges={decorateEdges(edges)}
+        edges={decorateEdges(edges, mode)}
         nodeTypes={nodeTypes}
+        colorMode={mode}
+        aria-label={label}
         fitView
         fitViewOptions={{ padding: 0.1 }}
         minZoom={0.18}
@@ -238,8 +312,16 @@ function GraphCanvas({
         panOnScroll
         preventScrolling={false}
       >
-        <Background gap={20} color="rgba(29,42,39,0.10)" />
-        <MiniMap pannable zoomable nodeStrokeWidth={2} style={{ backgroundColor: "rgba(255,250,242,0.90)" }} />
+        <Background gap={20} color={canvasStyles.backgroundColorGrid} />
+        <MiniMap
+          pannable
+          zoomable
+          nodeStrokeWidth={2}
+          bgColor={canvasStyles.miniMapBg}
+          maskColor={canvasStyles.miniMapMask}
+          nodeColor={canvasStyles.miniMapNode}
+          nodeStrokeColor={canvasStyles.miniMapStroke}
+        />
         <Controls showInteractive={false} />
       </ReactFlow>
     </Box>
@@ -257,7 +339,7 @@ export default function WorkflowOverviewCard({
   const hasAgentGraph = agentGraph.nodes.length > 0;
 
   return (
-    <Card className="glass-card">
+    <Card className="glass-card" data-testid="workflow-overview-card">
       <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
         <Stack spacing={2.25}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }}>
@@ -283,6 +365,7 @@ export default function WorkflowOverviewCard({
             nodes={workflowGraph.nodes as Node<StatusNodeData>[]}
             edges={workflowGraph.edges as Edge[]}
             height={360}
+            label="工作流图谱画布"
           />
 
           <Divider />
@@ -314,15 +397,18 @@ export default function WorkflowOverviewCard({
               nodes={agentGraph.nodes as Node<StatusNodeData>[]}
               edges={agentGraph.edges as Edge[]}
               height={340}
+              label="审核 Agent 派发图画布"
             />
           ) : (
             <Box
               sx={{
                 p: 2,
                 border: "1px dashed",
-                borderColor: "rgba(29,42,39,0.18)",
+                borderColor: (theme) =>
+                  theme.palette.mode === "dark" ? "rgba(148, 163, 184, 0.28)" : "rgba(29,42,39,0.18)",
                 borderRadius: 2,
-                backgroundColor: "rgba(255,250,242,0.50)",
+                backgroundColor: (theme) =>
+                  theme.palette.mode === "dark" ? "rgba(15, 23, 42, 0.64)" : "rgba(255,250,242,0.50)",
               }}
             >
               <Typography variant="body2" color="text.secondary">
