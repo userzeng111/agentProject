@@ -36,19 +36,35 @@ export function ProjectShell({
   return (
     <Container maxWidth={maxWidth} sx={{ py: 3, px: { xs: 2, sm: 3 }, minWidth: 0 }}>
       <Stack data-testid="project-shell" spacing={3} className="page-fade-in" sx={{ minWidth: 0 }}>
-        <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
+        <Breadcrumbs
+          separator={<NavigateNextIcon fontSize="small" />}
+          sx={{
+            minWidth: 0,
+            maxWidth: "100%",
+            "& .MuiBreadcrumbs-ol": { minWidth: 0, flexWrap: "wrap" },
+            "& .MuiBreadcrumbs-li": { minWidth: 0, maxWidth: "100%" },
+          }}
+        >
           {breadcrumbs.map((item, index) => {
             if (item.href) {
               return (
-                <Link key={`${item.label}-${index}`} href={item.href} style={{ color: "inherit", textDecoration: "none" }}>
-                  <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
+                <Link
+                  key={`${item.label}-${index}`}
+                  href={item.href}
+                  style={{ color: "inherit", display: "inline-block", maxWidth: "100%", textDecoration: "none" }}
+                >
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ overflowWrap: "anywhere", "&:hover": { color: "primary.main" } }}
+                  >
                     {item.label}
                   </Typography>
                 </Link>
               );
             }
             return (
-              <Typography key={`${item.label}-${index}`} variant="body2">
+              <Typography key={`${item.label}-${index}`} variant="body2" sx={{ overflowWrap: "anywhere" }}>
                 {item.label}
               </Typography>
             );

@@ -9,6 +9,7 @@ import {
   buildWorkflowOverview,
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
+  resolveWorkspaceStageNav,
 } from "./task-run-state.mjs";
 
 test("buildChapterProgress 用 novel_progress 兜底显示已完成章节", () => {
@@ -67,6 +68,30 @@ test("buildChapterProgress 在等待验证时仍保留已完成章节", () => {
   assert.equal(items[0].title, "第一章");
   assert.equal(items[0].status, "已完成");
   assert.equal(items[0].progress, 100);
+});
+
+test("resolveWorkspaceStageNav 把工作台状态映射到项目阶段导航", () => {
+  const nav = resolveWorkspaceStageNav("created");
+
+  assert.equal(nav.stages.length, 5);
+  assert.deepEqual(
+    nav.stages.map((stage) => stage.label),
+    ["创建", "规划", "审核", "创作", "完成"],
+  );
+
+  for (const status of ["created", "sources_ingested"]) {
+    assert.equal(resolveWorkspaceStageNav(status).activeStep, 0, status);
+  }
+  for (const status of ["planning", "waiting_outline_review"]) {
+    assert.equal(resolveWorkspaceStageNav(status).activeStep, 1, status);
+  }
+  for (const status of ["waiting_chapter_review", "waiting_verification_review", "waiting_manual_action"]) {
+    assert.equal(resolveWorkspaceStageNav(status).activeStep, 2, status);
+  }
+  for (const status of ["ready_for_batch", "drafting", "assembling"]) {
+    assert.equal(resolveWorkspaceStageNav(status).activeStep, 3, status);
+  }
+  assert.equal(resolveWorkspaceStageNav("completed").activeStep, 4);
 });
 
 test("buildThinkingGroups 最新章节思考排在前面并标记活跃", () => {

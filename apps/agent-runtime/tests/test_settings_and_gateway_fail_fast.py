@@ -8,6 +8,7 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.application.task_service import TaskService
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
@@ -164,6 +165,21 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
 
         self.assertEqual(protocol, "openai")
         self.assertTrue(any("读取动态模型协议覆盖失败" in message for message in logs.output))
+
+    def test_prompt_cache_settings_failure_logs_warning_and_disables_prompt_cache(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="claude-sonnet-4-6",
+            default_protocol="anthropic",
+        )
+
+        with patch("app.settings.config.get_settings", side_effect=RuntimeError("settings unavailable")):
+            with self.assertLogs("app.llm.gateway_client", level="WARNING") as logs:
+                kwargs = client._provider_prompt_cache_kwargs(AnthropicAdapter())
+
+        self.assertEqual(kwargs, {})
+        self.assertTrue(any("读取 provider prompt cache 设置失败" in message for message in logs.output))
 
     def test_settings_accept_anthropic_key_alias_without_forcing_protocol(self) -> None:
         settings = Settings(

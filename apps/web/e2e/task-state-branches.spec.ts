@@ -41,6 +41,9 @@ test.describe("任务工作台状态分支", () => {
       await mockTaskWorkspace(page, workspace);
       await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
 
+      await expect(page.getByTestId("project-shell")).toBeVisible();
+      await expect(page.getByTestId("stage-nav")).toBeVisible();
+      await expect(page.locator('[data-stage-state="current"]')).toBeVisible();
       await expect(page.getByText(item.label, { exact: true }).first()).toBeVisible();
       const debugTab = page.getByRole("tab", { name: /调试/ });
       await expect(debugTab).toBeVisible();
@@ -50,6 +53,27 @@ test.describe("任务工作台状态分支", () => {
       await expectNoSensitiveText(page);
     });
   }
+
+  test("移动端工作台不产生横向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockCommonApiRoutes(page);
+    const workspace = makeWorkspace("ready_for_batch", {
+      task_id: "task_mobile_workspace_shell_fixture_with_a_very_long_unbroken_identifier_20260630",
+      meta: {
+        title: "",
+      },
+    });
+    await mockTaskWorkspace(page, workspace);
+
+    await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav")).toBeVisible();
+    await expect(page.getByRole("button", { name: "继续创作" })).toBeVisible();
+    const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(scrollWidth).toBeLessThanOrEqual(viewportWidth);
+  });
 
   test("调试页状态不一致分支优先显示", async ({ page }) => {
     await mockCommonApiRoutes(page);

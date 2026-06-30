@@ -198,7 +198,8 @@ class OpenAICompatibleGatewayClient:
             return {}
         try:
             settings = get_settings()
-        except Exception:
+        except Exception as exc:
+            logger.warning("读取 provider prompt cache 设置失败: %s", exc)
             return {}
         if not getattr(settings, "provider_prompt_cache", True):
             return {}

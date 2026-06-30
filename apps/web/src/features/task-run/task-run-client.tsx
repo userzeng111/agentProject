@@ -7,7 +7,6 @@ import {
   Alert,
   Avatar,
   Box,
-  Breadcrumbs,
   Button,
   Card,
   CardContent,
@@ -36,7 +35,6 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  NavigateNext as NavigateNextIcon,
   Close as CloseIcon,
   Psychology as ThinkIcon,
   ExpandMore as ExpandIcon,
@@ -57,9 +55,12 @@ import {
   buildThinkingGroups,
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
+  resolveWorkspaceStageNav,
 } from "@/features/task-run/task-run-state.mjs";
 import DebugPanel from "@/features/task-run/debug-panel";
 import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
+import { ProjectShell } from "@/components/project-shell";
+import { StageNav } from "@/components/stage-nav";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { resultHref, reviewHref } from "@/lib/task-routes";
@@ -926,22 +927,27 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     workspace.meta.error_message || "",
     validationErrorModelId,
   );
+  const workspaceStageNav = resolveWorkspaceStageNav(workspace.meta.status);
+  const workspaceTitle = workspace.meta.title || workspace.meta.task_id || taskId || "未命名任务";
+  const workspaceCreativeModel = resolveWorkspaceTaskModelId(workspace) || "未设置";
+  const workspaceReviewModel = formatWorkspaceReviewModel(workspace);
 
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-    <Stack spacing={3} className="page-fade-in">
-      {/* 面包屑 + 状态 */}
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-        <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-          <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              首页
-            </Typography>
-          </Link>
-          <Typography variant="body2">{workspace.meta.title || taskId}</Typography>
-        </Breadcrumbs>
-        <Chip color={status.color} label={status.label} />
-      </Stack>
+    <ProjectShell
+      breadcrumbs={[
+        { label: "首页", href: "/" },
+        { label: workspaceTitle },
+      ]}
+      title={workspaceTitle}
+      metaItems={[
+        { label: `任务 ID：${workspace.meta.task_id}`, variant: "outlined" },
+        { label: `创作模型：${workspaceCreativeModel}`, variant: "outlined" },
+        { label: `审核模型：${workspaceReviewModel}`, variant: "outlined" },
+      ]}
+      actions={<Chip color={status.color} label={status.label} />}
+      stageNav={<StageNav stages={workspaceStageNav.stages} activeStep={workspaceStageNav.activeStep} />}
+    >
+      <Stack spacing={3} sx={{ minWidth: 0 }}>
 
       {error ? <ValidationErrorAlert message={error} modelId={validationErrorModelId} /> : null}
       {!error && workspace.state_reconciled ? (
@@ -1809,7 +1815,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         onClose={() => setSnackbarOpen(false)}
         message={snackbarMsg}
       />
-    </Stack>
-    </Container>
+      </Stack>
+    </ProjectShell>
   );
 }

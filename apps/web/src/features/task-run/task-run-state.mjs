@@ -48,6 +48,33 @@ function normalizeTerminalStatus(value = "") {
   return ["completed", "cancelled", "failed"].includes(normalized) ? normalized : "";
 }
 
+export function resolveWorkspaceStageNav(status = "") {
+  const stages = [
+    { label: "创建", description: "素材与任务创建" },
+    { label: "规划", description: "大纲与章节计划" },
+    { label: "审核", description: "人工确认与修订" },
+    { label: "创作", description: "正文生成与整理" },
+    { label: "完成", description: "结果归档" },
+  ];
+  const activeStepByStatus = {
+    created: 0,
+    sources_ingested: 0,
+    planning: 1,
+    waiting_outline_review: 1,
+    waiting_chapter_review: 2,
+    waiting_verification_review: 2,
+    waiting_manual_action: 2,
+    ready_for_batch: 3,
+    drafting: 3,
+    assembling: 3,
+    completed: 4,
+    failed: 2,
+    cancelled: 2,
+  };
+
+  return { stages, activeStep: activeStepByStatus[status] ?? 0 };
+}
+
 export function resolveTerminalEventStreamState(statusOrEventType = "") {
   const status = normalizeTerminalStatus(statusOrEventType);
   if (status === "completed") return "任务已完成，事件流已关闭";
