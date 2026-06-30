@@ -13,16 +13,11 @@ import {
   Chip,
   Collapse,
   Container,
-  Dialog,
-  DialogContent,
-  DialogTitle,
   Divider,
   IconButton,
-  LinearProgress,
   CircularProgress,
   List,
   ListItem,
-  ListItemButton,
   ListItemText,
   MenuItem,
   Select,
@@ -35,7 +30,6 @@ import {
   Typography,
 } from "@mui/material";
 import {
-  Close as CloseIcon,
   Psychology as ThinkIcon,
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
@@ -44,6 +38,7 @@ import {
 } from "@mui/icons-material";
 import { cancelTask, continueTask, deleteTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
 import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
+import ChapterProgressPanel from "@/features/task-run/chapter-progress-panel";
 import {
   derivePrimaryRecoveryAction,
   filterRecoveryModels,
@@ -1535,56 +1530,16 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           )}
 
           {/* Tab 1: 章节进度 */}
-          {activeTab === 1 && (
-            <Collapse in={tab1Expanded}>
-              <List dense>
-                {chapterProgress.length ? (
-                  chapterProgress.map((chapter) => (
-                    <div key={chapter.number}>
-                      <ListItem disableGutters alignItems="flex-start">
-                        <ListItemButton
-                          onClick={() => void handleChapterClick(chapter.number, chapter.title)}
-                          sx={{ py: 1 }}
-                        >
-                          <ListItemText
-                            primary={
-                              <Stack direction="row" spacing={1} alignItems="center">
-                                <Typography>{`第 ${chapter.number} 章 · ${chapter.title}`}</Typography>
-                                <Chip
-                                  label={chapter.status}
-                                  size="small"
-                                  color={chapter.status === "已完成" ? "success" : "default"}
-                                />
-                              </Stack>
-                            }
-                            secondary={
-                              [
-                                formatEventTime(chapter.updatedAt),
-                                chapter.summary || "",
-                              ]
-                                .filter(Boolean)
-                                .join(" · ")
-                            }
-                            secondaryTypographyProps={{ sx: { whiteSpace: "pre-line" } }}
-                          />
-                        </ListItemButton>
-                      </ListItem>
-                      <LinearProgress
-                        variant="determinate"
-                        value={chapter.progress}
-                        sx={{ mb: 1.5, height: 8, borderRadius: 999 }}
-                      />
-                      <Divider component="li" />
-                    </div>
-                  ))
-                ) : (
-                  <ListItem disableGutters>
-                    <ListItemText primary="当前还没有章节级进度事件" />
-                  </ListItem>
-                )}
-              </List>
-            </Collapse>
-          )}
+          <ChapterProgressPanel
+            active={activeTab === 1}
+            chapters={chapterProgress}
+            expanded={tab1Expanded}
+            selectedChapter={selectedChapter}
+            dialogOpen={chapterDialogOpen}
+            formatEventTime={formatEventTime}
+            onSelectChapter={(chapter) => void handleChapterClick(chapter.number, chapter.title)}
+            onCloseDialog={() => setChapterDialogOpen(false)}
+          />
 
           {/* Tab 2: Supervisor */}
           {activeTab === 2 && (
@@ -1768,47 +1723,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           })
         }
       />
-      {/* 章节正文弹窗 */}
-      <Dialog
-        open={chapterDialogOpen}
-        onClose={() => setChapterDialogOpen(false)}
-        maxWidth="md"
-        fullWidth
-      >
-        {selectedChapter && (
-          <>
-            <DialogTitle>
-              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="h5">
-                  第 {selectedChapter.number} 章：{selectedChapter.title}
-                </Typography>
-                <IconButton onClick={() => setChapterDialogOpen(false)}>
-                  <CloseIcon />
-                </IconButton>
-              </Stack>
-              {selectedChapter.summary && (
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                  {selectedChapter.summary}
-                </Typography>
-              )}
-            </DialogTitle>
-            <DialogContent dividers>
-              <Typography
-                component="pre"
-                sx={{
-                  fontFamily: "inherit",
-                  fontSize: 15,
-                  lineHeight: 1.8,
-                  whiteSpace: "pre-wrap",
-                  wordBreak: "break-word",
-                }}
-              >
-                {selectedChapter.content}
-              </Typography>
-            </DialogContent>
-          </>
-        )}
-      </Dialog>
       <Snackbar
         open={snackbarOpen}
         autoHideDuration={3000}

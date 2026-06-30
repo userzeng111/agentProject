@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import time
 import unittest
@@ -150,6 +151,69 @@ class ApiContextIntegrationTests(unittest.TestCase):
         delete_response = client.request("DELETE", "/api/model-validation", json={"model_id": "K2.7"})
         self.assertEqual(delete_response.status_code, 200)
         self.assertEqual(delete_response.json()["status"], "unverified")
+
+    def test_task_event_stream_warns_once_when_terminal_status_check_fails(self) -> None:
+        class FailingStore:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get(self, task_id: str):
+                self.calls += 1
+                raise RuntimeError(f"store unavailable for {task_id}")
+
+        class OneShotQueue:
+            def __init__(self, payload: dict) -> None:
+                self.payload = payload
+                self.calls = 0
+
+            async def get(self) -> dict:
+                self.calls += 1
+                if self.calls == 1:
+                    raise asyncio.TimeoutError
+                if self.calls > 2:
+                    raise RuntimeError("测试队列只能读取两次")
+                return self.payload
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = FailingStore()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> OneShotQueue:
+                return OneShotQueue(
+                    {
+                        "task_id": task_id,
+                        "event_type": "task.completed",
+                    }
+                )
+
+            def unsubscribe_task_events(self, task_id: str, queue: OneShotQueue) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_terminal_check_warning_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        with self.assertLogs("app.api.routes", level="WARNING") as logs:
+            response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn(": keep-alive", response.text)
+        self.assertIn("event: task.event", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertIn("task.completed", response.text)
+        self.assertEqual(service.store.calls, 2)
+        self.assertTrue(service.unsubscribed)
+        self.assertEqual(len(logs.output), 1)
+        log_output = logs.output[0]
+        self.assertIn("任务事件流终态检查失败", log_output)
+        self.assertIn(task_id, log_output)
 
     def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
         response = self.client.post(

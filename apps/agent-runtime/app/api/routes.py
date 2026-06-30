@@ -426,6 +426,7 @@ def build_router(
             raise _handle_error(exc) from exc
 
         async def event_stream():
+            terminal_check_warning_logged = False
             try:
                 yield _sse_payload("snapshot", snapshot)
                 while True:
@@ -439,7 +440,9 @@ def build_router(
                             )
                             break
                     except Exception:
-                        pass
+                        if not terminal_check_warning_logged:
+                            logger.warning("任务事件流终态检查失败 task_id=%s", task_id, exc_info=True)
+                            terminal_check_warning_logged = True
                     try:
                         payload = await asyncio.wait_for(queue.get(), timeout=15)
                     except asyncio.TimeoutError:

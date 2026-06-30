@@ -75,6 +75,62 @@ test.describe("任务工作台状态分支", () => {
     expect(scrollWidth).toBeLessThanOrEqual(viewportWidth);
   });
 
+  test("移动端章节进度可以打开正文并通过可访问名称关闭", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockCommonApiRoutes(page);
+    const taskId = "task_chapter_progress_mobile_fixture";
+    const chapterTitle =
+      "第一章-极长极长极长极长极长极长极长极长极长极长极长极长的无空格章节标题用于移动端断词检查";
+    const workspace = makeWorkspace("waiting_chapter_review", {
+      task_id: taskId,
+      novel_progress: {
+        target_chapter_count: 8,
+        planned_chapter_count: 8,
+        completed_chapter_count: 1,
+        next_chapter_number: 2,
+        remaining_chapter_count: 7,
+        default_batch_size: 3,
+      },
+      recent_events: [
+        {
+          event_id: "event_chapter_saved_mobile",
+          event_type: "chapter.saved",
+          stage: "drafting",
+          unit_id: "chapter-01",
+          message: "第一章已保存。",
+          created_at: new Date("2026-06-24T00:00:00.000Z").toISOString(),
+          payload: {
+            chapter_number: 1,
+            chapter_title: chapterTitle,
+            chapter_summary: "第一章摘要",
+          },
+        },
+      ],
+    });
+    await mockTaskWorkspace(page, workspace, [
+      {
+        number: 1,
+        title: chapterTitle,
+        summary: "第一章摘要",
+        content: "第一章正文\n\n这里是 Playwright 验证用的章节正文。",
+      },
+    ]);
+
+    await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
+    await page.getByRole("tab", { name: /章节进度/ }).click();
+
+    await expect(page.getByTestId("chapter-progress-panel")).toBeVisible();
+    await page.getByRole("button", { name: /查看第 1 章正文/ }).click();
+    await expect(page.getByRole("dialog", { name: /第 1 章/ })).toBeVisible();
+    await expect(page.getByText("第一章正文")).toBeVisible();
+    await page.getByRole("button", { name: "关闭章节正文" }).click();
+    await expect(page.getByRole("dialog")).toBeHidden();
+
+    const viewportWidth = await page.evaluate(() => document.documentElement.clientWidth);
+    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(scrollWidth).toBeLessThanOrEqual(viewportWidth);
+  });
+
   test("调试页状态不一致分支优先显示", async ({ page }) => {
     await mockCommonApiRoutes(page);
     const workspace = makeWorkspace("completed", {

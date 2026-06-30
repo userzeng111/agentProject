@@ -213,10 +213,14 @@ function GraphCanvas({
       sx={{
         height,
         minHeight: height,
+        width: "100%",
+        maxWidth: "100%",
+        minWidth: 0,
         border: "1px solid",
         borderColor: "rgba(29,42,39,0.10)",
         borderRadius: 2,
         overflow: "hidden",
+        contain: "layout paint",
         backgroundColor: "rgba(255, 250, 242, 0.52)",
       }}
     >
@@ -225,8 +229,8 @@ function GraphCanvas({
         edges={decorateEdges(edges)}
         nodeTypes={nodeTypes}
         fitView
-        fitViewOptions={{ padding: 0.18 }}
-        minZoom={0.35}
+        fitViewOptions={{ padding: 0.1 }}
+        minZoom={0.18}
         maxZoom={1.4}
         nodesDraggable={false}
         nodesConnectable={false}

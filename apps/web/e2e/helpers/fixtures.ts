@@ -329,7 +329,11 @@ export async function mockCommonApiRoutes(page: Page) {
   });
 }
 
-export async function mockTaskWorkspace(page: Page, workspace = makeWorkspace()) {
+export async function mockTaskWorkspace(
+  page: Page,
+  workspace = makeWorkspace(),
+  chapters: Array<{ number: number; title: string; summary: string; content: string }> = [],
+) {
   const taskId = workspace.meta.task_id;
   const fulfillEventStream = async (route: Route) => {
     await route.fulfill({
@@ -352,7 +356,7 @@ export async function mockTaskWorkspace(page: Page, workspace = makeWorkspace())
     await route.fulfill({ json: workspace.supervisor_plan });
   });
   await page.route(`**/api/tasks/${taskId}/chapters**`, async (route) => {
-    await route.fulfill({ json: { task_id: taskId, chapters: [] } });
+    await route.fulfill({ json: { task_id: taskId, chapters } });
   });
   await page.route(`**/api/tasks/${taskId}/artifacts**`, async (route) => {
     await route.fulfill({ json: { task_id: taskId, artifacts: [] } });
