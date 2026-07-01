@@ -1,6 +1,17 @@
 import { expect, test } from "@playwright/test";
 import { mockCommonApiRoutes } from "./helpers/fixtures";
 
+async function expectNoHorizontalOverflow(page: import("@playwright/test").Page) {
+  await expect
+    .poll(async () =>
+      page.evaluate(() =>
+        document.documentElement.scrollWidth <= window.innerWidth &&
+        document.body.scrollWidth <= window.innerWidth,
+      ),
+    )
+    .toBe(true);
+}
+
 test.describe("聊天与设置页面", () => {
   test("聊天页空输入保持禁用并展示流式错误", async ({ page }) => {
     await mockCommonApiRoutes(page);
@@ -49,6 +60,96 @@ test.describe("聊天与设置页面", () => {
     await expect(page.getByText("你好").first()).toBeVisible();
     await expect(page.getByText("自动化回复")).toBeVisible();
     await expect(page.getByText(/tokens/)).toBeVisible();
+  });
+
+  test("聊天页移动端长文本不溢出且思考过程支持键盘展开", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await mockCommonApiRoutes(page);
+    const longToken = "LONG_CHAT_TOKEN_".repeat(24);
+    await page.route("**/api/chat/stream", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: [
+          `event: chat.chunk\ndata: ${JSON.stringify({ reasoning_content: `推理${longToken}` })}\n\n`,
+          `event: chat.chunk\ndata: ${JSON.stringify({ content: `回复${longToken}`, usage: { total_tokens: 42 } })}\n\n`,
+          'event: chat.done\ndata: {"finish_reason":"stop"}\n\n',
+        ].join(""),
+      });
+    });
+
+    await page.goto("/chat", { waitUntil: "commit" });
+    await page.getByRole("textbox", { name: "输入消息，按回车发送..." }).fill(`用户${longToken}`);
+    await page.getByRole("button", { name: "发送消息" }).click();
+
+    await expect(page.getByText(`回复${longToken}`)).toBeVisible();
+    const thinkingButton = page.getByRole("button", { name: /思考过程|正在思考/ });
+    await expect(thinkingButton).toBeVisible();
+    await expect(thinkingButton).toHaveAttribute("aria-expanded", "false");
+
+    await thinkingButton.focus();
+    await page.keyboard.press("Enter");
+    await expect(thinkingButton).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByText(`推理${longToken}`)).toBeVisible();
+    await page.keyboard.press("Space");
+    await expect(thinkingButton).toHaveAttribute("aria-expanded", "false");
+    await expectNoHorizontalOverflow(page);
+  });
+
+  test("聊天页 320px 移动端标题栏不产生横向溢出", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 740 });
+    const longModelId = "gpt-5.4-chat-default-model-with-an-intentionally-long-unbroken-identifier-20260701";
+    await page.route("**/api/models**", async (route) => {
+      await route.fulfill({
+        json: {
+          data: [
+            {
+              id: longModelId,
+              display_name: "GPT 5.4 Chat Mobile Overflow Regression Fixture With Long Name",
+              provider: "gateway-provider-with-an-intentionally-long-unbroken-name",
+              metadata: { source: "gateway:list_models" },
+              capabilities: {
+                features: ["novel"],
+                context_window: { max_input_tokens: 8000, max_output_tokens: 4000 },
+                cache: { runtime_context_cache: true, prompt_cache: true, response_cache: true },
+                compression: { supported: true, strategy: "summary" },
+              },
+            },
+          ],
+          meta: { default_model: longModelId, cached: true },
+        },
+      });
+    });
+    await page.route("**/api/settings/rag**", async (route) => {
+      await route.fulfill({
+        json: {
+          available: true,
+          library_dir: "/tmp/rag",
+          faiss_index_path: "/tmp/rag/index.faiss",
+          sqlite_path: "/tmp/rag/meta.sqlite",
+          sources: ["fixture"],
+          last_result: null,
+        },
+      });
+    });
+    await page.route("**/api/model-validation**", async (route) => {
+      await route.fulfill({ json: { model_id: longModelId, status: "unverified" } });
+    });
+
+    await page.goto("/chat", { waitUntil: "commit" });
+
+    await expect(page.getByRole("button", { name: "打开会话列表" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "验证" })).toBeVisible();
+    await expect(page.getByLabel("聊天模型")).toBeVisible();
+    await expect(page.getByText(`默认：${longModelId}`)).toBeVisible();
+    for (const name of ["首页", "AI 对话", "创建任务", "归档", "设置"]) {
+      const box = await page.getByRole("link", { name }).boundingBox();
+      expect(box, `${name} 顶部导航入口应可见`).not.toBeNull();
+      expect(box!.width, `${name} 顶部导航触控宽度应不小于 44px`).toBeGreaterThanOrEqual(44);
+      expect(box!.x, `${name} 顶部导航不应向左越界`).toBeGreaterThanOrEqual(0);
+      expect(box!.x + box!.width, `${name} 顶部导航不应向右越界`).toBeLessThanOrEqual(320);
+    }
+    await expectNoHorizontalOverflow(page);
   });
 
   test("设置页展示 RAG 状态并允许取消重建确认", async ({ page }) => {

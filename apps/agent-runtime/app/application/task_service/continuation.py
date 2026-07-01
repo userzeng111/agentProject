@@ -385,6 +385,31 @@ class TaskServiceContinuationMixin:
                 pass
             raise
 
+    def _rebuild_chapter_index_from_files(self, task_id: str, chapters_dir: Path) -> list[dict[str, Any]]:
+        """从章节 JSON 文件重建轻量索引。"""
+        rebuilt_by_number: dict[int, dict[str, Any]] = {}
+        for chapter_file in sorted(chapters_dir.glob("*.json")):
+            if chapter_file.name == "index.json":
+                continue
+            try:
+                chapter_data = json.loads(chapter_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError):
+                logger.warning("读取章节文件失败 task_id=%s path=%s", task_id, chapter_file, exc_info=True)
+                continue
+            if not isinstance(chapter_data, dict):
+                logger.warning("章节文件格式不正确 task_id=%s path=%s", task_id, chapter_file)
+                continue
+            number = chapter_data.get("number")
+            if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+                logger.warning("章节文件格式不正确 task_id=%s path=%s", task_id, chapter_file)
+                continue
+            rebuilt_by_number[number] = {
+                "number": number,
+                "title": str(chapter_data.get("title") or f"第{number}章"),
+                "summary": str(chapter_data.get("summary") or ""),
+            }
+        return sorted(rebuilt_by_number.values(), key=lambda item: item["number"])
+
     def _write_chapter_file(
         self,
         task_id: str,
@@ -414,16 +439,34 @@ class TaskServiceContinuationMixin:
         with lock:
             index_file = chapters_dir / "index.json"
             index_data: list[dict[str, Any]] = []
+            rebuild_from_files = False
             if index_file.exists():
                 try:
-                    index_data = json.loads(index_file.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, ValueError):
-                    index_data = []
+                    raw_index_data = json.loads(index_file.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError, ValueError):
+                    logger.warning("读取章节索引失败 task_id=%s path=%s", task_id, index_file, exc_info=True)
+                    raw_index_data = []
+                    rebuild_from_files = True
+                if isinstance(raw_index_data, list):
+                    for item in raw_index_data:
+                        if not isinstance(item, dict):
+                            logger.warning("章节索引条目格式不正确 task_id=%s path=%s", task_id, index_file)
+                            continue
+                        num = item.get("number")
+                        if not isinstance(num, int) or isinstance(num, bool) or num <= 0:
+                            logger.warning("章节索引条目格式不正确 task_id=%s path=%s", task_id, index_file)
+                            continue
+                        index_data.append(item)
+                else:
+                    logger.warning("章节索引格式不正确 task_id=%s path=%s", task_id, index_file)
+                    rebuild_from_files = True
+            if rebuild_from_files:
+                index_data = self._rebuild_chapter_index_from_files(task_id, chapters_dir)
             # 去重后追加
-            existing = {item.get("number") for item in index_data}
-            if chapter_number not in existing:
-                index_data.append({"number": chapter_number, "title": title, "summary": summary})
-                index_data.sort(key=lambda x: x.get("number") or 0)
+            if isinstance(chapter_number, int) and not isinstance(chapter_number, bool) and chapter_number > 0:
+                by_number = {item["number"]: item for item in index_data}
+                by_number[chapter_number] = {"number": chapter_number, "title": title, "summary": summary}
+                index_data = sorted(by_number.values(), key=lambda item: item["number"])
             self._atomic_write_text(index_file, json.dumps(index_data, ensure_ascii=False, indent=2))
 
     def _extract_chapter_content(self, conversation_history: list[dict[str, Any]]) -> str | None:

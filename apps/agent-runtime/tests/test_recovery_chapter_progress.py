@@ -339,6 +339,151 @@ class RecoveryChapterProgressTests(unittest.TestCase):
         self.assertIn("读取章节文件失败", logs)
         self.assertIn(task.id, logs)
 
+    def test_write_chapter_file_warns_and_rebuilds_when_index_json_is_corrupt(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇玄幻小说",
+                model_id="gpt-5.4",
+            )
+        )
+        chapters_dir = store._task_dir(task) / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "index.json").write_text("{ broken json", encoding="utf-8")
+
+        with self.assertLogs("app.application.task_service.continuation", level="WARNING") as captured:
+            service._write_chapter_file(task.id, 1, "第一章", "索引重建摘要。", "第一章正文。")
+
+        logs = "\n".join(captured.output)
+        self.assertIn("读取章节索引失败", logs)
+        self.assertIn(task.id, logs)
+        self.assertTrue((chapters_dir / "01.md").exists())
+        self.assertTrue((chapters_dir / "01.json").exists())
+        index_data = json.loads((chapters_dir / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index_data, [{"number": 1, "title": "第一章", "summary": "索引重建摘要。"}])
+        chapters = service.get_current_chapters(task.id)
+        self.assertEqual(chapters[0]["content"], "第一章正文。")
+
+    def test_write_chapter_file_rebuilds_corrupt_index_from_existing_chapter_files(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇玄幻小说",
+                model_id="gpt-5.4",
+            )
+        )
+        chapters_dir = store._task_dir(task) / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "index.json").write_text("{ broken json", encoding="utf-8")
+        for number in (1, 2):
+            (chapters_dir / f"{number:02d}.json").write_text(
+                json.dumps(
+                    {
+                        "number": number,
+                        "title": f"第{number}章",
+                        "summary": f"第{number}章已有摘要。",
+                        "content": f"第{number}章已有正文。",
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+        with self.assertLogs("app.application.task_service.continuation", level="WARNING") as captured:
+            service._write_chapter_file(task.id, 3, "第三章", "第三章新增摘要。", "第三章新增正文。")
+
+        logs = "\n".join(captured.output)
+        self.assertIn("读取章节索引失败", logs)
+        self.assertIn(task.id, logs)
+        index_data = json.loads((chapters_dir / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            index_data,
+            [
+                {"number": 1, "title": "第1章", "summary": "第1章已有摘要。"},
+                {"number": 2, "title": "第2章", "summary": "第2章已有摘要。"},
+                {"number": 3, "title": "第三章", "summary": "第三章新增摘要。"},
+            ],
+        )
+        chapters = service.get_current_chapters(task.id)
+        self.assertEqual([item["number"] for item in chapters], [1, 2, 3])
+        self.assertEqual(chapters[0]["content"], "第1章已有正文。")
+        self.assertEqual(chapters[2]["content"], "第三章新增正文。")
+
+    def test_write_chapter_file_warns_and_rebuilds_when_index_json_has_wrong_shape(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇玄幻小说",
+                model_id="gpt-5.4",
+            )
+        )
+        chapters_dir = store._task_dir(task) / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        (chapters_dir / "index.json").write_text(
+            json.dumps({"number": 1, "title": "错误结构"}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        with self.assertLogs("app.application.task_service.continuation", level="WARNING") as captured:
+            service._write_chapter_file(task.id, 1, "第一章", "错误结构重建摘要。", "第一章正文。")
+
+        logs = "\n".join(captured.output)
+        self.assertIn("章节索引格式不正确", logs)
+        self.assertIn(task.id, logs)
+        index_data = json.loads((chapters_dir / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(index_data, [{"number": 1, "title": "第一章", "summary": "错误结构重建摘要。"}])
+
+    def test_write_chapter_file_warns_and_skips_invalid_index_items(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="写一篇长篇玄幻小说",
+                model_id="gpt-5.4",
+            )
+        )
+        chapters_dir = store._task_dir(task) / "chapters"
+        chapters_dir.mkdir(parents=True, exist_ok=True)
+        valid_item = {"number": 1, "title": "第一章", "summary": "已有有效摘要。"}
+        (chapters_dir / "index.json").write_text(
+            json.dumps(
+                [
+                    valid_item,
+                    "错误条目",
+                    {"number": "2", "title": "错误编号", "summary": "编号类型错误。"},
+                    {"number": 0, "title": "错误编号", "summary": "编号非正整数。"},
+                ],
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertLogs("app.application.task_service.continuation", level="WARNING") as captured:
+            service._write_chapter_file(task.id, 2, "第二章", "新增章节摘要。", "第二章正文。")
+
+        logs = "\n".join(captured.output)
+        self.assertIn("章节索引条目格式不正确", logs)
+        self.assertIn(task.id, logs)
+        index_data = json.loads((chapters_dir / "index.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            index_data,
+            [
+                valid_item,
+                {"number": 2, "title": "第二章", "summary": "新增章节摘要。"},
+            ],
+        )
+
     def test_mark_failed_unless_stable_sets_blocked_from_status_in_db(self) -> None:
         """_mark_failed_unless_stable 在 core.py 中，需要完整的 workflow_engine 才能走通。
         由于测试环境缺少真实图引擎，直接测试该行为会导致深层调用失败，因此跳过。

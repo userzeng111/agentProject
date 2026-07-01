@@ -47,10 +47,10 @@ export function AppHeader() {
         color: "text.primary",
       })}
     >
-      <Container maxWidth="md">
+      <Container maxWidth="md" sx={{ px: { xs: 1, sm: 3 } }}>
         <Toolbar
           disableGutters
-          sx={{ minHeight: { xs: 56, sm: 64 } }}
+          sx={{ minHeight: { xs: 56, sm: 64 }, gap: { xs: 0.5, sm: 0 }, minWidth: 0 }}
         >
           {/* 标识 */}
           <Box
@@ -60,7 +60,8 @@ export function AppHeader() {
               display: "flex",
               alignItems: "center",
               gap: 1,
-              mr: 3,
+              mr: { xs: 0.5, sm: 3 },
+              flexShrink: 0,
               color: "inherit",
               textDecoration: "none",
               "&:hover": { opacity: 0.8 },
@@ -91,7 +92,15 @@ export function AppHeader() {
           </Box>
 
           {/* 导航链接 */}
-          <Box sx={{ display: "flex", gap: 1, flex: 1 }}>
+          <Box
+            sx={{
+              display: "flex",
+              gap: { xs: 0.25, sm: 1 },
+              flex: 1,
+              minWidth: 0,
+              justifyContent: { xs: "space-between", sm: "flex-start" },
+            }}
+          >
             {NAV_LINKS.map((link) => {
               const isActive =
                 link.href === "/"
@@ -113,9 +122,14 @@ export function AppHeader() {
                         : "rgba(39, 100, 81, 0.08)"
                       : "transparent",
                     borderRadius: 2,
-                    px: isMobile ? 1.5 : 2,
+                    px: isMobile ? 0.5 : 2,
                     py: 1,
-                    minWidth: 0,
+                    minWidth: isMobile ? 44 : 0,
+                    "& .MuiButton-startIcon": isMobile
+                      ? {
+                          m: 0,
+                        }
+                      : undefined,
                     "&:hover": {
                       backgroundColor: isActive
                         ? theme.palette.mode === "dark"

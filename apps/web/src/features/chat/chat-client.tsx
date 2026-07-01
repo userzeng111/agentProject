@@ -779,34 +779,63 @@ export function ChatClient() {
         <Box
           sx={{
             display: "flex",
-            alignItems: "center",
+            alignItems: { xs: "stretch", sm: "center" },
             justifyContent: "space-between",
-            px: 2,
-            py: 1.5,
+            flexWrap: { xs: "wrap", sm: "nowrap" },
+            gap: { xs: 1, sm: 2 },
+            px: { xs: 1.25, sm: 2 },
+            py: { xs: 1, sm: 1.5 },
             borderBottom: "1px solid",
             borderColor: "divider",
+            minWidth: 0,
           }}
         >
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              minWidth: 0,
+              flex: { xs: "1 1 auto", sm: "0 1 auto" },
+            }}
+          >
             {/* 移动端菜单按钮 */}
             {isMobile && (
-              <IconButton size="small" onClick={() => setMobileDrawerOpen(true)}>
+              <IconButton size="small" aria-label="打开会话列表" onClick={() => setMobileDrawerOpen(true)}>
                 <MenuIcon />
               </IconButton>
             )}
-            <BotIcon sx={{ color: "primary.main", fontSize: 28 }} />
-            <Typography variant="h6" sx={{ fontWeight: 600, color: "primary.main" }}>
+            <BotIcon sx={{ color: "primary.main", display: { xs: "none", sm: "block" }, fontSize: 28 }} />
+            <Typography
+              variant="h6"
+              noWrap
+              sx={{
+                fontWeight: 600,
+                color: "primary.main",
+                fontSize: { xs: "1rem", sm: "1.25rem" },
+                minWidth: 0,
+              }}
+            >
               AI 对话
             </Typography>
           </Box>
-          <Stack direction="row" spacing={1} alignItems="flex-start">
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="flex-start"
+            sx={{
+              flex: { xs: "1 0 100%", sm: "0 0 auto" },
+              width: { xs: "100%", sm: "auto" },
+              minWidth: 0,
+            }}
+          >
             {isMobile ? (
               <Button
                 size="small"
                 variant="outlined"
                 startIcon={<ValidationIcon />}
                 onClick={() => setValidationPanelOpen(true)}
-                sx={{ minHeight: 40 }}
+                sx={{ minHeight: 40, flexShrink: 0 }}
               >
                 验证
               </Button>
@@ -817,17 +846,45 @@ export function ChatClient() {
               label="聊天模型"
               value={chatSelectValue}
               onChange={(event) => handleModelChange(event.target.value)}
-              sx={{ minWidth: { xs: 160, sm: 220 } }}
+              sx={{
+                flex: { xs: 1, sm: "0 0 220px" },
+                minWidth: 0,
+                width: { xs: "auto", sm: 220 },
+              }}
               helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
+              FormHelperTextProps={{
+                sx: {
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
+                },
+              }}
             >
               {selectableModels.length ? (
                 selectableModels.map((item) => (
                   <MenuItem key={item.id} value={item.id}>
                     <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          fontWeight: 500,
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         {item.display_name || item.id}
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{
+                          minWidth: 0,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
                         {getModelValidationLabel(item)}
                         {item.provider ? ` · ${item.provider}` : ""}
                       </Typography>
@@ -855,17 +912,22 @@ export function ChatClient() {
 
         {/* 消息列表 */}
         <Box
-          sx={{
+          sx={(theme) => ({
             flex: 1,
             overflowY: "auto",
+            overflowX: "hidden",
+            minWidth: 0,
             px: 2,
             py: 1,
             "&::-webkit-scrollbar": { width: 6 },
             "&::-webkit-scrollbar-thumb": {
-              backgroundColor: "rgba(0,0,0,0.15)",
+              backgroundColor:
+                theme.palette.mode === "dark"
+                  ? "rgba(242, 238, 232, 0.22)"
+                  : "rgba(0,0,0,0.15)",
               borderRadius: 3,
             },
-          }}
+          })}
         >
           {messages.length === 0 && (
             <Box
@@ -891,6 +953,7 @@ export function ChatClient() {
                 display: "flex",
                 justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
                 mb: 1.5,
+                minWidth: 0,
               }}
             >
               {msg.role === "user" ? (
@@ -899,15 +962,26 @@ export function ChatClient() {
                   sx={{
                     px: 2,
                     py: 1.5,
-                    maxWidth: "75%",
+                    maxWidth: { xs: "100%", sm: "75%" },
+                    minWidth: 0,
                     bgcolor: "rgba(39, 100, 81, 0.06)",
                     border: "1px solid rgba(39, 100, 81, 0.12)",
                     borderRadius: 2,
+                    overflowWrap: "anywhere",
                   }}
                 >
-                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
+                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
                     <UserIcon sx={{ fontSize: 20, color: "primary.main", mt: 0.5 }} />
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        minWidth: 0,
+                        whiteSpace: "pre-wrap",
+                        lineHeight: 1.6,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {msg.content}
                     </Typography>
                   </Box>
@@ -918,17 +992,23 @@ export function ChatClient() {
                   sx={{
                     px: 2,
                     py: 1.5,
-                    maxWidth: "85%",
+                    maxWidth: { xs: "100%", sm: "85%" },
+                    minWidth: 0,
                     bgcolor: "background.paper",
                     border: "1px solid",
                     borderColor: "divider",
                     borderRadius: 2,
+                    overflowWrap: "anywhere",
                   }}
                 >
                   {/* 思考链区域 */}
                   {msg.reasoning_content && (
                     <Box sx={{ mb: 1 }}>
                       <Box
+                        component="button"
+                        type="button"
+                        aria-expanded={Boolean(expandedThinking[idx])}
+                        aria-controls={`thinking-content-${idx}`}
                         onClick={() => toggleThinking(idx)}
                         sx={{
                           display: "flex",
@@ -936,7 +1016,18 @@ export function ChatClient() {
                           gap: 0.5,
                           cursor: "pointer",
                           color: "text.secondary",
+                          border: 0,
+                          p: 0,
+                          bgcolor: "transparent",
+                          font: "inherit",
+                          textAlign: "left",
+                          borderRadius: 1,
                           "&:hover": { color: "primary.main" },
+                          "&:focus-visible": {
+                            outline: "2px solid",
+                            outlineColor: "primary.main",
+                            outlineOffset: 2,
+                          },
                           userSelect: "none",
                         }}
                       >
@@ -967,6 +1058,7 @@ export function ChatClient() {
                       </Box>
                       <Collapse in={expandedThinking[idx] ?? false}>
                         <Box
+                          id={`thinking-content-${idx}`}
                           sx={{
                             pl: 1.5,
                             py: 1,
@@ -978,6 +1070,7 @@ export function ChatClient() {
                             fontSize: "0.85rem",
                             color: "text.secondary",
                             whiteSpace: "pre-wrap",
+                            overflowWrap: "anywhere",
                             wordBreak: "break-word",
                             lineHeight: 1.6,
                             fontFamily: "monospace",
@@ -1006,9 +1099,18 @@ export function ChatClient() {
                     </Box>
                   )}
                   {/* 正式回复内容 */}
-                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
+                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1, minWidth: 0 }}>
                     <BotIcon sx={{ fontSize: 20, color: "primary.main", mt: 0.5 }} />
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
+                    <Typography
+                      variant="body2"
+                      sx={{
+                        minWidth: 0,
+                        whiteSpace: "pre-wrap",
+                        lineHeight: 1.6,
+                        overflowWrap: "anywhere",
+                        wordBreak: "break-word",
+                      }}
+                    >
                       {msg.content}
                       {msg.isStreaming && (
                         <Box
