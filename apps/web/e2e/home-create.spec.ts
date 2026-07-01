@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 import { LONG_CREATED_TASK_ID, makeTask, makeWorkspace, mockCommonApiRoutes, mockTaskWorkspace } from "./helpers/fixtures";
 
+function parseCssColor(color: string) {
+  const channels = color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [];
+  const [red = 255, green = 255, blue = 255, alpha = 1] = channels;
+  return {
+    alpha,
+    luminance: 0.2126 * red + 0.7152 * green + 0.0722 * blue,
+  };
+}
+
 function modelCatalog(defaultModel = "gpt-5.4") {
   return {
     data: [
@@ -32,8 +41,22 @@ function modelCatalog(defaultModel = "gpt-5.4") {
 test.describe("首页 Dashboard 与创建任务", () => {
   test("首页以作品库项目卡片展示任务并在移动端无横向溢出", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("theme-mode", "dark");
+    });
     await mockCommonApiRoutes(page);
     await page.goto("/", { waitUntil: "commit" });
+
+    const appHeader = page.getByTestId("app-header");
+    await expect(appHeader).toBeVisible();
+    await expect
+      .poll(async () => {
+        const headerColor = parseCssColor(
+          await appHeader.evaluate((element) => window.getComputedStyle(element).backgroundColor),
+        );
+        return headerColor.alpha > 0.1 && headerColor.luminance < 128;
+      })
+      .toBe(true);
 
     await expect(page.getByRole("heading", { name: "作品库" })).toBeVisible();
 

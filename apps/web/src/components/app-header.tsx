@@ -30,21 +30,29 @@ export function AppHeader() {
   return (
     <AppBar
       position="sticky"
-      sx={{
-        background: "rgba(255, 250, 242, 0.80)",
+      data-testid="app-header"
+      sx={(theme) => ({
+        background:
+          theme.palette.mode === "dark"
+            ? "rgba(15, 20, 18, 0.84)"
+            : "rgba(255, 250, 242, 0.80)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
-        borderBottom: "1px solid rgba(29, 42, 39, 0.08)",
+        borderBottom: "1px solid",
+        borderColor:
+          theme.palette.mode === "dark"
+            ? "rgba(168, 160, 149, 0.18)"
+            : "rgba(29, 42, 39, 0.08)",
         boxShadow: "none",
         color: "text.primary",
-      }}
+      })}
     >
       <Container maxWidth="md">
         <Toolbar
           disableGutters
           sx={{ minHeight: { xs: 56, sm: 64 } }}
         >
-          {/* Logo */}
+          {/* 标识 */}
           <Box
             component={Link}
             href="/"
@@ -82,7 +90,7 @@ export function AppHeader() {
             )}
           </Box>
 
-          {/* Nav Links */}
+          {/* 导航链接 */}
           <Box sx={{ display: "flex", gap: 1, flex: 1 }}>
             {NAV_LINKS.map((link) => {
               const isActive =
@@ -96,20 +104,28 @@ export function AppHeader() {
                   href={link.href}
                   aria-label={isMobile ? link.label : undefined}
                   startIcon={isMobile ? link.icon : undefined}
-                  sx={{
+                  sx={(theme) => ({
                     color: isActive ? "primary.main" : "text.secondary",
                     fontWeight: isActive ? 600 : 400,
-                    backgroundColor: isActive ? "rgba(39, 100, 81, 0.08)" : "transparent",
+                    backgroundColor: isActive
+                      ? theme.palette.mode === "dark"
+                        ? "rgba(79, 209, 168, 0.13)"
+                        : "rgba(39, 100, 81, 0.08)"
+                      : "transparent",
                     borderRadius: 2,
                     px: isMobile ? 1.5 : 2,
                     py: 1,
                     minWidth: 0,
                     "&:hover": {
                       backgroundColor: isActive
-                        ? "rgba(39, 100, 81, 0.12)"
-                        : "rgba(29, 42, 39, 0.05)",
+                        ? theme.palette.mode === "dark"
+                          ? "rgba(79, 209, 168, 0.18)"
+                          : "rgba(39, 100, 81, 0.12)"
+                        : theme.palette.mode === "dark"
+                          ? "rgba(242, 238, 232, 0.08)"
+                          : "rgba(29, 42, 39, 0.05)",
                     },
-                  }}
+                  })}
                 >
                   {isMobile ? undefined : link.label}
                 </Button>

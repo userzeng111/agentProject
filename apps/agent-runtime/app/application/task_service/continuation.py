@@ -337,17 +337,28 @@ class TaskServiceContinuationMixin:
             return []
         try:
             index_data = json.loads(index_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
+        except (OSError, json.JSONDecodeError, ValueError):
+            logger.warning("读取章节索引失败 task_id=%s path=%s", task_id, index_file, exc_info=True)
+            return []
+        if not isinstance(index_data, list):
+            logger.warning("章节索引格式不正确 task_id=%s path=%s", task_id, index_file)
             return []
         chapters: list[dict[str, Any]] = []
         for item in index_data:
+            if not isinstance(item, dict):
+                logger.warning("章节索引条目格式不正确 task_id=%s path=%s", task_id, index_file)
+                continue
             num = item.get("number")
-            safe_num = f"{num:02d}" if num else "00"
+            if not isinstance(num, int) or isinstance(num, bool) or num <= 0:
+                logger.warning("章节索引条目格式不正确 task_id=%s path=%s", task_id, index_file)
+                continue
+            safe_num = f"{num:02d}"
             chapter_file = chapters_dir / f"{safe_num}.json"
             if chapter_file.exists():
                 try:
                     chapters.append(json.loads(chapter_file.read_text(encoding="utf-8")))
-                except (json.JSONDecodeError, ValueError):
+                except (OSError, json.JSONDecodeError, ValueError):
+                    logger.warning("读取章节文件失败 task_id=%s path=%s", task_id, chapter_file, exc_info=True)
                     chapters.append(item)
             else:
                 chapters.append(item)

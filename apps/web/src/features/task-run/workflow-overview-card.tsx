@@ -339,7 +339,25 @@ export default function WorkflowOverviewCard({
   const hasAgentGraph = agentGraph.nodes.length > 0;
 
   return (
-    <Card className="glass-card" data-testid="workflow-overview-card">
+    <Card
+      className="glass-card"
+      data-testid="workflow-overview-card"
+      sx={(theme) => ({
+        backgroundColor:
+          theme.palette.mode === "dark"
+            ? "rgba(15, 23, 21, 0.82)"
+            : "rgba(255, 250, 242, 0.65)",
+        border: "1px solid",
+        borderColor:
+          theme.palette.mode === "dark"
+            ? "rgba(168, 160, 149, 0.18)"
+            : "rgba(255, 255, 255, 0.45)",
+        boxShadow:
+          theme.palette.mode === "dark"
+            ? "0 12px 32px rgba(0, 0, 0, 0.34)"
+            : "0 8px 24px rgba(0, 0, 0, 0.12)",
+      })}
+    >
       <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
         <Stack spacing={2.25}>
           <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }}>

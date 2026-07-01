@@ -2,6 +2,15 @@ import { expect, test } from "@playwright/test";
 import { expectNoSensitiveText } from "./helpers/assertions";
 import { makeWorkspace, mockCommonApiRoutes, mockTaskWorkspace } from "./helpers/fixtures";
 
+function parseCssColor(color: string) {
+  const channels = color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [];
+  const [red = 255, green = 255, blue = 255, alpha = 1] = channels;
+  return {
+    alpha,
+    luminance: 0.2126 * red + 0.7152 * green + 0.0722 * blue,
+  };
+}
+
 const statusCases = [
   { status: "created", label: "待启动" },
   { status: "sources_ingested", label: "素材已入库" },
@@ -91,6 +100,14 @@ test.describe("任务工作台状态分支", () => {
     const graphCard = page.getByTestId("workflow-overview-card");
     await expect(graphCard).toBeVisible();
     await expect(graphCard.locator(".react-flow").first()).toBeVisible();
+    await expect
+      .poll(async () => {
+        const graphCardColor = parseCssColor(
+          await graphCard.evaluate((element) => window.getComputedStyle(element).backgroundColor),
+        );
+        return graphCardColor.alpha > 0.1 && graphCardColor.luminance < 128;
+      })
+      .toBe(true);
 
     await expect
       .poll(async () => {
