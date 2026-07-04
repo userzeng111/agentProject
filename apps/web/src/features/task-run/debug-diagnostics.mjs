@@ -257,16 +257,23 @@ function deriveLlmFromEvents(events = []) {
   let requestCount = 0;
   let exchangeCount = 0;
   let cacheHitCount = 0;
+  let runtimeResponseCacheHitCount = 0;
+  let providerPromptCacheHitCount = 0;
 
   for (const event of asArray(events)) {
     if (event?.event_type === "model.usage") {
       requestCount += 1;
-      addTokenTotals(totals, normalizeTokens(event.payload));
+      const usage = normalizeTokens(event.payload);
+      addTokenTotals(totals, usage);
+      if (usage.cachedTokens > 0 || usage.cacheReadInputTokens > 0) {
+        providerPromptCacheHitCount += 1;
+      }
     }
     if (event?.event_type === "context.history.updated" || event?.event_type === "cache.hit") {
       exchangeCount += 1;
       if (event?.event_type === "cache.hit" || event?.payload?.cache_hit) {
         cacheHitCount += 1;
+        runtimeResponseCacheHitCount += 1;
       }
     }
   }
@@ -276,6 +283,8 @@ function deriveLlmFromEvents(events = []) {
     requestCount,
     exchangeCount,
     cacheHitCount,
+    runtimeResponseCacheHitCount,
+    providerPromptCacheHitCount,
   };
 }
 
@@ -444,6 +453,14 @@ function buildLlm(workspace = {}) {
     requestCount: toInteger(report.usage_count, eventSummary.requestCount),
     exchangeCount: toInteger(report.exchange_count, eventSummary.exchangeCount),
     cacheHitCount: toInteger(report.cache_hit_count, eventSummary.cacheHitCount),
+    runtimeResponseCacheHitCount: toInteger(
+      report.runtime_response_cache_hit_count,
+      eventSummary.runtimeResponseCacheHitCount,
+    ),
+    providerPromptCacheHitCount: toInteger(
+      report.provider_prompt_cache_hit_count,
+      eventSummary.providerPromptCacheHitCount,
+    ),
     retryCount,
     repairCount,
     jsonParseFailedCount: events.filter(isJsonParseFailedEvent).length,

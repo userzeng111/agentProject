@@ -68,6 +68,16 @@ class ContextManager:
                 type(cached_snapshot).__name__,
             )
             cached_snapshot = None
+        logger.debug(
+            "上下文缓存查询: task_id=%s stage=%s model_id=%s cache_key=%s reference_count=%d memory_item_count=%d hit=%s",
+            task_id,
+            stage,
+            model_profile.model_id,
+            cache_key,
+            len(references),
+            len(memory_items or []),
+            cached_snapshot is not None,
+        )
         if cached_snapshot is not None:
             logger.info("上下文缓存命中: task_id=%s stage=%s cache_key=%s", task_id, stage, cache_key)
             packet = cached_snapshot.packet.model_copy(update={"task_id": task_id}, deep=True)

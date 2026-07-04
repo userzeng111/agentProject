@@ -92,6 +92,40 @@ class ContextManagerTests(unittest.TestCase):
         self.assertEqual(first_snapshot.cache_key, second_snapshot.cache_key)
         self.assertEqual(first_snapshot.packet.assembled_text, second_snapshot.packet.assembled_text)
 
+    def test_context_cache_logs_lookup_hit_and_miss(self) -> None:
+        references = [
+            ReferenceMaterial(
+                source_id="ref-1",
+                title="素材",
+                content="线索A。" * 20,
+                priority=5,
+            )
+        ]
+
+        with self.assertLogs("app.context.manager", level="DEBUG") as logs:
+            self.manager.build_snapshot(
+                task_id="task-cache",
+                stage="drafting",
+                instruction="生成正文。",
+                model_profile=self.profile,
+                references=references,
+                memory_items=["已完成章节摘要：主角决定离开故乡。"],
+            )
+            self.manager.build_snapshot(
+                task_id="task-cache",
+                stage="drafting",
+                instruction="生成正文。",
+                model_profile=self.profile,
+                references=references,
+                memory_items=["已完成章节摘要：主角决定离开故乡。"],
+            )
+
+        log_text = "\n".join(logs.output)
+        self.assertIn("上下文缓存查询", log_text)
+        self.assertIn("hit=False", log_text)
+        self.assertIn("hit=True", log_text)
+        self.assertIn("stage=drafting", log_text)
+
     def test_build_snapshot_rebuilds_when_cached_snapshot_schema_is_stale(self) -> None:
         class StaleCacheStore:
             def __init__(self) -> None:

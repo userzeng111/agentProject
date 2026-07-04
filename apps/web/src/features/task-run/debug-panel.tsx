@@ -224,7 +224,8 @@ export default function DebugPanel({
             items={[
               { label: "请求", value: formatNumber(llm.requestCount) },
               { label: "交换", value: formatNumber(llm.exchangeCount) },
-              { label: "缓存命中", value: formatNumber(llm.cacheHitCount) },
+              { label: "响应缓存命中", value: formatNumber(llm.runtimeResponseCacheHitCount ?? llm.cacheHitCount) },
+              { label: "供应商缓存命中", value: formatNumber(llm.providerPromptCacheHitCount) },
               { label: "重试", value: formatNumber(llm.retryCount) },
               { label: "修复", value: formatNumber(llm.repairCount) },
               { label: "JSON 解析失败", value: formatNumber(llm.jsonParseFailedCount) },

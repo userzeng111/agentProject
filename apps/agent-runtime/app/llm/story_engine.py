@@ -52,11 +52,35 @@ _VERIFICATION_TRUNCATED_RETRY_PROMPT = (
     "不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
 )
 
+_CHAPTER_PAIR_TRUNCATED_RETRY_PROMPT = (
+    "上一次章节修订响应被输出预算截断，且没有输出可解析正文。"
+    "请停止分析，不要输出分析过程。"
+    "请只返回最终章节 JSON；若有多章，返回 JSON 数组。"
+    "每个章节必须包含 number、title、summary、content。"
+    "summary 不超过 80 字；content 保留完整正文。"
+    "不要输出 Markdown 代码围栏，不要解释，不要补充说明。"
+)
+
 _VERIFICATION_JSON_REPAIR_PROMPT = (
     "上一次全文验证响应不是可解析 JSON。"
     "请直接重写一个极短 JSON 对象，必须包含 issues、overall_score、summary 三个字段。"
     "issues 最多 3 条；无法确认严重问题时 issues 返回空数组。"
     "不要复述正文，不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
+)
+
+_CONTENT_FILTER_FINISH_REASONS = {"content_filter"}
+
+_CONTENT_FILTER_REPAIR_PROMPT = (
+    "上一次输出被上游内容安全策略过滤（content_filter），没有产生任何可解析内容。"
+    "请基于当前任务重新输出一个完整、可解析的 JSON 对象。"
+    "注意：JSON 字符串字段内部若需使用引号，请使用中文双引号（“”），不要出现未转义的英文半角双引号。"
+    "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
+)
+
+_JSON_STRING_QUOTE_CONSTRAINT = (
+    "\n\n输出格式约束：JSON 字段的键仍使用英文半角双引号；但所有 JSON 字符串字段（如 working_title、"
+    "logline、title、summary、goal、world_notes、character_notes 等）的值内部若需使用引号，必须使用中文双引号（“”），"
+    "严禁使用未转义的英文半角双引号（\"）。"
 )
 
 _TRUNCATED_FINISH_REASONS = {"length", "max_tokens"}
@@ -315,6 +339,7 @@ class StoryEngine(BaseAgent):
 
     def _render_skill_prompt(self, skill_id: str, **variables: Any) -> list[dict[str, str]]:
         """从 Skill YAML 或硬编码 ChatPromptTemplate 渲染 prompt，返回消息列表。"""
+        messages: list[dict[str, str]] = []
         # 优先使用 Skill YAML
         if self._skills_loaded:
             try:
@@ -323,25 +348,47 @@ class StoryEngine(BaseAgent):
                 for var_def in config.input_variables:
                     if var_def.name not in variables and var_def.default is not None:
                         variables.setdefault(var_def.name, var_def.default)
-                messages: list[dict[str, str]] = []
                 for role_name in ("system", "human"):
                     template = getattr(config.prompt, role_name, "")
                     if template:
                         content = template.format(**variables)
                         messages.append({"role": role_name, "content": content})
-                return messages
             except (KeyError, Exception) as exc:
                 logger.debug("Skill [%s] 渲染失败，fallback 到硬编码: %s", skill_id, exc)
+                messages = []
 
-        # Fallback: 硬编码 ChatPromptTemplate
-        attr_name = self._PROMPT_MAP.get(skill_id)
-        if attr_name is None:
-            raise ValueError(f"未知的 skill_id: {skill_id}")
-        template = getattr(self, attr_name, None)
-        if template is None:
-            raise ValueError(f"未找到硬编码 prompt: {attr_name}")
-        prompt_value = template.invoke(variables)
-        return self._prompt_to_messages(prompt_value)
+        if not messages:
+            # Fallback: 硬编码 ChatPromptTemplate
+            attr_name = self._PROMPT_MAP.get(skill_id)
+            if attr_name is None:
+                raise ValueError(f"未知的 skill_id: {skill_id}")
+            template = getattr(self, attr_name, None)
+            if template is None:
+                raise ValueError(f"未找到硬编码 prompt: {attr_name}")
+            prompt_value = template.invoke(variables)
+            messages = self._prompt_to_messages(prompt_value)
+
+        return self._inject_quote_constraint(messages)
+
+    @staticmethod
+    def _inject_quote_constraint(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+        """在最后一个 user 消息（或 system 消息）中注入中文引号约束。"""
+        if not messages:
+            return messages
+        # 找到最后一个 user 消息，避免破坏 Anthropic 的单 system 消息结构
+        target_index = -1
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].get("role") == "user":
+                target_index = index
+                break
+        if target_index < 0:
+            # 没有 user 消息时兜底追加到 system 消息
+            target_index = 0
+        messages[target_index] = {
+            **messages[target_index],
+            "content": messages[target_index]["content"] + _JSON_STRING_QUOTE_CONSTRAINT,
+        }
+        return messages
 
     def resolve_model(self, model: str | None) -> str:
         candidate = (model or "").strip()
@@ -950,6 +997,9 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
             max_tokens=chapter_max_tokens,
+            empty_truncated_retry_prompt=_CHAPTER_PAIR_TRUNCATED_RETRY_PROMPT,
+            empty_truncated_retry_max_tokens=chapter_max_tokens,
+            empty_truncated_retry_allow_same_budget=True,
         )
         items = payload if isinstance(payload, list) else [payload]
         return [ChapterDraft.model_validate(self._normalize_chapter_payload(item)) for item in items]
@@ -1381,6 +1431,7 @@ class StoryEngine(BaseAgent):
         repair_prompt: str = _STREAM_JSON_REPAIR_PROMPT,
         empty_truncated_retry_prompt: str | None = None,
         empty_truncated_retry_max_tokens: int | None = None,
+        empty_truncated_retry_allow_same_budget: bool = False,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         """流式调用 LLM，实时发射思考链事件，最终解析 JSON。
 
@@ -1397,6 +1448,15 @@ class StoryEngine(BaseAgent):
             request_options=request_options,
         )
         cached_payload = self.response_cache.get(cache_key)
+        logger.debug(
+            "流式响应缓存查询: stage=%s exchange_label=%s model=%s cache_key_prefix=%s max_tokens=%s hit=%s",
+            stage,
+            exchange_label,
+            model,
+            cache_key[:24],
+            max_tokens,
+            isinstance(cached_payload, dict),
+        )
         if isinstance(cached_payload, dict):
             conversation_history = self._append_assistant_message(request_messages, cached_payload)
             self._emit_exchange(
@@ -1463,18 +1523,23 @@ class StoryEngine(BaseAgent):
             max_tokens=max_tokens,
             retry_max_tokens=empty_truncated_retry_max_tokens,
             retry_prompt=empty_truncated_retry_prompt,
+            allow_same_budget=empty_truncated_retry_allow_same_budget,
         ):
             retry_messages = [dict(item) for item in request_messages] + [
                 {"role": "user", "content": empty_truncated_retry_prompt or ""},
             ]
             retry_max_tokens = empty_truncated_retry_max_tokens
             logger.warning(
-                "流式 JSON 响应被截断且正文为空，使用更高预算重试: stage=%s exchange_label=%s finish_reason=%s max_tokens=%s retry_max_tokens=%s",
+                "流式 JSON 响应被截断且正文为空，使用专用提示重试: "
+                "stage=%s exchange_label=%s finish_reason=%s max_tokens=%s retry_max_tokens=%s "
+                "content_chars=%s reasoning_chars=%s",
                 stage,
                 exchange_label,
                 finish_reason,
                 max_tokens,
                 retry_max_tokens,
+                timing_meta.get("content_chars"),
+                timing_meta.get("reasoning_chars"),
             )
             full_content, finish_reason, retry_timing_meta = self._call_llm_stream_with_metadata(
                 retry_messages,
@@ -1494,6 +1559,70 @@ class StoryEngine(BaseAgent):
             })
             parse_request_messages = retry_messages
             parse_exchange_label = f"{exchange_label}-retry"
+        # 处理 content_filter 导致的空响应：直接 repair，避免先触发 parse_failed 事件
+        if self._is_content_filtered_empty_response(full_content, finish_reason):
+            logger.warning(
+                "流式 JSON 响应因 content_filter 为空，尝试 repair: stage=%s exchange_label=%s",
+                stage,
+                exchange_label,
+            )
+            content_filter_repair_messages = [dict(item) for item in parse_request_messages] + [
+                {"role": "assistant", "content": full_content},
+                {"role": "user", "content": _CONTENT_FILTER_REPAIR_PROMPT},
+            ]
+            content_filter_repaired_content = ""
+            content_filter_repair_finish_reason: str | None = None
+            try:
+                content_filter_repaired_content, content_filter_repair_finish_reason = self._attempt_stream_json_repair(
+                    repair_messages=content_filter_repair_messages,
+                    model=model,
+                    stage=stage,
+                    exchange_label=parse_exchange_label,
+                    progress_callback=active_progress,
+                    max_tokens=max_tokens,
+                    request_options=request_options,
+                    timing_details=timing_details,
+                )
+                payload = parser(content_filter_repaired_content)
+            except (GatewayClientError, json.JSONDecodeError) as repair_exc:
+                self._emit_parse_failed_exchange(
+                    callback=exchange_callback,
+                    stage=stage,
+                    exchange_label=f"{parse_exchange_label}-content-filter-repair",
+                    model=model,
+                    request_messages=content_filter_repair_messages,
+                    raw_response=content_filter_repaired_content,
+                    finish_reason=content_filter_repair_finish_reason,
+                    parse_error=str(repair_exc),
+                )
+                raise GatewayClientError(
+                    "模型输出被上游内容安全策略过滤（content_filter），无法解析为 JSON。"
+                ) from repair_exc
+            parse_duration_ms = (time.perf_counter() - parse_started) * 1000
+            self.response_cache.set(cache_key, payload)
+            logger.debug(
+                "流式响应缓存写入: stage=%s exchange_label=%s model=%s cache_key_prefix=%s",
+                stage,
+                exchange_label,
+                model,
+                cache_key[:24],
+            )
+            conversation_history = self._append_assistant_message(request_messages, payload)
+            self._emit_exchange(
+                callback=exchange_callback,
+                stage=stage,
+                exchange_label=exchange_label,
+                model=model,
+                cache_hit=False,
+                request_messages=request_messages,
+                conversation_history=conversation_history,
+                response_payload=payload,
+                cache_key=cache_key,
+                parse_duration_ms=parse_duration_ms,
+                timing_details=timing_details,
+            )
+            return payload, conversation_history
+
         try:
             payload = parser(full_content)
             if (
@@ -1503,6 +1632,7 @@ class StoryEngine(BaseAgent):
                     max_tokens=max_tokens,
                     retry_max_tokens=empty_truncated_retry_max_tokens,
                     retry_prompt=empty_truncated_retry_prompt,
+                    allow_same_budget=empty_truncated_retry_allow_same_budget,
                 )
                 and not self._is_complete_verification_payload(payload)
             ):
@@ -1514,6 +1644,7 @@ class StoryEngine(BaseAgent):
                 max_tokens=max_tokens,
                 retry_max_tokens=empty_truncated_retry_max_tokens,
                 retry_prompt=empty_truncated_retry_prompt,
+                allow_same_budget=empty_truncated_retry_allow_same_budget,
             ):
                 retry_messages = [dict(item) for item in request_messages] + [
                     {"role": "user", "content": empty_truncated_retry_prompt or ""},
@@ -1548,6 +1679,13 @@ class StoryEngine(BaseAgent):
                 payload = parser(full_content)
                 parse_duration_ms = (time.perf_counter() - parse_started) * 1000
                 self.response_cache.set(cache_key, payload)
+                logger.debug(
+                    "流式响应缓存写入: stage=%s exchange_label=%s model=%s cache_key_prefix=%s",
+                    stage,
+                    exchange_label,
+                    model,
+                    cache_key[:24],
+                )
                 conversation_history = self._append_assistant_message(request_messages, payload)
                 self._emit_exchange(
                     callback=exchange_callback,
@@ -1580,22 +1718,16 @@ class StoryEngine(BaseAgent):
             repaired_content = ""
             repair_finish_reason: str | None = None
             try:
-                repaired_content, repair_finish_reason, repair_timing_meta = self._call_llm_stream_with_metadata(
-                    repair_messages,
-                    model,
-                    progress_callback=active_progress,
+                repaired_content, repair_finish_reason = self._attempt_stream_json_repair(
+                    repair_messages=repair_messages,
+                    model=model,
                     stage=stage,
-                    unit_id=f"{parse_exchange_label}-repair",
+                    exchange_label=parse_exchange_label,
+                    progress_callback=active_progress,
                     max_tokens=max_tokens,
                     request_options=request_options,
+                    timing_details=timing_details,
                 )
-                timing_details.append({
-                    **repair_timing_meta,
-                    "stage": stage,
-                    "exchange_label": f"{parse_exchange_label}-repair",
-                    "is_retry": False,
-                    "is_repair": True,
-                })
                 payload = parser(repaired_content)
             except (GatewayClientError, json.JSONDecodeError) as repair_exc:
                 self._emit_parse_failed_exchange(
@@ -1612,6 +1744,13 @@ class StoryEngine(BaseAgent):
         parse_duration_ms = (time.perf_counter() - parse_started) * 1000
 
         self.response_cache.set(cache_key, payload)
+        logger.debug(
+            "流式响应缓存写入: stage=%s exchange_label=%s model=%s cache_key_prefix=%s",
+            stage,
+            exchange_label,
+            model,
+            cache_key[:24],
+        )
         conversation_history = self._append_assistant_message(request_messages, payload)
         self._emit_exchange(
             callback=exchange_callback,
@@ -1636,6 +1775,7 @@ class StoryEngine(BaseAgent):
         max_tokens: int | None,
         retry_max_tokens: int | None,
         retry_prompt: str | None,
+        allow_same_budget: bool = False,
     ) -> bool:
         if not retry_prompt or not retry_max_tokens:
             return False
@@ -1644,7 +1784,11 @@ class StoryEngine(BaseAgent):
         normalized_finish_reason = (finish_reason or "").strip().lower()
         if normalized_finish_reason not in _TRUNCATED_FINISH_REASONS:
             return False
-        return max_tokens is None or retry_max_tokens > max_tokens
+        if max_tokens is None:
+            return True
+        if retry_max_tokens > max_tokens:
+            return True
+        return allow_same_budget and retry_max_tokens == max_tokens
 
     @staticmethod
     def _should_retry_non_empty_truncated_response(
@@ -1654,6 +1798,7 @@ class StoryEngine(BaseAgent):
         max_tokens: int | None,
         retry_max_tokens: int | None,
         retry_prompt: str | None,
+        allow_same_budget: bool = False,
     ) -> bool:
         if not retry_prompt or not retry_max_tokens:
             return False
@@ -1662,7 +1807,22 @@ class StoryEngine(BaseAgent):
         normalized_finish_reason = (finish_reason or "").strip().lower()
         if normalized_finish_reason not in _TRUNCATED_FINISH_REASONS:
             return False
-        return max_tokens is None or retry_max_tokens > max_tokens
+        if max_tokens is None:
+            return True
+        if retry_max_tokens > max_tokens:
+            return True
+        return allow_same_budget and retry_max_tokens == max_tokens
+
+    @staticmethod
+    def _is_content_filtered_empty_response(
+        content: str,
+        finish_reason: str | None,
+    ) -> bool:
+        """判断响应是否因上游 content_filter 被过滤为空。"""
+        if content.strip():
+            return False
+        normalized_finish_reason = (finish_reason or "").strip().lower()
+        return normalized_finish_reason in _CONTENT_FILTER_FINISH_REASONS
 
     @staticmethod
     def _is_complete_verification_payload(payload: Any) -> bool:
@@ -1754,6 +1914,9 @@ class StoryEngine(BaseAgent):
     ) -> None:
         if callback is None:
             return
+        # 当上游明确返回 content_filter 时，优先给出更清晰的错误描述
+        if finish_reason and (finish_reason or "").strip().lower() in _CONTENT_FILTER_FINISH_REASONS:
+            parse_error = f"模型输出被上游内容安全策略过滤（{finish_reason}），无法解析为 JSON。"
         callback(
             {
                 "stage": stage,
@@ -1767,6 +1930,37 @@ class StoryEngine(BaseAgent):
                 "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
             }
         )
+
+    def _attempt_stream_json_repair(
+        self,
+        *,
+        repair_messages: list[dict[str, str]],
+        model: str,
+        stage: str,
+        exchange_label: str,
+        progress_callback: Callable[[dict[str, Any]], None] | None,
+        max_tokens: int | None,
+        request_options: dict[str, Any] | None,
+        timing_details: list[dict[str, Any]],
+    ) -> tuple[str, str | None]:
+        """使用 repair messages 重新请求流式响应，返回原始响应内容与 finish_reason。"""
+        repaired_content, repair_finish_reason, repair_timing_meta = self._call_llm_stream_with_metadata(
+            repair_messages,
+            model,
+            progress_callback=progress_callback,
+            stage=stage,
+            unit_id=f"{exchange_label}-repair",
+            max_tokens=max_tokens,
+            request_options=request_options,
+        )
+        timing_details.append({
+            **repair_timing_meta,
+            "stage": stage,
+            "exchange_label": f"{exchange_label}-repair",
+            "is_retry": False,
+            "is_repair": True,
+        })
+        return repaired_content, repair_finish_reason
 
     def _prompt_cache_diagnostics(self, request_messages: list[dict[str, str]]) -> dict[str, Any]:
         parts: list[dict[str, Any]] = []

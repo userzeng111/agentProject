@@ -595,6 +595,8 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["by_stage"]["planning"]["total_tokens"], 140)
         self.assertEqual(report["exchange_count"], 3)
         self.assertEqual(report["cache_hit_count"], 1)
+        self.assertEqual(report["runtime_response_cache_hit_count"], 1)
+        self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
         self.assertEqual(report["latest_exchange"]["exchange_label"], "full-story-verification")
         self.assertFalse(report["latest_exchange"]["cache_hit"])
         self.assertEqual(report["latest_usage"]["model"], "gpt-5.4")

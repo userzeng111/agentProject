@@ -327,6 +327,8 @@ export interface LlmReport {
   by_stage?: Record<string, LlmUsageSummary>;
   exchange_count?: number;
   cache_hit_count?: number;
+  runtime_response_cache_hit_count?: number;
+  provider_prompt_cache_hit_count?: number;
   timing_count?: number;
   timing_by_stage?: Record<string, LlmTimingBucket>;
   slowest_step?: LlmTimingDetail;

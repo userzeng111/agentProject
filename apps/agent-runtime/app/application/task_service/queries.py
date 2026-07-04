@@ -1101,6 +1101,8 @@ class TaskServiceQueriesMixin:
         usage_count = 0
         exchange_count = 0
         cache_hit_count = 0
+        runtime_response_cache_hit_count = 0
+        provider_prompt_cache_hit_count = 0
         timing_count = 0
 
         for event in task.events:
@@ -1109,6 +1111,9 @@ class TaskServiceQueriesMixin:
                 usage = self._normalize_usage_tokens(payload)
                 model = str(payload.get("model") or task.model_id or "unknown")
                 stage = event.stage or "unknown"
+                provider_prompt_cache_hit = usage["cached_tokens"] > 0 or usage["cache_read_input_tokens"] > 0
+                if provider_prompt_cache_hit:
+                    provider_prompt_cache_hit_count += 1
                 for field in token_fields:
                     usage_total[field] += usage[field]
                 self._add_llm_usage_bucket(by_model, model, usage)
@@ -1119,12 +1124,14 @@ class TaskServiceQueriesMixin:
                     "unit_id": event.unit_id or "",
                     "model": model,
                     "finish_reason": payload.get("finish_reason"),
+                    "provider_prompt_cache_hit": provider_prompt_cache_hit,
                     **usage,
                 }
             elif event.event_type in {"context.history.updated", "cache.hit"}:
                 exchange_count += 1
                 cache_hit = event.event_type == "cache.hit" or bool(payload.get("cache_hit"))
                 if cache_hit:
+                    runtime_response_cache_hit_count += 1
                     cache_hit_count += 1
                 latest_exchange = {
                     "stage": event.stage,
@@ -1198,6 +1205,8 @@ class TaskServiceQueriesMixin:
             "by_stage": by_stage,
             "exchange_count": exchange_count,
             "cache_hit_count": cache_hit_count,
+            "runtime_response_cache_hit_count": runtime_response_cache_hit_count,
+            "provider_prompt_cache_hit_count": provider_prompt_cache_hit_count,
             "timing_count": timing_count,
             "timing_by_stage": timing_by_stage,
             "slowest_step": slowest_step or {},

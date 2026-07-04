@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：task_593ea0bac8 Agent Trace、LLM摘要缓存与上下文窗口观测问题
+  路径：`worklog/archive/LLM调用/20260702-01-task-593ea0bac8-trace-summary-cache-context.md`
+  摘要：完成 B 方案观测与当前失败链路修复，拆分 LLM 缓存口径、补充诊断日志并为章节修订空正文截断增加专用重试。
+
 - 标题：模型 API 配置后无模型
   路径：`worklog/archive/配置诊断/20260629-01-模型API配置后无模型.md`
   摘要：确认模型 API 配置正确，问题根因是后端进程未热加载最新 `.env`；重启 localhost 前后端后网关模型恢复可见。

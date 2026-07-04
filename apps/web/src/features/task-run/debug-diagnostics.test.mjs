@@ -224,6 +224,8 @@ test("LLM 摘要包含调用、缓存、重试、修复、解析失败、模型�
         usage_count: 2,
         exchange_count: 3,
         cache_hit_count: 1,
+        runtime_response_cache_hit_count: 1,
+        provider_prompt_cache_hit_count: 2,
         latest_usage: {
           model: "K2.6",
         },
@@ -269,6 +271,8 @@ test("LLM 摘要包含调用、缓存、重试、修复、解析失败、模型�
   assert.equal(diagnostics.llm.requestCount, 2);
   assert.equal(diagnostics.llm.exchangeCount, 3);
   assert.equal(diagnostics.llm.cacheHitCount, 1);
+  assert.equal(diagnostics.llm.runtimeResponseCacheHitCount, 1);
+  assert.equal(diagnostics.llm.providerPromptCacheHitCount, 2);
   assert.equal(diagnostics.llm.retryCount, 1);
   assert.equal(diagnostics.llm.repairCount, 1);
   assert.equal(diagnostics.llm.jsonParseFailedCount, 1);
@@ -375,6 +379,7 @@ test("LLM usage_total 为空对象时从事件用量兜底统计 token", () => {
     cacheReadInputTokens: 10,
   });
   assert.equal(diagnostics.llm.requestCount, 0);
+  assert.equal(diagnostics.llm.providerPromptCacheHitCount, 1);
 });
 
 test("Agent Trace 摘要包含最近轮次、计数、评分、问题、警告和结论", () => {
