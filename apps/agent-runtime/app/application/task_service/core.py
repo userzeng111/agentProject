@@ -170,8 +170,17 @@ class TaskServiceCoreMixin:
 
     def _resolve_task_model_id(self, task: TaskRecord) -> str:
         candidate = (task.model_id or "").strip() or self.model_catalog._effective_default_model()
-        self.model_catalog.ensure_novel_generation_model_supported(candidate)
-        return candidate
+        try:
+            self.model_catalog.ensure_novel_generation_model_supported(candidate)
+            return candidate
+        except ValueError:
+            # 任务指定的模型不再可用时，兜底到全局默认模型
+            fallback = self.model_catalog._effective_default_model()
+            logger.warning(
+                "任务模型 %s 不再支持，降级使用默认模型 %s",
+                candidate, fallback,
+            )
+            return fallback
 
     def _resolve_action_model_id(self, task: TaskRecord, model_id: str | None) -> str:
         requested_model = (model_id or "").strip()

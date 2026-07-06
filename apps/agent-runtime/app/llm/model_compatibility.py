@@ -270,7 +270,11 @@ class ModelCompatibilityService:
             return
 
         if evidence["chunk_count"] <= 0:
-            message = "未收到流式 chunk，模型可能不支持当前协议的流式响应。"
+            protocol = check_states.get("gateway_visible", {}).get("evidence", {}).get("protocol", "未知")
+            message = (
+                f"流式请求未收到有效数据块（model={candidate} protocol={protocol}）。"
+                "请确认该模型在供应商端处于可用状态，或尝试切换协议。"
+            )
             failed = mark_check("streaming", "failed", message, message)
             yield self._check_event(candidate, failed)
             report = self._save_failed_report(candidate, check_states, evidence, failed)

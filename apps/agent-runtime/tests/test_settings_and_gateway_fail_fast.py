@@ -73,13 +73,14 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             default_protocol="openai",
         )
 
+        # 不再自动追加 /v1，用户配置完整路径
         self.assertEqual(
             client._build_url("/chat/completions", "openai"),
-            "https://gateway.example.com/v1/chat/completions",
+            "https://gateway.example.com/chat/completions",
         )
         self.assertEqual(
             client._build_url("/models", "openai"),
-            "https://gateway.example.com/v1/models",
+            "https://gateway.example.com/models",
         )
 
     def test_gateway_does_not_duplicate_v1_base_url(self) -> None:
@@ -117,9 +118,10 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             anthropic_version="2023-06-01",
         )
 
+        # 不再自动追加 /v1，用户配置完整路径
         self.assertEqual(
             client._build_url("/messages", "anthropic"),
-            "https://gateway.example.com/v1/messages",
+            "https://gateway.example.com/messages",
         )
         headers = client._headers_for_protocol("anthropic")
         self.assertEqual(headers["x-api-key"], "test-key")
@@ -160,7 +162,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             protocol_overrides_resolver=raise_resolver,
         )
 
-        with self.assertLogs("app.llm.gateway_client", level="WARNING") as logs:
+        with self.assertLogs("backend.gateway", level="WARNING") as logs:
             protocol = client._resolve_protocol("K2.7")
 
         self.assertEqual(protocol, "openai")
@@ -175,7 +177,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
         )
 
         with patch("app.settings.config.get_settings", side_effect=RuntimeError("settings unavailable")):
-            with self.assertLogs("app.llm.gateway_client", level="WARNING") as logs:
+            with self.assertLogs("backend.gateway", level="WARNING") as logs:
                 kwargs = client._provider_prompt_cache_kwargs(AnthropicAdapter())
 
         self.assertEqual(kwargs, {})

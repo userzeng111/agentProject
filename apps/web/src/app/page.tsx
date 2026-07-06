@@ -22,7 +22,7 @@ import {
   Typography,
 } from "@mui/material";
 import { ArrowForward as ArrowForwardIcon, Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
-import { deleteTask, getDashboard, getModelCatalog, normalizeModelOptions, updateDefaultModel } from "@/lib/api";
+import { deleteTask, getDashboard, getModelCatalog, getProtocolSettings, normalizeModelOptions, setModelProtocol, updateDefaultModel } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { archiveDetailHref, newProjectHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
@@ -347,12 +347,16 @@ function SidebarStats({
   modelRefresh,
   onModelChange,
   onRefreshModels,
+  protocolOverrides,
+  onToggleProtocol,
 }: {
   dashboard: DashboardResponse;
   models: ModelOption[];
   modelRefresh: ModelRefreshState;
   onModelChange: (modelId: string) => void;
   onRefreshModels: () => void;
+  protocolOverrides: Record<string, string>;
+  onToggleProtocol: (modelId: string, currentProtocol: string) => void;
 }) {
   const stats = [
     {
@@ -419,20 +423,32 @@ function SidebarStats({
                   当前没有可用于小说任务流的在线模型
                 </MenuItem>
               )}
-              {selectableModels.map((m) => (
-                <MenuItem key={m.id} value={m.id}>
-                  <Stack spacing={0.25}>
-                    <Typography sx={{ fontSize: "0.875rem", fontWeight: 500 }}>
-                      {m.display_name || m.id}
-                    </Typography>
-                    {m.provider && (
-                      <Typography variant="caption" color="text.secondary">
-                        {m.provider}
-                      </Typography>
-                    )}
-                  </Stack>
-                </MenuItem>
-              ))}
+              {selectableModels.map((m) => {
+                const proto = protocolOverrides[m.id] || m.metadata?.protocol || "openai";
+                return (
+                  <MenuItem key={m.id} value={m.id}>
+                    <Stack direction="row" spacing={1} alignItems="center" sx={{ width: "100%" }}>
+                      <Stack spacing={0.25} sx={{ flex: 1 }}>
+                        <Typography sx={{ fontSize: "0.875rem", fontWeight: 500 }}>
+                          {m.display_name || m.id}
+                        </Typography>
+                        {m.provider && (
+                          <Typography variant="caption" color="text.secondary">
+                            {m.provider}
+                          </Typography>
+                        )}
+                      </Stack>
+                      <Chip
+                        label={proto}
+                        size="small"
+                        color={proto === "anthropic" ? "info" : "default"}
+                        variant="outlined"
+                        sx={{ height: 20, fontSize: "0.7rem" }}
+                      />
+                    </Stack>
+                  </MenuItem>
+                );
+              })}
             </Select>
             <Typography variant="caption" color="text.secondary">
               默认使用 Agent Team 当前默认模型；可在任务动作里临时覆盖。
@@ -443,6 +459,46 @@ function SidebarStats({
             <Typography variant="caption" color="text.secondary">
               {formatModelRefreshStatus(modelRefresh)}
             </Typography>
+          </Stack>
+        </CardContent>
+      </Card>
+
+      {/* 协议设置卡片 */}
+      <Card>
+        <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
+          <Stack spacing={1.5}>
+            <Typography variant="overline" color="text.secondary">
+              模型协议
+            </Typography>
+            {selectableModels.slice(0, 10).map((m) => {
+              const proto = protocolOverrides[m.id] || m.metadata?.protocol || "openai";
+              return (
+                <Stack
+                  key={m.id}
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  justifyContent="space-between"
+                >
+                  <Typography variant="body2" sx={{ fontSize: "0.8rem", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {m.display_name || m.id}
+                  </Typography>
+                  <Chip
+                    label={proto}
+                    size="small"
+                    color={proto === "anthropic" ? "info" : "default"}
+                    variant="outlined"
+                    sx={{ height: 20, fontSize: "0.7rem", cursor: "pointer" }}
+                    onClick={() => onToggleProtocol(m.id, proto)}
+                  />
+                </Stack>
+              );
+            })}
+            {selectableModels.length > 10 && (
+              <Typography variant="caption" color="text.secondary">
+                ...还有 {selectableModels.length - 10} 个模型
+              </Typography>
+            )}
           </Stack>
         </CardContent>
       </Card>
@@ -495,6 +551,8 @@ export default function Home() {
   const [error, setError] = useState("");
   const [validationErrorHref, setValidationErrorHref] = useState<string | null>(null);
   const [modelUpdating, setModelUpdating] = useState(false);
+  const [protocolOverrides, setProtocolOverrides] = useState<Record<string, string>>({});
+  const [protocolUpdating, setProtocolUpdating] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
 
@@ -546,10 +604,21 @@ export default function Home() {
       });
   }, []);
 
+  const fetchProtocolSettings = useCallback(() => {
+    void getProtocolSettings()
+      .then((response) => {
+        setProtocolOverrides(response.overrides || {});
+      })
+      .catch(() => {
+        // 协议接口失败不影响主功能
+      });
+  }, []);
+
   useEffect(() => {
     fetchDashboard();
     fetchModels(false);
-  }, [fetchDashboard, fetchModels]);
+    fetchProtocolSettings();
+  }, [fetchDashboard, fetchModels, fetchProtocolSettings]);
 
   const handleDeleteTask = useCallback((taskId: string) => {
     const task = dashboard?.continue_tasks.find((t) => t.task_id === taskId)
@@ -586,6 +655,21 @@ export default function Home() {
       })
       .finally(() => setModelUpdating(false));
   };
+
+  const handleToggleProtocol = useCallback((modelId: string, currentProtocol: string) => {
+    if (protocolUpdating) return;
+    const nextProtocol = currentProtocol === "openai" ? "anthropic" : "openai";
+    setProtocolUpdating(true);
+    void setModelProtocol(modelId, nextProtocol)
+      .then(() => {
+        setProtocolOverrides((prev) => ({ ...prev, [modelId]: nextProtocol }));
+        showSnackbar(`${modelId} 协议已切换为 ${nextProtocol}`);
+      })
+      .catch((reason) => {
+        showSnackbar(reason instanceof Error ? reason.message : "切换协议失败");
+      })
+      .finally(() => setProtocolUpdating(false));
+  }, [protocolUpdating, showSnackbar]);
 
   return (
     <Container maxWidth="lg" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
@@ -649,6 +733,8 @@ export default function Home() {
                 modelRefresh={modelRefresh}
                 onModelChange={handleModelChange}
                 onRefreshModels={() => fetchModels(true)}
+                protocolOverrides={protocolOverrides}
+                onToggleProtocol={handleToggleProtocol}
               />
             </Grid>
           </Grid>

@@ -1496,6 +1496,38 @@ class StoryEngine(BaseAgent):
                 "is_retry": False,
                 "is_repair": False,
             })
+
+            # ── 供应商错误重试：连续最多 5 次 ──
+            max_provider_retries = 5
+            provider_retry_count = 0
+            while self._is_provider_error(full_content) and provider_retry_count < max_provider_retries:
+                provider_retry_count += 1
+                logger.warning(
+                    "模型返回供应商错误，第 %d 次重试原始请求: "
+                    "stage=%s exchange_label=%s model=%s error_preview=%s",
+                    provider_retry_count,
+                    stage,
+                    exchange_label,
+                    model,
+                    full_content[:120],
+                )
+                full_content, finish_reason, timing_meta = self._call_llm_stream_with_metadata(
+                    request_messages,
+                    model,
+                    progress_callback=active_progress,
+                    stage=stage,
+                    unit_id=exchange_label,
+                    max_tokens=max_tokens,
+                    request_options=request_options,
+                )
+                timing_details.append({
+                    **timing_meta,
+                    "stage": stage,
+                    "exchange_label": exchange_label,
+                    "is_retry": True,
+                    "is_repair": False,
+                    "is_provider_retry": True,
+                })
         except StreamInterruptedAfterStartError:
             logger.warning("流式响应已开始后中断，不执行非流式重放。")
             raise

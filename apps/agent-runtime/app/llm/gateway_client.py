@@ -16,7 +16,7 @@ from app.observability.metrics import record_llm_call
 from app.observability.context import request_id_var
 from app.observability.performance import log_performance
 
-logger = get_logger(__name__)
+logger = get_logger("backend.gateway")
 
 
 class GatewayClientError(Exception):
@@ -112,13 +112,10 @@ class OpenAICompatibleGatewayClient:
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
-        """将根域名规范化为标准 `/v1` 基址；已有路径时保持用户显式配置。"""
+        """规范化基址：去除尾部斜杠，保留用户显式配置的完整路径。"""
         stripped = base_url.rstrip("/")
         parts = urlsplit(stripped)
-        path = parts.path.rstrip("/")
-        if path in {"", "/"}:
-            path = "/v1"
-        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+        return urlunsplit((parts.scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
 
     def _base_url_for_protocol(self, protocol: str) -> str:
         raw_base = self.anthropic_raw_base_url if protocol == "anthropic" and self.anthropic_raw_base_url else self.raw_base_url
@@ -468,6 +465,19 @@ class OpenAICompatibleGatewayClient:
                         chunk_data = json.loads(data_str)
                     except json.JSONDecodeError:
                         continue
+                    if "error" in chunk_data:
+                        error_obj = chunk_data["error"]
+                        error_msg = error_obj.get("message", str(error_obj)) if isinstance(error_obj, dict) else str(error_obj)
+                        error_type = error_obj.get("type", "") if isinstance(error_obj, dict) else ""
+                        error_code = error_obj.get("code", error_obj.get("status", "")) if isinstance(error_obj, dict) else ""
+                        logger.error(
+                            "gateway_stream_error model=%s error_type=%s error_code=%s error_message=%s",
+                            resolved_model,
+                            error_type,
+                            error_code,
+                            error_msg,
+                        )
+                        raise GatewayClientError(f"模型返回错误：{error_msg}")
                     parsed = adapter.parse_stream_chunk(chunk_data)
                     if parsed is None:
                         continue
