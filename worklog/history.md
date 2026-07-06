@@ -1,5 +1,13 @@
 # 历史问题索引
 
+- 标题：planning 阶段 outline JSON 解析失败（content_filter 空响应）
+  路径：`worklog/archive/LLM调用/20260701-01-planning-outline-parse-failed.md`
+  摘要：任务 task_d3032f3349 因模型输出被 content_filter 过滤为空导致 JSON 解析失败；已实现 content_filter 专用 repair 与中文双引号约束注入。
+
+- 标题：task_f64a6b18df Agent Trace unknown 与等待审核卡住排查
+  路径：`worklog/archive/agent架构/20260704-01-task-f64a6b18df-trace-unknown-waiting-review.md`
+  摘要：只读排查确认任务因 K2.7 403 配额错误卡在 waiting_manual_action；Agent Trace unknown 是前端对空 trace 的默认显示，非实际数据错误。
+
 - 标题：task_593ea0bac8 Agent Trace、LLM摘要缓存与上下文窗口观测问题
   路径：`worklog/archive/LLM调用/20260702-01-task-593ea0bac8-trace-summary-cache-context.md`
   摘要：完成 B 方案观测与当前失败链路修复，拆分 LLM 缓存口径、补充诊断日志并为章节修订空正文截断增加专用重试。
