@@ -17,21 +17,30 @@ except ImportError:  # pragma: no cover
 
 logger = get_logger(__name__)
 
+# 类级缓存：避免每次 checkpoint 都重复输出创建日志
+_checkpoint_logged: set[str] = set()
+
 
 def _create_checkpointer(db_path: str | Path | None = None):
     """创建 checkpointer：优先 SQLite 持久化，回退到内存。"""
-    log_performance(
-        logger,
-        "checkpoint_create",
-        has_db_path=bool(db_path),
-        sqlite_available=_HAS_SQLITE,
-    )
+    check_key = f"create|{bool(db_path)}|{_HAS_SQLITE}"
+    if check_key not in _checkpoint_logged:
+        _checkpoint_logged.add(check_key)
+        log_performance(
+            logger,
+            "checkpoint_create",
+            has_db_path=bool(db_path),
+            sqlite_available=_HAS_SQLITE,
+        )
     if _HAS_SQLITE and db_path:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         try:
             conn = __import__("sqlite3").connect(str(db_path), check_same_thread=False, timeout=30.0)
             saver = SqliteSaver(conn)
-            log_performance(logger, "checkpoint_sqlite_ready", has_db_path=True)
+            ready_key = f"ready|{bool(db_path)}"
+            if ready_key not in _checkpoint_logged:
+                _checkpoint_logged.add(ready_key)
+                log_performance(logger, "checkpoint_sqlite_ready", has_db_path=True)
             return saver
         except Exception as exc:
             log_performance(

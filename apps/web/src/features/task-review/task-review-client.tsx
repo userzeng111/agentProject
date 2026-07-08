@@ -52,6 +52,7 @@ import { ProjectShell } from "@/components/project-shell";
 import { StageNav } from "@/components/stage-nav";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
+import { normalizeTaskActionErrorMessage } from "@/features/task-run/task-action-state.mjs";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -1489,7 +1490,12 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       await loadReview();
       router.refresh();
     } catch (recoverError) {
-      setError(recoverError instanceof Error ? recoverError.message : "执行恢复失败");
+      const rawMessage = recoverError instanceof Error ? recoverError.message : "执行恢复失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        router.push(workspaceHref(resolvedTaskId));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1519,7 +1525,12 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
         router.push(workspaceHref(resolvedTaskId));
       }
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "提交审核失败");
+      const rawMessage = submitError instanceof Error ? submitError.message : "提交审核失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        router.push(workspaceHref(resolvedTaskId));
+      }
     } finally {
       setSubmitting(false);
     }

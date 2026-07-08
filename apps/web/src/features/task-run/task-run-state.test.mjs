@@ -313,6 +313,11 @@ test("resolveTerminalEventStreamState 为终态任务生成关闭文案", () => 
   assert.equal(resolveTerminalEventStreamState("task.failed"), "任务失败，事件流已关闭");
 });
 
+test("resolveTerminalEventStreamState 为等待人工处理生成收束文案", () => {
+  assert.equal(resolveTerminalEventStreamState("waiting_manual_action"), "任务需要人工处理，事件流已关闭");
+  assert.equal(resolveTerminalEventStreamState("task.recovery.blocked"), "任务需要人工处理，事件流已关闭");
+});
+
 test("resolveEventStreamErrorTransition 收到 task.done 后不再重连", () => {
   const transition = resolveEventStreamErrorTransition({
     opened: true,

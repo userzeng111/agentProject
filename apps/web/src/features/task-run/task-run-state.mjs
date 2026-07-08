@@ -45,7 +45,8 @@ function statusTone(status) {
 
 function normalizeTerminalStatus(value = "") {
   const normalized = String(value || "").trim().replace(/^task\./, "");
-  return ["completed", "cancelled", "failed"].includes(normalized) ? normalized : "";
+  if (normalized === "recovery.blocked") return "waiting_manual_action";
+  return ["completed", "cancelled", "failed", "waiting_manual_action"].includes(normalized) ? normalized : "";
 }
 
 export function resolveWorkspaceStageNav(status = "") {
@@ -80,6 +81,7 @@ export function resolveTerminalEventStreamState(statusOrEventType = "") {
   if (status === "completed") return "任务已完成，事件流已关闭";
   if (status === "cancelled") return "任务已取消，事件流已关闭";
   if (status === "failed") return "任务失败，事件流已关闭";
+  if (status === "waiting_manual_action") return "任务需要人工处理，事件流已关闭";
   return "";
 }
 

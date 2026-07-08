@@ -68,6 +68,14 @@ _VERIFICATION_JSON_REPAIR_PROMPT = (
     "不要复述正文，不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
 )
 
+_ISSUE_FIX_TRUNCATED_RETRY_PROMPT = (
+    "上一次章节修订补丁响应被输出预算截断，JSON 不完整。"
+    "请停止分析，请只输出 patches JSON 对象。"
+    "结构必须为 {\"patches\":[{\"number\":章节号,\"title\":\"标题\",\"summary\":\"摘要\",\"content\":\"正文\"}]}。"
+    "只输出 patches 中需要改动的章节，未修改章节不要重复输出。"
+    "不要输出 Markdown 代码围栏，不要解释，不要输出分析过程，只返回 JSON。"
+)
+
 _CONTENT_FILTER_FINISH_REASONS = {"content_filter"}
 
 _CONTENT_FILTER_REPAIR_PROMPT = (
@@ -1074,6 +1082,7 @@ class StoryEngine(BaseAgent):
         )
 
         verification_max_tokens = self._verification_max_tokens(max(len(current_chapter_pair), 1))
+        verification_retry_max_tokens = self._verification_retry_max_tokens(resolved_model, verification_max_tokens)
         verification_request_options = self._verification_request_options(resolved_model)
 
         self._require_gateway_client()
@@ -1087,6 +1096,8 @@ class StoryEngine(BaseAgent):
             max_tokens=verification_max_tokens,
             request_options=verification_request_options,
             repair_prompt=_VERIFICATION_JSON_REPAIR_PROMPT,
+            empty_truncated_retry_prompt=_VERIFICATION_TRUNCATED_RETRY_PROMPT,
+            empty_truncated_retry_max_tokens=verification_retry_max_tokens,
         )
         return payload
 
@@ -1120,6 +1131,7 @@ class StoryEngine(BaseAgent):
             logline=self._escape_user_input(summary),
         )
 
+        fix_max_tokens = self._generation_max_tokens(resolved_model)
         self._require_gateway_client()
         payload, _ = self._complete_stream_json_with_cache(
             request_messages=request_messages,
@@ -1128,6 +1140,10 @@ class StoryEngine(BaseAgent):
             exchange_label="fix-issues",
             exchange_callback=active_exchange_callback,
             progress_callback=active_progress_callback,
+            max_tokens=fix_max_tokens,
+            empty_truncated_retry_prompt=_ISSUE_FIX_TRUNCATED_RETRY_PROMPT,
+            empty_truncated_retry_max_tokens=fix_max_tokens,
+            empty_truncated_retry_allow_same_budget=True,
         )
         return self._merge_issue_fix_payload(completed_chapters, payload)
 
@@ -1233,7 +1249,7 @@ class StoryEngine(BaseAgent):
     ) -> list[dict[str, Any]]:
         patch_items = self._issue_fix_patch_items(payload)
         if not patch_items:
-            logger.warning("issue-fixer 未返回可用章节补丁，复用原始章节。")
+            logger.warning("issue-fixer 未返回可用章节补丁，复用原始章节 chapter_count=%d", len(completed_chapters))
             return [dict(chapter) for chapter in completed_chapters]
 
         fixed_by_number: dict[int, dict[str, Any]] = {}
@@ -1529,7 +1545,7 @@ class StoryEngine(BaseAgent):
                     "is_provider_retry": True,
                 })
         except StreamInterruptedAfterStartError:
-            logger.warning("流式响应已开始后中断，不执行非流式重放。")
+            logger.warning("流式响应已开始后中断，不执行非流式重放 model=%s stage=%s", model, stage)
             raise
         except (GatewayClientError, Exception) as exc:
             # fallback 到非流式

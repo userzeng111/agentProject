@@ -215,6 +215,108 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertIn("任务事件流终态检查失败", log_output)
         self.assertIn(task_id, log_output)
 
+    def test_task_event_stream_stops_when_status_is_waiting_manual_action(self) -> None:
+        class StatusValue:
+            value = "waiting_manual_action"
+
+        class ManualActionTask:
+            status = StatusValue()
+
+        class ManualActionStore:
+            def get(self, task_id: str):
+                return ManualActionTask()
+
+        class QueueShouldNotBeRead:
+            async def get(self) -> dict:
+                raise RuntimeError("等待人工处理状态不应继续读取事件队列")
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = ManualActionStore()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> QueueShouldNotBeRead:
+                return QueueShouldNotBeRead()
+
+            def unsubscribe_task_events(self, task_id: str, queue: QueueShouldNotBeRead) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_manual_action_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertIn("task.recovery.blocked", response.text)
+        self.assertIn('"status": "waiting_manual_action"', response.text)
+        self.assertNotIn("event: task.event", response.text)
+        self.assertTrue(service.unsubscribed)
+
+    def test_task_event_stream_stops_on_recovery_blocked_event(self) -> None:
+        class StatusValue:
+            value = "planning"
+
+        class RunningTask:
+            status = StatusValue()
+
+        class RunningStore:
+            def get(self, task_id: str):
+                return RunningTask()
+
+        class RecoveryBlockedQueue:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def get(self) -> dict:
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("task.recovery.blocked 后不应再次读取事件队列")
+                return {
+                    "task_id": "task_sse_recovery_blocked_fixture",
+                    "event_type": "task.recovery.blocked",
+                    "stage": "waiting_manual_action",
+                    "payload": {"reason": "recoverable_runtime_error"},
+                }
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = RunningStore()
+                self.queue = RecoveryBlockedQueue()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> RecoveryBlockedQueue:
+                return self.queue
+
+            def unsubscribe_task_events(self, task_id: str, queue: RecoveryBlockedQueue) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_recovery_blocked_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn("event: task.event", response.text)
+        self.assertIn("task.recovery.blocked", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertEqual(service.queue.calls, 1)
+        self.assertTrue(service.unsubscribed)
+
     def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
         response = self.client.post(
             "/api/tasks",

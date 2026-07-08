@@ -669,7 +669,7 @@ class AutoReviewManager(BaseAgent):
             logger.info("自动审核结束: review_type=%s, score=%s, approved=%s, auto_escalated=%s, agent_trace_count=%s", review_type, decision.overall_score, decision.approved, decision.auto_escalated, len(decision.agent_trace))
             return decision
         except GatewayClientError:
-            logger.error("自动审核失败: gateway_client 未配置")
+            logger.error("自动审核失败: gateway_client 未配置 review_type=%s", review_type)
             return self._fallback_decision("自动审核服务未配置 gateway_client")
         except Exception as e:
             logger.error("自动审核执行异常: %s", e, exc_info=True)
@@ -725,7 +725,7 @@ class AutoReviewManager(BaseAgent):
     ) -> list[SubAgentOutput]:
         """并行执行多个子 Agent（使用线程池）"""
         if not specs:
-            logger.warning("并行执行子 Agent: specs 为空")
+            logger.warning("并行执行子 Agent: specs 为空 model=%s", model)
             return []
 
         max_workers = min(len(specs), self.max_workers)

@@ -64,7 +64,7 @@ class PlannerAgent(BaseAgent):
         use_model = model or self.default_model
 
         if not blueprints:
-            logger.warning("蓝图列表为空，返回空 DAG")
+            logger.warning("蓝图列表为空，返回空 DAG blueprint_count=%d", len(blueprints))
             return TaskDAG()
 
         # 如果只有一个 Agent，直接返回单节点 DAG

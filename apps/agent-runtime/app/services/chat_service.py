@@ -29,7 +29,7 @@ class ChatService:
             augmented_messages, _ = self.rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
             return augmented_messages
         except Exception:
-            logger.exception("RAG 增强失败，回退到原始消息")
+            logger.exception("RAG 增强失败，回退到原始消息 rag_top_k=%s", payload.rag_top_k)
             return messages
 
     def _resolve_chat_model(self, requested_model: str | None) -> str:
@@ -85,7 +85,7 @@ class ChatService:
                     yield self._sse_payload("chat.chunk", data)
                 yield self._sse_payload("chat.done", {"model": resolved_model})
             except GatewayClientError as exc:
-                logger.exception("流式聊天网关错误")
+                logger.exception("流式聊天网关错误 model=%s", resolved_model)
                 yield self._sse_payload("chat.error", {"message": str(exc)})
 
         return _sse_stream()
@@ -127,7 +127,7 @@ class ChatService:
 
                     yield "data: [DONE]\n\n"
                 except GatewayClientError as exc:
-                    logger.exception("OpenAI 流式聊天网关错误")
+                    logger.exception("OpenAI 流式聊天网关错误 model=%s", resolved_model)
                     error_chunk = {"error": {"message": str(exc), "type": "gateway_error"}}
                     yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
 
@@ -165,7 +165,7 @@ class ChatService:
                     "usage": usage_data,
                 }
             except GatewayClientError as exc:
-                logger.exception("OpenAI 非流式聊天网关错误")
+                logger.exception("OpenAI 非流式聊天网关错误 model=%s", resolved_model)
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

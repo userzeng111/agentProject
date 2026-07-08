@@ -52,6 +52,10 @@ import {
   resolveTerminalEventStreamState,
   resolveWorkspaceStageNav,
 } from "@/features/task-run/task-run-state.mjs";
+import {
+  normalizeTaskActionErrorMessage,
+  resolveTaskActionSuccessMessage,
+} from "@/features/task-run/task-action-state.mjs";
 import DebugPanel from "@/features/task-run/debug-panel";
 import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
 import { ProjectShell } from "@/components/project-shell";
@@ -70,6 +74,7 @@ import {
   ResponseCacheStatus,
   SupervisorSubtaskItem,
   SupervisorSubtaskStatus,
+  TaskRecord,
   TaskStatus,
   WorkspaceEvent,
   WorkspaceResponse,
@@ -477,6 +482,31 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     setSnackbarOpen(true);
   }, []);
 
+  const applyTaskRecordSnapshot = useCallback((task: TaskRecord) => {
+    setWorkspace((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        meta: {
+          ...current.meta,
+          status: task.status,
+          current_stage: task.current_stage,
+          current_unit: ("current_unit" in task ? task.current_unit : current.meta.current_unit) ?? null,
+          progress: task.progress,
+          updated_at: task.updated_at,
+          error_message: task.error_message,
+          model_id: task.model_id || current.meta.model_id,
+          creative_model_id: task.creative_model_id || current.meta.creative_model_id,
+          default_model_id: task.default_model_id || current.meta.default_model_id,
+          last_action_model_id: task.last_action_model_id || current.meta.last_action_model_id,
+          last_action_kind: task.last_action_kind || current.meta.last_action_kind,
+          auto_review_model_mode: task.auto_review_model_mode || current.meta.auto_review_model_mode,
+          review_model_id: task.review_model_id || current.meta.review_model_id,
+        },
+      };
+    });
+  }, []);
+
   const handleCancelTask = useCallback(async () => {
     if (!resolvedTaskId) return;
     if (!window.confirm("确认取消该任务？取消后任务将停止运行。")) return;
@@ -679,7 +709,24 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         void refreshWorkspace();
       };
       source.addEventListener("snapshot", handleRefresh);
-      source.addEventListener("task.event", handleRefresh);
+      source.addEventListener("task.event", (event) => {
+        let manualTerminalState = "";
+        try {
+          const payload = JSON.parse((event as MessageEvent).data || "{}");
+          manualTerminalState = resolveTerminalEventStreamState(payload?.event_type || "");
+        } catch {
+          manualTerminalState = "";
+        }
+        if (manualTerminalState) {
+          terminalEventReceived = true;
+          terminalStreamState = manualTerminalState;
+          setStreamState(manualTerminalState);
+          handleRefresh();
+          source?.close();
+          return;
+        }
+        handleRefresh();
+      });
       source.addEventListener("task.done", (event) => {
         terminalEventReceived = true;
         try {
@@ -771,11 +818,19 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     }
     try {
       setRunning(true);
-      await runTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
+      const nextTask = await runTask(resolvedTaskId, { model_id: resolvedActionModelId || undefined });
+      applyTaskRecordSnapshot(nextTask);
+      showSnackbar(resolveTaskActionSuccessMessage(nextTask, "开始执行"));
       await refreshWorkspace();
       setError("");
     } catch (runError) {
-      setError(runError instanceof Error ? runError.message : "运行失败");
+      const rawMessage = runError instanceof Error ? runError.message : "运行失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        showSnackbar(message);
+        void refreshWorkspace();
+      }
     } finally {
       setRunning(false);
     }
@@ -794,12 +849,20 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   async function handleRecover(payload: RecoverTaskPayload) {
     try {
       setRunning(true);
-      await recoverTask(resolvedTaskId, payload);
+      const nextTask = await recoverTask(resolvedTaskId, payload);
+      applyTaskRecordSnapshot(nextTask);
+      showSnackbar(resolveTaskActionSuccessMessage(nextTask, "恢复任务"));
       await refreshWorkspace();
       setRecoveryDialogOpen(false);
       setError("");
     } catch (recoverError) {
-      setError(recoverError instanceof Error ? recoverError.message : "恢复任务失败");
+      const rawMessage = recoverError instanceof Error ? recoverError.message : "恢复任务失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        showSnackbar(message);
+        void refreshWorkspace();
+      }
     } finally {
       setRunning(false);
     }
@@ -816,17 +879,25 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         ? crypto.randomUUID()
         : `${Math.random().toString(36).substring(2, 10)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 6)}-${Math.random().toString(36).substring(2, 10)}${Date.now().toString(36).substring(0, 4)}`);
       continueRequestIdRef.current = requestId;
-      await continueTask(resolvedTaskId, {
+      const nextTask = await continueTask(resolvedTaskId, {
         requested_chapter_count: requestedChapterCount,
         continue_request_id: requestId,
         model_id: resolvedActionModelId || undefined,
       }, {
         continue_request_id: requestId,
       });
+      applyTaskRecordSnapshot(nextTask);
+      showSnackbar(resolveTaskActionSuccessMessage(nextTask, "继续创作"));
       await refreshWorkspace();
       setError("");
     } catch (continueError) {
-      setError(continueError instanceof Error ? continueError.message : "继续创作失败");
+      const rawMessage = continueError instanceof Error ? continueError.message : "继续创作失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        showSnackbar(message);
+        void refreshWorkspace();
+      }
     } finally {
       continueRequestIdRef.current = null;
       setRunning(false);

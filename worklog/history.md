@@ -4,6 +4,14 @@
   路径：`worklog/archive/任务流转/20260707-01-completed-auto-archive-and-llm-request-count.md`
   摘要：完成 completed 待用户确认后显式归档，并将 LLM 请求数与用量事件数分离，已通过后端、前端与 E2E 验证。
 
+- 标题：task_7e86fe41b5 UI 流转停留原页面问题
+  路径：`worklog/archive/UI优化/20260707-01-task-7e86fe41b5-ui-flow-stuck.md`
+  摘要：完成异步任务动作反馈、等待人工处理事件流收束，以及 LLM JSON 解析失败分类与截断重试修复。
+
+- 标题：日志系统重构：耗时计算开关、移除刷屏日志、补充静态文本参数、调用链流转
+  路径：`worklog/archive/日志治理/20260706-01-日志系统重构.md`
+  摘要：完成性能日志开关、调用链流转、静态日志参数补充、刷屏日志削减与审查修复。
+
 - 标题：planning 阶段 outline JSON 解析失败（content_filter 空响应）
   路径：`worklog/archive/LLM调用/20260701-01-planning-outline-parse-failed.md`
   摘要：任务 task_d3032f3349 因模型输出被 content_filter 过滤为空导致 JSON 解析失败；已实现 content_filter 专用 repair 与中文双引号约束注入。

@@ -13,6 +13,21 @@ from app.storage.task_store import TaskNotFoundError
 
 logger = get_logger(__name__)
 
+_TASK_STREAM_DONE_STATUS_EVENTS = {
+    "completed": "task.completed",
+    "cancelled": "task.cancelled",
+    "failed": "task.failed",
+    "waiting_manual_action": "task.recovery.blocked",
+}
+
+
+def _task_stream_done_event_type(status: str) -> str:
+    return _TASK_STREAM_DONE_STATUS_EVENTS.get(str(status or "").strip(), "")
+
+
+def _is_task_stream_done_event(event_type: str) -> bool:
+    return str(event_type or "").strip() in set(_TASK_STREAM_DONE_STATUS_EVENTS.values())
+
 
 def build_router(
     task_service,
@@ -36,7 +51,7 @@ def build_router(
             return HTTPException(status_code=400, detail=str(exc))
         if isinstance(exc, PermissionError):
             return HTTPException(status_code=403, detail="权限不足")
-        logger.exception("内部错误")
+        logger.exception("route_handler_unexpected_error exc_type=%s exc_msg=%s", type(exc).__name__, str(exc)[:200])
         return HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
     def _sse_payload(event_name: str, payload: dict) -> str:
@@ -75,7 +90,7 @@ def build_router(
         try:
             return task_service.list_models_payload(force_refresh=refresh)
         except Exception as exc:  # pragma: no cover
-            logger.exception("读取模型列表失败")
+            logger.exception("读取模型列表失败 refresh=%s", refresh)
             raise HTTPException(status_code=500, detail=f"读取模型列表失败：{exc}") from exc
 
     @router.get("/model-validation")
@@ -136,7 +151,7 @@ def build_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
-            logger.exception("更新默认模型失败")
+            logger.exception("更新默认模型失败 model_id=%s", model_id)
             raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
 
     @router.get("/settings/protocols")
@@ -182,7 +197,7 @@ def build_router(
         try:
             return rag_rebuild_service.get_status()
         except Exception as exc:
-            logger.exception("读取 RAG 设置失败")
+            logger.exception("读取 RAG 设置失败 available=%s", rag_rebuild_service is not None)
             raise HTTPException(status_code=500, detail=f"读取 RAG 设置失败：{exc}") from exc
 
     @router.post("/settings/rag/rebuild")
@@ -192,7 +207,7 @@ def build_router(
         try:
             return rag_rebuild_service.rebuild()
         except Exception:
-            logger.exception("RAG 重建失败")
+            logger.exception("RAG 重建失败 available=%s", rag_rebuild_service is not None)
             return {
                 "success": False,
                 "message": "RAG 重建失败，请检查配置或稍后重试。",
@@ -220,7 +235,7 @@ def build_router(
         try:
             return task_service.create_task(payload)
         except Exception as exc:
-            logger.exception("创建任务失败")
+            logger.exception("创建任务失败 payload_type=%s", type(payload).__name__)
             raise _handle_error(exc) from exc
 
     @router.get("/dashboard")
@@ -228,7 +243,7 @@ def build_router(
         try:
             return task_service.get_dashboard()
         except Exception as exc:
-            logger.exception("获取仪表盘失败")
+            logger.exception("获取仪表盘失败 exc_type=%s", type(exc).__name__)
             raise _handle_error(exc) from exc
 
     @router.get("/archive")
@@ -239,7 +254,7 @@ def build_router(
         try:
             return task_service.get_archive_list(page=page, page_size=page_size)
         except Exception as exc:
-            logger.exception("获取归档列表失败")
+            logger.exception("获取归档列表失败 page=%d page_size=%d", page, page_size)
             raise _handle_error(exc) from exc
 
     @router.get("/archive/{task_id}")
@@ -441,10 +456,15 @@ def build_router(
                     # 检查任务是否已终止但事件队列为空，避免永久挂起
                     try:
                         latest = task_service.store.get(task_id)
-                        if latest.status.value in {"completed", "cancelled", "failed"}:
+                        done_event_type = _task_stream_done_event_type(latest.status.value)
+                        if done_event_type:
                             yield _sse_payload(
                                 "task.done",
-                                {"task_id": task_id, "event_type": f"task.{latest.status.value}"},
+                                {
+                                    "task_id": task_id,
+                                    "event_type": done_event_type,
+                                    "status": latest.status.value,
+                                },
                             )
                             break
                     except Exception:
@@ -457,7 +477,7 @@ def build_router(
                         yield ": keep-alive\n\n"
                         continue
                     yield _sse_payload("task.event", payload)
-                    if payload.get("event_type") in {"task.completed", "task.cancelled", "task.failed"}:
+                    if _is_task_stream_done_event(payload.get("event_type", "")):
                         yield _sse_payload(
                             "task.done",
                             {"task_id": task_id, "event_type": payload.get("event_type")},
@@ -497,7 +517,7 @@ def build_router(
         except HTTPException:
             raise
         except Exception:
-            logger.exception("聊天流初始化失败")
+            logger.exception("聊天流初始化失败 model=%s", payload.model)
             raise HTTPException(status_code=500, detail="聊天服务内部错误，请稍后重试。")
 
         return StreamingResponse(
@@ -521,7 +541,7 @@ def build_router(
         except HTTPException:
             raise
         except Exception:
-            logger.exception("聊天补全初始化失败")
+            logger.exception("聊天补全初始化失败 model=%s", payload.model)
             raise HTTPException(status_code=500, detail="聊天服务内部错误，请稍后重试。")
 
         # 如果返回的是异步生成器，则包装为 StreamingResponse

@@ -113,7 +113,7 @@ class MasterAgent(BaseAgent):
         """将 LLM 响应解析为 AgentBlueprint 列表。"""
         agents_data = response.get("agents", [])
         if not agents_data:
-            logger.warning("LLM 未返回任何 Agent 定义，使用 fallback")
+            logger.warning("LLM 未返回任何 Agent 定义，使用 fallback agent_count=%d", len(agents_data))
             return self._fallback_blueprints()
 
         # 建立 role -> agent_id 的映射，用于解析依赖关系

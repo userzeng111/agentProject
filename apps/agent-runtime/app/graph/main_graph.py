@@ -317,7 +317,7 @@ def build_graph(
                 default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
                 max_workers=auto_review_max_workers,
             )
-            logger.info("动态 Agent 审核模式已启用")
+            logger.info("动态 Agent 审核模式已启用 max_workers=%s", auto_review_max_workers)
     except Exception as e:
         auto_review_manager = AutoReviewManager(
             gateway_client=getattr(engine, "gateway_client", None),

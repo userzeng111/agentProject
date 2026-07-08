@@ -4,8 +4,24 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import logging
+import os
 import time
 from typing import Any, Iterator
+
+# 全局开关：PERF_LOG_ENABLED=true 时输出耗时日志
+# 可通过 set_perf_log_enabled() 运行时切换
+_PERF_LOG_ENABLED = os.environ.get("PERF_LOG_ENABLED", "").lower() in ("1", "true", "yes")
+
+
+def is_perf_log_enabled() -> bool:
+    """耗时日志是否启用。"""
+    return _PERF_LOG_ENABLED
+
+
+def set_perf_log_enabled(enabled: bool) -> None:
+    """运行时启用/关闭耗时日志。"""
+    global _PERF_LOG_ENABLED
+    _PERF_LOG_ENABLED = enabled
 
 
 def _format_value(value: Any) -> str:
@@ -29,10 +45,12 @@ def log_performance(
     logger: logging.Logger,
     event: str,
     *,
-    level: int = logging.INFO,
+    level: int = logging.DEBUG,
     **fields: Any,
 ) -> None:
     """输出稳定的性能日志事件。"""
+    if not _PERF_LOG_ENABLED:
+        return
     payload = _format_fields({"event": event, **fields})
     logger.log(level, payload)
 
@@ -42,10 +60,13 @@ def performance_span(
     logger: logging.Logger,
     event: str,
     *,
-    level: int = logging.INFO,
+    level: int = logging.DEBUG,
     **fields: Any,
 ) -> Iterator[None]:
     """记录代码块耗时，异常时保留 traceback 并继续抛出。"""
+    if not _PERF_LOG_ENABLED:
+        yield
+        return
     started = time.perf_counter()
     try:
         yield

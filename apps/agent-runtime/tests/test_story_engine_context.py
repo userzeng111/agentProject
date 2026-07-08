@@ -148,6 +148,24 @@ class StreamPartialJsonLengthThenSuccessGateway(StreamGatewayBase):
         yield StreamChunk(finish_reason="stop", model=model or "")
 
 
+class StreamIssueFixTruncatedThenSuccessGateway(StreamGatewayBase):
+    def __init__(self, retry_payload: dict) -> None:
+        self.retry_payload = retry_payload
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if len(self.calls) == 1:
+            yield StreamChunk(
+                content='```json\n{"patches":[{"number":2,"title":"第二章","summary":"修复摘要","content":"未完成正文',
+                model=model or "",
+            )
+            yield StreamChunk(finish_reason="length", model=model or "")
+            return
+        yield StreamChunk(content=json.dumps(self.retry_payload, ensure_ascii=False), model=model or "")
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
 class StreamInvalidThenInvalidRepairGateway(StreamGatewayBase):
     def __init__(self, first_raw: str, repair_raw: str) -> None:
         self.first_raw = first_raw
@@ -1398,6 +1416,81 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(fixed[1]["summary"], "第二章修复后摘要")
             self.assertEqual(fixed[1]["content"], "第二章修复后正文")
 
+    def test_fix_verified_issues_retries_truncated_json_with_short_patch_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "generation": {"max_tokens": 10000},
+                        "models": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            retry_payload = {
+                "patches": [
+                    {
+                        "number": 2,
+                        "title": "第二章",
+                        "summary": "第二章修复后摘要",
+                        "content": "第二章修复后正文",
+                    }
+                ]
+            }
+            gateway = StreamIssueFixTruncatedThenSuccessGateway(retry_payload)
+            engine.gateway_client = gateway
+            events: list[dict] = []
+            engine.exchange_callback = events.append
+            original_chapters = [
+                {"number": 1, "title": "第一章", "summary": "第一章摘要", "content": "第一章原文"},
+                {"number": 2, "title": "第二章", "summary": "第二章摘要", "content": "第二章原文"},
+            ]
+
+            fixed = engine.fix_verified_issues(
+                completed_chapters=original_chapters,
+                verification_report={
+                    "issues": [
+                        {
+                            "severity": "warning",
+                            "location": "第二章",
+                            "description": "人物动机前后矛盾",
+                            "suggestion": "只修复第二章相关段落",
+                        }
+                    ]
+                },
+                review_comment="只修复第二章的人物动机。",
+                story_plan={
+                    "working_title": "补丁修复",
+                    "logline": "测试修复补丁。",
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(fixed[0], original_chapters[0])
+            self.assertEqual(fixed[1]["summary"], "第二章修复后摘要")
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 10000)
+            self.assertEqual(gateway.calls[1]["kwargs"].get("max_tokens"), 10000)
+            self.assertIn("只输出 patches", gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("不要输出 Markdown 代码围栏", gateway.calls[1]["messages"][-1]["content"])
+            self.assertEqual([event for event in events if event.get("response_parse_failed")], [])
+            self.assertTrue(events[-1]["timing_details"][1]["is_retry"])
+
     def test_verify_full_story_uses_independent_verification_max_tokens_and_tight_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             capability_path = Path(tmp_dir) / "model_capabilities.json"
@@ -1499,6 +1592,67 @@ class StoryEngineContextTests(unittest.TestCase):
             )
 
             self.assertEqual(gateway.stream_calls[0]["kwargs"].get("max_tokens"), 1600)
+
+    def test_verify_chapter_window_retries_empty_truncated_response_with_tight_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            capability_path = Path(tmp_dir) / "model_capabilities.json"
+            capability_path.write_text(
+                json.dumps(
+                    {
+                        "defaults": {
+                            "max_input_tokens": 200000,
+                            "max_output_tokens": 10000,
+                        },
+                        "models": {
+                            "mimo-v2.5-pro": {
+                                "max_input_tokens": 200000,
+                                "max_output_tokens": 10000,
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    MODEL_CAPABILITIES_PATH=str(capability_path),
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            retry_payload = {
+                "overall_score": 96,
+                "issues": [],
+                "summary": "章节窗口验证通过",
+            }
+            gateway = StreamReasoningOnlyLengthThenSuccessGateway(retry_payload)
+            engine.gateway_client = gateway
+            events: list[dict] = []
+            engine.exchange_callback = events.append
+
+            payload = engine.verify_chapter_window(
+                current_chapter_pair=[
+                    {"number": 1, "title": "第一章", "summary": "摘要", "content": "正文"},
+                ],
+                completed_chapters=[],
+                story_plan={
+                    "working_title": "章节窗口",
+                    "chapter_plan": [{"number": 1, "title": "第一章"}],
+                },
+                spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(payload, retry_payload)
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertEqual(gateway.calls[0]["kwargs"].get("max_tokens"), 900)
+            self.assertGreater(gateway.calls[1]["kwargs"].get("max_tokens"), gateway.calls[0]["kwargs"].get("max_tokens"))
+            self.assertIn("极短 JSON 对象", gateway.calls[1]["messages"][-1]["content"])
+            self.assertIn("不要输出分析过程", gateway.calls[1]["messages"][-1]["content"])
+            self.assertEqual([event for event in events if event.get("response_parse_failed")], [])
+            self.assertTrue(events[-1]["timing_details"][1]["is_retry"])
 
     def test_verify_full_story_uses_short_budget_for_single_chapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

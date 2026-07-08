@@ -39,6 +39,10 @@ class SkillLoader:
     每个 agent 一个子目录，目录下每个 .yaml 是一个 skill。
     """
 
+    # 类级缓存：记录已打印过的缺失路径，避免每次 load_all 重复打日志
+    _logged_missing_roots: set[str] = set()
+    _logged_empty_roots: set[str] = set()
+
     def __init__(self, skills_root: Path) -> None:
         self._skills_root = skills_root
         self._registry: dict[str, SkillConfig] = {}
@@ -50,12 +54,18 @@ class SkillLoader:
         self._load_errors.clear()
 
         if not self._skills_root.exists():
-            logger.debug("Skill 根目录不存在，按无外部 Skill 处理: %s", self._skills_root)
+            root_key = str(self._skills_root.resolve())
+            if root_key not in self._logged_missing_roots:
+                self._logged_missing_roots.add(root_key)
+                logger.debug("Skill 根目录不存在，按无外部 Skill 处理: %s", self._skills_root)
             return self._registry
 
         yaml_files = sorted(self._skills_root.rglob("*.yaml"))
         if not yaml_files:
-            logger.debug("未找到 Skill YAML 文件，按内置 prompt fallback: %s", self._skills_root)
+            root_key = str(self._skills_root.resolve())
+            if root_key not in self._logged_empty_roots:
+                self._logged_empty_roots.add(root_key)
+                logger.debug("未找到 Skill YAML 文件，按内置 prompt fallback: %s", self._skills_root)
             return self._registry
 
         for yaml_path in yaml_files:

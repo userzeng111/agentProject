@@ -166,6 +166,7 @@ export default function DebugPanel({
   const stateCheck = diagnostics.stateCheck;
   const context = diagnostics.context;
   const llm = diagnostics.llm;
+  const jsonParseFailureBreakdown = (llm.jsonParseFailureBreakdown || {}) as Record<string, unknown>;
   const agentTrace = diagnostics.agentTrace;
   const rag = diagnostics.rag as StatusBlock & { source?: string; lastQueryStage?: string; injectionEvidence?: string };
   const evidenceLinks = Array.isArray(diagnostics.evidenceLinks) ? diagnostics.evidenceLinks : [];
@@ -229,6 +230,17 @@ export default function DebugPanel({
               { label: "重试", value: formatNumber(llm.retryCount) },
               { label: "修复", value: formatNumber(llm.repairCount) },
               { label: "JSON 解析失败", value: formatNumber(llm.jsonParseFailedCount) },
+            ]}
+          />
+          <MetricChips
+            items={[
+              { label: "供应商拒答", value: formatNumber(jsonParseFailureBreakdown.providerRefusalCount ?? 0) },
+              { label: "空截断", value: formatNumber(jsonParseFailureBreakdown.emptyTruncatedCount ?? 0) },
+              { label: "截断 JSON", value: formatNumber(jsonParseFailureBreakdown.truncatedJsonCount ?? 0) },
+              {
+                label: "普通 JSON 失败",
+                value: formatNumber(jsonParseFailureBreakdown.ordinaryJsonParseFailedCount ?? 0),
+              },
             ]}
           />
           <MetricChips

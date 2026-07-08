@@ -349,6 +349,7 @@ export interface TaskRecord {
   chapter_word_min?: number;
   status: TaskStatus;
   current_stage: string;
+  current_unit?: string | null;
   progress: number;
   input: TaskInput;
   error_message: string | null;

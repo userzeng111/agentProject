@@ -20,6 +20,7 @@ from app.llm.story_engine import (
     set_progress_callback,
 )
 from app.observability.performance import performance_span
+from app.observability.context import push_request_flow
 
 logger = get_logger(__name__)
 
@@ -27,6 +28,7 @@ logger = get_logger(__name__)
 class TaskServiceRunnerMixin:
 
     def _run_task_sync(self, task_id: str, action_model_id: str | None = None) -> TaskRecord:
+        push_request_flow("runner.run_task_sync")
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         try:
@@ -85,6 +87,7 @@ class TaskServiceRunnerMixin:
             self._leave_active_run(task_id)
 
     def _resume_task_sync(self, task_id: str, approved: bool, comment: str, action_model_id: str | None = None) -> TaskRecord:
+        push_request_flow("runner.resume_task_sync")
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         try:

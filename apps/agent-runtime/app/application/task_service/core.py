@@ -35,6 +35,7 @@ from app.llm.story_engine import (
     StoryEngine,
 )
 from app.observability import RequestContext, request_id_var
+from app.observability.context import push_request_flow
 from app.observability.performance import log_performance, performance_span
 from app.rag.service import RagService
 from app.storage.db_repository import get_novel_project, update_project_status
@@ -124,7 +125,7 @@ class TaskServiceCoreMixin:
         兼容形态，使 ``start/resume/get_state/update_state`` 均可正常调用。
         """
         if value is None:
-            logger.warning("workflow_engine 被设置为 None，后续依赖工作流引擎的操作可能失败。")
+            logger.warning("workflow_engine 被设置为 None，后续依赖工作流引擎的操作可能失败。 caller=%s", type(self).__name__)
             self.workflow_engine = None
             return
         if all(hasattr(value, attr) for attr in ("start", "resume", "get_state", "update_state")):
@@ -154,6 +155,7 @@ class TaskServiceCoreMixin:
         self.workflow_engine = _FakeEngineAdapter(value)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
+        push_request_flow("service.create_task")
         requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
         self.model_catalog.ensure_novel_generation_model_supported(requested_model)
         review_model_id = (payload.review_model_id or "").strip()
@@ -249,6 +251,7 @@ class TaskServiceCoreMixin:
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
+        push_request_flow("service.cancel_task")
         # 检查任务是否在活跃运行中，如果是则请求后台链路停止写入。
         with self._run_lock:
             was_active = task_id in self._active_runs
@@ -285,6 +288,7 @@ class TaskServiceCoreMixin:
 
     def delete_task(self, task_id: str) -> dict[str, str]:
         """删除一个已取消/已完成/失败的任务（不能删除运行中的任务）。"""
+        push_request_flow("service.delete_task")
         # 再次确认任务不在活跃运行中
         with self._run_lock:
             if task_id in self._active_runs:
@@ -306,6 +310,7 @@ class TaskServiceCoreMixin:
             raise RuntimeError(f"删除任务 {task_id} 的数据库关联记录失败") from exc
 
     def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
+        push_request_flow("service.run_task")
         with self._run_lock:
             if task_id in self._active_runs:
                 raise ValueError("任务正在运行中，请勿重复提交。")

@@ -158,7 +158,7 @@ class ModelCompatibilityService:
         report = data["models"].get(candidate)
         if isinstance(report, dict):
             return {"model_id": candidate, **report}
-        return self.build_report(candidate, "unverified", "尚未验证", [])
+        return self.build_report(candidate, "unverified", f"模型 {candidate} 尚未验证", [])
 
     def save_report(self, report: dict[str, Any]) -> dict[str, Any]:
         model_id = str(report.get("model_id") or "").strip()
@@ -186,7 +186,7 @@ class ModelCompatibilityService:
         if not candidate:
             raise ValueError("model_id 不能为空")
         marker = (context_marker or "").strip() or f"CTX-{secrets.token_hex(4)}"
-        check_states = {check_id: build_check(check_id, "pending", "等待验证") for check_id in CHECK_IDS}
+        check_states = {check_id: build_check(check_id, "pending", f"等待验证（{candidate}）") for check_id in CHECK_IDS}
         evidence: dict[str, Any] = {
             "chunk_count": 0,
             "reasoning_chars": 0,
@@ -214,13 +214,13 @@ class ModelCompatibilityService:
         gateway_check = mark_check("gateway_visible", "running", "正在确认模型是否来自网关")
         yield self._check_event(candidate, gateway_check)
         if not self._gateway_visible(candidate):
-            message = "模型未出现在网关返回列表中，请检查 LLM_BASE_URL、LLM_API_KEY 或供应商模型权限。"
+            message = f"模型 {candidate} 未出现在网关返回列表中，请检查 LLM_BASE_URL、LLM_API_KEY 或供应商模型权限。"
             failed = mark_check("gateway_visible", "failed", message, message)
             yield self._check_event(candidate, failed)
             report = self._save_failed_report(candidate, check_states, evidence, failed)
             yield self._error_event(candidate, "gateway_visible", message, report)
             return
-        passed = mark_check("gateway_visible", "passed", "模型来自网关")
+        passed = mark_check("gateway_visible", "passed", f"模型 {candidate} 来自网关")
         yield self._check_event(candidate, passed)
 
         messages = self._build_validation_messages(candidate, marker)
@@ -286,33 +286,33 @@ class ModelCompatibilityService:
         content = "".join(content_parts).strip()
         evidence["content_chars"] = len(content)
         if not content:
-            message = "模型返回内容为空。"
+            message = f"模型 {candidate} 返回内容为空。"
             failed = mark_check("content_output", "failed", message, message)
             yield self._check_event(candidate, failed)
             report = self._save_failed_report(candidate, check_states, evidence, failed)
             yield self._error_event(candidate, "content_output", message, report)
             return
-        passed = mark_check("content_output", "passed", "收到非空正文")
+        passed = mark_check("content_output", "passed", f"模型 {candidate} 收到非空正文")
         yield self._check_event(candidate, passed)
 
         reasoning_failed_check: dict[str, Any] | None = None
         if int(evidence["reasoning_chars"]) <= 0:
-            message = "未收到 reasoning_content 或可识别推理事件。该模型可聊天，但不满足当前小说任务流的推理信号要求。"
+            message = f"模型 {candidate} 未收到 reasoning_content，该模型可聊天但不满足推理信号要求。"
             reasoning_failed_check = mark_check("reasoning_signal", "failed", message, message)
             yield self._check_event(candidate, reasoning_failed_check)
         else:
-            passed = mark_check("reasoning_signal", "passed", "收到推理信号元数据")
+            passed = mark_check("reasoning_signal", "passed", f"模型 {candidate} 收到推理信号")
             yield self._check_event(candidate, passed)
 
         evidence["context_marker_seen"] = marker in content
         if not evidence["context_marker_seen"]:
-            message = "模型有输出，但未回显上下文哨兵，可能没有正确接收系统上下文。"
+            message = f"模型 {candidate} 未回显上下文哨兵 {marker}，可能没有正确接收系统上下文。"
             failed = mark_check("context_echo", "failed", message, message)
             yield self._check_event(candidate, failed)
             report = self._save_failed_report(candidate, check_states, evidence, failed)
             yield self._error_event(candidate, "context_echo", message, report)
             return
-        passed = mark_check("context_echo", "passed", "已回显上下文哨兵")
+        passed = mark_check("context_echo", "passed", f"模型 {candidate} 已回显上下文哨兵")
         yield self._check_event(candidate, passed)
 
         try:
@@ -331,17 +331,17 @@ class ModelCompatibilityService:
             report = self._save_failed_report(candidate, check_states, evidence, failed)
             yield self._error_event(candidate, "json_schema", schema_error, report)
             return
-        passed = mark_check("json_schema", "passed", "JSON 可解析")
+        passed = mark_check("json_schema", "passed", f"模型 {candidate} JSON 可解析")
         yield self._check_event(candidate, passed)
 
         if not self._has_novel_minimum(parsed, content):
-            message = "模型输出不符合中文小说任务最小格式。"
+            message = f"模型 {candidate} 输出不符合中文小说任务最小格式。"
             failed = mark_check("novel_minimum", "failed", message, message)
             yield self._check_event(candidate, failed)
             report = self._save_failed_report(candidate, check_states, evidence, failed)
             yield self._error_event(candidate, "novel_minimum", message, report)
             return
-        passed = mark_check("novel_minimum", "passed", "中文小说片段非空")
+        passed = mark_check("novel_minimum", "passed", f"模型 {candidate} 中文小说片段非空")
         yield self._check_event(candidate, passed)
 
         if reasoning_failed_check is not None:
@@ -353,7 +353,7 @@ class ModelCompatibilityService:
         report = self.build_report(
             model_id=candidate,
             status="verified",
-            summary="流式、上下文、推理信号、JSON 与小说最小能力均通过",
+            summary=f"模型 {candidate} 流式、上下文、推理信号、JSON 与小说最小能力均通过",
             checks=self._ordered_checks(check_states),
             evidence=evidence,
         )
@@ -417,30 +417,30 @@ class ModelCompatibilityService:
             start = content.find("{")
             end = content.rfind("}")
             if start < 0 or end <= start:
-                raise ValueError("模型输出不是合法 JSON。") from direct_exc
+                raise ValueError("模型输出不是合法 JSON，未找到 {} 包围的 JSON 结构。") from direct_exc
             try:
                 parsed = json.loads(content[start : end + 1])
             except json.JSONDecodeError as exc:
-                raise ValueError("模型输出不是合法 JSON。") from exc
+                raise ValueError("模型输出不是合法 JSON，尝试截取后发现解析错误。") from exc
         if not isinstance(parsed, dict):
-            raise ValueError("模型输出不是 JSON 对象。")
+            raise ValueError("模型输出不是 JSON 对象（顶层类型非 dict）。")
         return parsed
 
     @staticmethod
     def _json_schema_error(parsed: dict[str, Any], context_marker: str) -> str:
         if parsed.get("context_marker") != context_marker:
-            return "JSON 缺少 context_marker 字段或上下文哨兵不匹配。"
+            return f"JSON 缺少 context_marker 字段或上下文哨兵不匹配（期望 {context_marker}）。"
         outline = parsed.get("outline")
         if not isinstance(outline, list):
-            return "JSON 缺少 outline 字段。"
+            return "JSON 缺少 outline 字段（期望 list）。"
         risk_flags = parsed.get("risk_flags")
         if risk_flags is None or not isinstance(risk_flags, list):
-            return "JSON 缺少 risk_flags 字段。"
-        for item in outline:
+            return "JSON 缺少 risk_flags 字段（期望 list）。"
+        for idx, item in enumerate(outline):
             if not isinstance(item, dict):
-                return "outline 项必须是对象。"
+                return f"outline[{idx}] 必须是对象（当前类型 {type(item).__name__}）。"
             if not str(item.get("title") or "").strip() or not str(item.get("goal") or "").strip():
-                return "outline 项缺少 title 或 goal 字段。"
+                return f"outline[{idx}] 缺少 title 或 goal 字段。"
         return ""
 
     @staticmethod
@@ -486,7 +486,7 @@ class ModelCompatibilityService:
         report = self.build_report(
             model_id=model_id,
             status="failed",
-            summary="模型兼容性验证失败",
+            summary=f"模型 {model_id} 兼容性验证失败",
             checks=self._ordered_checks(check_states),
             evidence=evidence,
             failure_reason=failed_check.get("failure_reason") or failed_check.get("summary") or "",
