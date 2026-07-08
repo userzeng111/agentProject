@@ -54,7 +54,7 @@ export function resolveWorkspaceStageNav(status = "") {
     { label: "规划", description: "大纲与章节计划" },
     { label: "审核", description: "人工确认与修订" },
     { label: "创作", description: "正文生成与整理" },
-    { label: "完成", description: "结果归档" },
+    { label: "完成", description: "结果待确认" },
   ];
   const activeStepByStatus = {
     created: 0,
@@ -341,7 +341,7 @@ export function buildWorkflowGraph(workspace = {}) {
     ["drafting", "正文生成", 660, 20, currentChapter ? `当前第 ${currentChapter} 章` : "待生成"],
     ["chapter-review", "章节审核", 660, 150, status === "waiting_chapter_review" ? "待审核" : "自动/人工门禁"],
     ["verification", "全文验证", 900, 80, "一致性与修复"],
-    ["assembly", "结果整理", 1120, 80, planned > 0 ? `${completed}/${planned} 章` : "归档输出"],
+    ["assembly", "结果整理", 1120, 80, planned > 0 ? `${completed}/${planned} 章` : "结果输出"],
   ];
 
   const activeStageId = overview.activeMainStageId;

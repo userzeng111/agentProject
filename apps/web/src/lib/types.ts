@@ -323,6 +323,7 @@ export interface LlmExchangeSummary {
 export interface LlmReport {
   usage_total?: LlmUsageSummary;
   usage_count?: number;
+  request_count?: number;
   by_model?: Record<string, LlmUsageSummary>;
   by_stage?: Record<string, LlmUsageSummary>;
   exchange_count?: number;
@@ -426,6 +427,7 @@ export interface WorkspaceMeta {
   updated_at?: string;
   summary?: string;
   error_message?: string | null;
+  storage_state?: string;
   auto_review?: boolean;
   last_error_detail?: string;
   context_status?: ContextStatus;

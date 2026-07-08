@@ -23,6 +23,18 @@ const RUNNING_STATUSES = new Set([
   "drafting",
   "assembling",
 ]);
+const TRUNCATED_FINISH_REASONS = new Set(["length", "max_tokens"]);
+const PROVIDER_REFUSAL_PATTERNS = [
+  "白鹿无法回答此问题",
+  "白鹿的回答出现问题",
+  "模型供应商返回了错误消息",
+  "模型输出被上游内容安全策略过滤",
+  "content_filter",
+  "无法回答此问题",
+  "cannot answer",
+  "refusal",
+  "refused",
+];
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
@@ -163,10 +175,87 @@ function isJsonParseFailedEvent(event) {
   return (
     eventType.includes("json.parse.failed") ||
     eventType.includes("json_parse_failed") ||
+    eventType.includes("response.parse_failed") ||
+    eventType.includes("response_parse_failed") ||
     status.includes("json_parse_failed") ||
+    status.includes("response_parse_failed") ||
     message.includes("json 解析失败") ||
     message.includes("json parse failed")
   );
+}
+
+function parseFailureText(event) {
+  const payload = asObject(event?.payload);
+  return [
+    event?.message,
+    payload.parse_error,
+    payload.raw_response,
+    payload.summary,
+    payload.status,
+  ]
+    .filter((item) => item !== null && item !== undefined)
+    .map(String)
+    .join("\n");
+}
+
+function parseFailureFinishReason(event) {
+  const payload = asObject(event?.payload);
+  return String(payload.finish_reason ?? payload.finishReason ?? event?.finish_reason ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function parseFailureRawResponseChars(event) {
+  const payload = asObject(event?.payload);
+  const explicitChars = numberOrNull(payload.raw_response_chars ?? payload.rawResponseChars ?? event?.raw_response_chars);
+  if (explicitChars !== null) return explicitChars;
+  if (typeof payload.raw_response === "string") return payload.raw_response.length;
+  if (typeof event?.raw_response === "string") return event.raw_response.length;
+  return null;
+}
+
+function isProviderRefusalParseFailure(event) {
+  const text = parseFailureText(event);
+  const lowerText = text.toLowerCase();
+  return PROVIDER_REFUSAL_PATTERNS.some((pattern) => lowerText.includes(pattern.toLowerCase()));
+}
+
+function isTruncatedParseFailure(event) {
+  return TRUNCATED_FINISH_REASONS.has(parseFailureFinishReason(event));
+}
+
+function isEmptyTruncatedParseFailure(event) {
+  if (!isTruncatedParseFailure(event)) return false;
+  return parseFailureRawResponseChars(event) === 0;
+}
+
+function isTruncatedJsonParseFailure(event) {
+  if (!isTruncatedParseFailure(event)) return false;
+  const rawResponseChars = parseFailureRawResponseChars(event);
+  return rawResponseChars === null || rawResponseChars > 0;
+}
+
+function buildJsonParseFailureBreakdown(events = []) {
+  const breakdown = {
+    providerRefusalCount: 0,
+    emptyTruncatedCount: 0,
+    truncatedJsonCount: 0,
+    ordinaryJsonParseFailedCount: 0,
+  };
+
+  for (const event of asArray(events)) {
+    if (isProviderRefusalParseFailure(event)) {
+      breakdown.providerRefusalCount += 1;
+    } else if (isEmptyTruncatedParseFailure(event)) {
+      breakdown.emptyTruncatedCount += 1;
+    } else if (isTruncatedJsonParseFailure(event)) {
+      breakdown.truncatedJsonCount += 1;
+    } else {
+      breakdown.ordinaryJsonParseFailedCount += 1;
+    }
+  }
+
+  return breakdown;
 }
 
 function buildStageTimingsFromReport(report = {}) {
@@ -259,6 +348,9 @@ function deriveLlmFromEvents(events = []) {
   let cacheHitCount = 0;
   let runtimeResponseCacheHitCount = 0;
   let providerPromptCacheHitCount = 0;
+  let timingRequestCount = 0;
+  let nonCachedExchangeCount = 0;
+  let parseFailedRequestCount = 0;
 
   for (const event of asArray(events)) {
     if (event?.event_type === "model.usage") {
@@ -274,9 +366,16 @@ function deriveLlmFromEvents(events = []) {
       if (event?.event_type === "cache.hit" || event?.payload?.cache_hit) {
         cacheHitCount += 1;
         runtimeResponseCacheHitCount += 1;
+      } else {
+        nonCachedExchangeCount += 1;
       }
+      timingRequestCount += asArray(event?.payload?.timing_details).length;
+    }
+    if (isJsonParseFailedEvent(event)) {
+      parseFailedRequestCount += 1;
     }
   }
+  requestCount = Math.max(requestCount, timingRequestCount, nonCachedExchangeCount) + parseFailedRequestCount;
 
   return {
     totals,
@@ -433,6 +532,7 @@ function buildHealth(workspace = {}, stateCheck) {
 function buildLlm(workspace = {}) {
   const report = asObject(workspace.llm_report);
   const events = asArray(workspace.recent_events);
+  const jsonParseFailedEvents = events.filter(isJsonParseFailedEvent);
   const eventSummary = deriveLlmFromEvents(events);
   const hasReportUsage = Object.keys(asObject(report.usage_total)).length > 0;
   const tokens = hasReportUsage ? normalizeTokens(report.usage_total) : eventSummary.totals;
@@ -446,11 +546,22 @@ function buildLlm(workspace = {}) {
   const newestModelEvent = latestEvent(events.filter((event) => eventModel(event)));
   const latestModel =
     String(report.latest_usage?.model || report.latest_exchange?.model || eventModel(newestModelEvent) || "");
+  const reportUsageCount = toInteger(report.usage_count, 0);
+  const reportRequestCount = numberOrNull(report.request_count ?? report.requestCount);
+  const reportTimingCount = toInteger(report.timing_count, 0);
+  const reportExchangeCount = toInteger(report.exchange_count, 0);
+  const reportRuntimeCacheHitCount = toInteger(report.runtime_response_cache_hit_count, 0);
+  const legacyReportRequestCount = Math.max(
+    reportUsageCount,
+    reportTimingCount,
+    Math.max(reportExchangeCount - reportRuntimeCacheHitCount, 0),
+    eventSummary.requestCount,
+  );
 
   return {
     status: Object.keys(report).length || events.length ? "available" : "unknown",
     tokens,
-    requestCount: toInteger(report.usage_count, eventSummary.requestCount),
+    requestCount: reportRequestCount ?? legacyReportRequestCount,
     exchangeCount: toInteger(report.exchange_count, eventSummary.exchangeCount),
     cacheHitCount: toInteger(report.cache_hit_count, eventSummary.cacheHitCount),
     runtimeResponseCacheHitCount: toInteger(
@@ -463,7 +574,8 @@ function buildLlm(workspace = {}) {
     ),
     retryCount,
     repairCount,
-    jsonParseFailedCount: events.filter(isJsonParseFailedEvent).length,
+    jsonParseFailedCount: jsonParseFailedEvents.length,
+    jsonParseFailureBreakdown: buildJsonParseFailureBreakdown(jsonParseFailedEvents),
     latestModel,
     stageTimings: finalStageTimings,
     slowestStep: Object.keys(asObject(report.slowest_step)).length

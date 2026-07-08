@@ -91,6 +91,13 @@ test.describe("首页 Dashboard 与创建任务", () => {
       await expect(page.getByRole("tab", { name: tab })).toBeVisible();
     }
 
+    await page.getByRole("tab", { name: "已完成 (1)" }).click();
+    const completedCard = page.getByTestId("project-card").filter({ hasText: "自动化测试-completed" });
+    await expect(completedCard.getByRole("link", { name: "进入项目" })).toHaveAttribute(
+      "href",
+      "/result/?id=task_completed_fixture",
+    );
+
     await page.getByRole("tab", { name: "失败 (1)" }).click();
     await expect(page.getByRole("heading", { name: "自动化测试-failed" })).toBeVisible();
     await page.getByRole("link", { name: /重新创建/ }).click();

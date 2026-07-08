@@ -243,12 +243,13 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             self.assertEqual(len(record.draft_result.chapters), 9)
             self.assertEqual(record.draft_result.chapters[-1].number, 9)
             self.assertEqual(record.draft_result.chapters[-1].content, "第9章正文")
+            self.assertEqual(record.storage_state, "runs")
 
-            result_path = Path(tmp_dir) / "tasklog" / "archive" / task.id / "result.json"
+            result_path = Path(tmp_dir) / "tasklog" / "runs" / task.id / "result.json"
             result_payload = json.loads(result_path.read_text(encoding="utf-8"))
             self.assertEqual(len(result_payload["chapters"]), 9)
             artifacts_index = json.loads(
-                (Path(tmp_dir) / "tasklog" / "archive" / task.id / "artifacts" / "index.json").read_text(
+                (Path(tmp_dir) / "tasklog" / "runs" / task.id / "artifacts" / "index.json").read_text(
                     encoding="utf-8"
                 )
             )

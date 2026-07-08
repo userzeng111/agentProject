@@ -250,6 +250,14 @@ def build_router(
             logger.exception("获取归档详情失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
+    @router.post("/tasks/{task_id}/archive")
+    def archive_completed_task(task_id: str):
+        try:
+            return task_service.archive_completed_task(task_id)
+        except Exception as exc:
+            logger.exception("归档已完成任务失败 task_id=%s", task_id)
+            raise _handle_error(exc) from exc
+
     @router.get("/tasks/{task_id}")
     def get_task(task_id: str):
         try:

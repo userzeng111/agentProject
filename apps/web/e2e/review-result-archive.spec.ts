@@ -201,6 +201,68 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();
   });
 
+  test("结果页确认归档后跳转到归档详情", async ({ page }) => {
+    await mockCommonApiRoutes(page);
+    let archiveRequests = 0;
+    await page.route("**/api/tasks/task_result_archive_fixture/result", async (route) => {
+      await route.fulfill({
+        json: {
+          meta: {
+            task_id: "task_result_archive_fixture",
+            title: "待确认归档任务",
+            status: "completed",
+            summary: "结果摘要",
+            storage_state: "runs",
+          },
+          result_summary: "结果摘要",
+          result_markdown: "# 待确认归档任务\n\n正文占位。",
+          result_md_ref: "",
+          chapter_index: [{ number: 1, title: "第一章", summary: "章节摘要", content: "第一章正文占位" }],
+          artifact_index: [],
+          history_index: [],
+        },
+      });
+    });
+    await page.route("**/api/tasks/task_result_archive_fixture/archive", async (route) => {
+      archiveRequests += 1;
+      expect(route.request().method()).toBe("POST");
+      await route.fulfill({
+        json: {
+          task_id: "task_result_archive_fixture",
+          id: "task_result_archive_fixture",
+          status: "completed",
+          storage_state: "archive",
+        },
+      });
+    });
+    await page.route("**/api/archive/task_result_archive_fixture", async (route) => {
+      const detail = makeArchiveDetail();
+      await route.fulfill({
+        json: {
+          ...detail,
+          meta: {
+            ...detail.meta,
+            task_id: "task_result_archive_fixture",
+            id: "task_result_archive_fixture",
+            title: "待确认归档任务",
+          },
+        },
+      });
+    });
+
+    await page.goto("/result/?id=task_result_archive_fixture", { waitUntil: "commit" });
+    await expect(page.getByRole("button", { name: "确认归档" })).toBeVisible();
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("确认已检查生成结果并归档");
+      await dialog.accept();
+    });
+    await page.getByRole("button", { name: "确认归档" }).click();
+
+    await expect.poll(() => archiveRequests, { message: "确认归档应请求归档接口" }).toBe(1);
+    await expect(page).toHaveURL(/\/archive\/detail\/\?id=task_result_archive_fixture/);
+    await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
+  });
+
   test("归档列表和详情 Tab 可渲染", async ({ page }) => {
     await page.route("**/api/archive**", async (route) => {
       if (route.request().url().includes("/api/archive/task_archive_fixture")) {

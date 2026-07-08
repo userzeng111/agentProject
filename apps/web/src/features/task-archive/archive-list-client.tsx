@@ -89,7 +89,7 @@ export default function ArchiveListClient() {
               )}
             </Stack>
             <Typography color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-              已完成作品会自动归档到这里，可快速浏览正文、章节、模型和事件尾流。
+              用户确认归档后的作品会进入这里，可快速浏览正文、章节、模型和事件尾流。
             </Typography>
           </Stack>
           <Button component={Link} href="/" variant="outlined" size="small" sx={{ flexShrink: 0 }}>

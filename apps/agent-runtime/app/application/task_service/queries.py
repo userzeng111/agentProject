@@ -147,6 +147,9 @@ class TaskServiceQueriesMixin:
             story_plan=story_plan_payload,
         )
 
+    def archive_completed_task(self, task_id: str) -> TaskRecord:
+        return self.store.archive_completed_task(task_id)
+
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
         task = self.store.get(task_id)
         task, reconciliation = self._reconcile_task_for_read(task)
@@ -1103,6 +1106,7 @@ class TaskServiceQueriesMixin:
         cache_hit_count = 0
         runtime_response_cache_hit_count = 0
         provider_prompt_cache_hit_count = 0
+        parse_failed_request_count = 0
         timing_count = 0
 
         for event in task.events:
@@ -1195,12 +1199,20 @@ class TaskServiceQueriesMixin:
                             slowest_step = detail
                         if first_token_ms > 0 and (slowest_first_token is None or first_token_ms > slowest_first_token["first_token_ms"]):
                             slowest_first_token = detail
+            elif event.event_type == "model.response.parse_failed":
+                parse_failed_request_count += 1
 
-        if usage_count == 0 and exchange_count == 0 and timing_count == 0:
+        if usage_count == 0 and exchange_count == 0 and timing_count == 0 and parse_failed_request_count == 0:
             return {}
+        request_count = max(
+            usage_count,
+            timing_count,
+            max(exchange_count - runtime_response_cache_hit_count, 0),
+        ) + parse_failed_request_count
         return {
             "usage_total": usage_total,
             "usage_count": usage_count,
+            "request_count": request_count,
             "by_model": by_model,
             "by_stage": by_stage,
             "exchange_count": exchange_count,

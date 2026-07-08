@@ -261,6 +261,12 @@ export function getResult(taskId: string) {
   return request<ResultResponse>(`/api/tasks/${taskId}/result`);
 }
 
+export function archiveTask(taskId: string) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/archive`, {
+    method: "POST",
+  });
+}
+
 export function getCurrentChapters(taskId: string) {
   return request<{ task_id: string; chapters: Array<{ number: number; title: string; summary: string; content: string }> }>(`/api/tasks/${taskId}/chapters`);
 }

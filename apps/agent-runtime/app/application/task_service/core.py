@@ -490,7 +490,7 @@ class TaskServiceCoreMixin:
             task_id,
             kind="completed",
             title="正文生成完成",
-            detail="章节已全部写完，正文与工件已归档。",
+            detail="章节已全部写完，正文与工件等待用户确认归档。",
         )
         return record
 

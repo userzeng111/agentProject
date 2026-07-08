@@ -25,10 +25,11 @@ import { ArrowForward as ArrowForwardIcon, Replay as ReplayIcon, Delete as Delet
 import { deleteTask, getDashboard, getModelCatalog, getProtocolSettings, normalizeModelOptions, setModelProtocol, updateDefaultModel } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { archiveDetailHref, newProjectHref, resultHref, reviewHref, workspaceHref } from "@/lib/task-routes";
+import { newProjectHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
+import { resolveTaskHref } from "@/features/task-dashboard/task-card-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -80,23 +81,6 @@ function getDeletePrompt(status: TaskStatus): string {
     default:
       return "确认删除该任务？此操作不可恢复。";
   }
-}
-
-function resolveTaskHref(task: TaskCardSummary) {
-  if (task.storage_state === "archive") {
-    return archiveDetailHref(task.task_id);
-  }
-  if (
-    task.status === "waiting_outline_review" ||
-    task.status === "waiting_chapter_review" ||
-    task.status === "waiting_verification_review"
-  ) {
-    return reviewHref(task.task_id);
-  }
-  if (task.status === "completed") {
-    return resultHref(task.task_id);
-  }
-  return workspaceHref(task.task_id);
 }
 
 // 首页作品库项目卡片

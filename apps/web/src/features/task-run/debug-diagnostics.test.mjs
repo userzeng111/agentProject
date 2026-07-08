@@ -283,6 +283,63 @@ test("LLM 摘要包含调用、缓存、重试、修复、解析失败、模型�
   assert.equal(diagnostics.llm.slowestFirstToken.firstTokenMs, 1800);
 });
 
+test("LLM 摘要按供应商拒答、空截断、截断 JSON 和普通 JSON 失败分类", () => {
+  const diagnostics = buildAgentDebugDiagnostics(
+    workspace({
+      recent_events: [
+        {
+          event_type: "model.response.parse_failed",
+          stage: "planning",
+          message: "planning 阶段模型响应 JSON 解析失败：outline",
+          payload: {
+            parse_error: "模型返回的 JSON 无法解析：很抱歉，白鹿无法回答此问题。",
+            finish_reason: "stop",
+            raw_response_chars: 14,
+          },
+        },
+        {
+          event_type: "model.response.parse_failed",
+          stage: "verification",
+          message: "verification 阶段模型响应 JSON 解析失败：chapter-window-gate",
+          payload: {
+            parse_error: "模型返回的 JSON 无法解析：",
+            finish_reason: "length",
+            raw_response_chars: 0,
+          },
+        },
+        {
+          event_type: "model.response.parse_failed",
+          stage: "verification",
+          message: "verification 阶段模型响应 JSON 解析失败：fix-issues",
+          payload: {
+            parse_error: "模型返回的 JSON 无法解析：```json",
+            finish_reason: "max_tokens",
+            raw_response_chars: 2601,
+          },
+        },
+        {
+          event_type: "model.response.parse_failed",
+          stage: "drafting",
+          message: "drafting 阶段模型响应 JSON 解析失败：chapter-08",
+          payload: {
+            parse_error: "模型返回的 JSON 无法解析：not-json",
+            finish_reason: "stop",
+            raw_response_chars: 8,
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.equal(diagnostics.llm.jsonParseFailedCount, 4);
+  assert.deepEqual(diagnostics.llm.jsonParseFailureBreakdown, {
+    providerRefusalCount: 1,
+    emptyTruncatedCount: 1,
+    truncatedJsonCount: 1,
+    ordinaryJsonParseFailedCount: 1,
+  });
+});
+
 test("LLM 最慢步骤可从 recent_events timing_details 兜底派生", () => {
   const diagnostics = buildAgentDebugDiagnostics(
     workspace({
@@ -378,8 +435,68 @@ test("LLM usage_total 为空对象时从事件用量兜底统计 token", () => {
     cachedTokens: 20,
     cacheReadInputTokens: 10,
   });
-  assert.equal(diagnostics.llm.requestCount, 0);
+  assert.equal(diagnostics.llm.requestCount, 1);
   assert.equal(diagnostics.llm.providerPromptCacheHitCount, 1);
+});
+
+test("LLM 请求数优先使用 request_count 而不是 usage_count", () => {
+  const diagnostics = buildAgentDebugDiagnostics(
+    workspace({
+      llm_report: {
+        usage_total: {},
+        usage_count: 0,
+        request_count: 3,
+        exchange_count: 2,
+      },
+    }),
+  );
+
+  assert.equal(diagnostics.llm.requestCount, 3);
+  assert.equal(diagnostics.llm.exchangeCount, 2);
+});
+
+test("LLM 请求数可从旧事件 timing 与解析失败兜底", () => {
+  const diagnostics = buildAgentDebugDiagnostics(
+    workspace({
+      llm_report: {
+        usage_total: {},
+        usage_count: 0,
+      },
+      recent_events: [
+        {
+          event_type: "context.history.updated",
+          stage: "planning",
+          payload: {
+            cache_hit: false,
+            timing_details: [
+              {
+                stage: "planning",
+                exchange_label: "outline",
+                duration_ms: 1200,
+              },
+            ],
+          },
+        },
+        {
+          event_type: "cache.hit",
+          stage: "drafting",
+          payload: { cache_hit: true },
+        },
+        {
+          event_type: "model.response.parse_failed",
+          stage: "verification",
+          payload: {
+            finish_reason: "length",
+            raw_response_chars: 0,
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.equal(diagnostics.llm.requestCount, 2);
+  assert.equal(diagnostics.llm.exchangeCount, 2);
+  assert.equal(diagnostics.llm.runtimeResponseCacheHitCount, 1);
 });
 
 test("Agent Trace 摘要包含最近轮次、计数、评分、问题、警告和结论", () => {

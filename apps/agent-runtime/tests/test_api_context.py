@@ -594,6 +594,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["by_model"]["gpt-5.4"]["usage_count"], 1)
         self.assertEqual(report["by_stage"]["planning"]["total_tokens"], 140)
         self.assertEqual(report["exchange_count"], 3)
+        self.assertEqual(report["request_count"], 2)
         self.assertEqual(report["cache_hit_count"], 1)
         self.assertEqual(report["runtime_response_cache_hit_count"], 1)
         self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
@@ -607,6 +608,61 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["slowest_step"]["duration_ms"], 52000.0)
         self.assertEqual(report["slowest_first_token"]["exchange_label"], "full-story-verification")
         self.assertEqual(report["slowest_first_token"]["first_token_ms"], 4200.0)
+
+    def test_workspace_llm_report_counts_requests_without_usage_events(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="planning",
+            message="planning 阶段已记录模型上下文链：outline",
+            event_type="context.history.updated",
+            unit_id="outline",
+            payload={
+                "cache_hit": False,
+                "model": "gpt-5.4",
+                "exchange_label": "outline",
+                "timing_details": [
+                    {
+                        "stage": "planning",
+                        "exchange_label": "outline",
+                        "model": "gpt-5.4",
+                        "duration_ms": 900.0,
+                        "first_token_ms": 120.0,
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+        self.store.append_event(
+            task.id,
+            stage="verification",
+            message="verification 阶段模型响应 JSON 解析失败：chapter-window-gate",
+            event_type="model.response.parse_failed",
+            unit_id="chapter-window-gate",
+            payload={
+                "model": "gpt-5.4",
+                "exchange_label": "chapter-window-gate",
+                "finish_reason": "length",
+                "raw_response_chars": 0,
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(report["usage_count"], 0)
+        self.assertEqual(report["request_count"], 2)
+        self.assertEqual(report["exchange_count"], 1)
+        self.assertEqual(report["timing_count"], 1)
 
     def test_review_endpoint_returns_outline_revision_count(self) -> None:
         task = self.task_service.create_task(
@@ -799,7 +855,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["model_id"], "gpt-5.4")
         self.assertEqual(captured["recovery_mode"], "restart_from_input")
 
-    def test_result_and_archive_endpoints_expose_json_refs_and_sources(self) -> None:
+    def test_completed_task_stays_in_completed_until_user_archives(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
                 mode=TaskMode.SHORT_STORY,
@@ -830,22 +886,45 @@ class ApiContextIntegrationTests(unittest.TestCase):
         artifacts = self.task_service._build_artifacts(story_plan, draft_result)
         self.store.set_completed(task.id, story_plan, draft_result, artifacts)
 
+        dashboard_response = self.client.get("/api/dashboard")
         result_response = self.client.get(f"/api/tasks/{task.id}/result")
         archive_list_response = self.client.get("/api/archive")
-        archive_detail_response = self.client.get(f"/api/archive/{task.id}")
 
+        self.assertEqual(self.store.get(task.id).storage_state, "runs")
+        self.assertEqual(dashboard_response.status_code, 200)
         self.assertEqual(result_response.status_code, 200)
         self.assertEqual(archive_list_response.status_code, 200)
-        self.assertEqual(archive_detail_response.status_code, 200)
 
+        dashboard_payload = dashboard_response.json()
         result_payload = result_response.json()
         archive_list_payload = archive_list_response.json()
+
+        self.assertIn(task.id, [item["task_id"] for item in dashboard_payload["completed_tasks"]])
+        self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
+        self.assertEqual(archive_list_payload["total"], 0)
+
+        archive_response = self.client.post(f"/api/tasks/{task.id}/archive")
+        archive_detail_response = self.client.get(f"/api/archive/{task.id}")
+        dashboard_after_archive_response = self.client.get("/api/dashboard")
+        archive_list_after_response = self.client.get("/api/archive")
+
+        self.assertEqual(archive_response.status_code, 200)
+        self.assertEqual(archive_detail_response.status_code, 200)
+        self.assertEqual(dashboard_after_archive_response.status_code, 200)
+        self.assertEqual(archive_list_after_response.status_code, 200)
+        self.assertEqual(self.store.get(task.id).storage_state, "archive")
+        self.assertFalse((Path(self.tmp_dir.name) / "tasklog" / "runs" / task.id).exists())
+        self.assertTrue((Path(self.tmp_dir.name) / "tasklog" / "archive" / task.id / "result.json").exists())
+
+        dashboard_after_archive = dashboard_after_archive_response.json()
+        archive_list_after = archive_list_after_response.json()
         archive_detail_payload = archive_detail_response.json()
 
-        self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
-        self.assertIn("entry_refs", archive_list_payload["items"][0])
-        self.assertEqual(archive_list_payload["items"][0]["chapter_count"], 2)
-        self.assertGreater(archive_list_payload["items"][0]["word_count"], 0)
+        self.assertNotIn(task.id, [item["task_id"] for item in dashboard_after_archive["completed_tasks"]])
+        self.assertEqual(archive_list_after["items"][0]["task_id"], task.id)
+        self.assertIn("entry_refs", archive_list_after["items"][0])
+        self.assertEqual(archive_list_after["items"][0]["chapter_count"], 2)
+        self.assertGreater(archive_list_after["items"][0]["word_count"], 0)
         self.assertEqual(len(archive_detail_payload["sources"]), 1)
 
     def test_chat_completions_injects_rag_context_before_gateway_call(self) -> None:

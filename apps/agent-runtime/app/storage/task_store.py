@@ -77,13 +77,9 @@ class TaskLogStore:
             task.updated_at = utc_now()
             with self._lock:
                 self._tasks[task.id] = task
-            before_storage_state = task.storage_state
             with performance_span(logger, "task_store_write_task_files", task_id=task.id):
                 self._write_task_files(task)
             self._sync_to_db(task)
-            self._archive_completed_task(task)
-            if task.storage_state != before_storage_state:
-                self._sync_to_db(task)
             with performance_span(logger, "task_store_write_index", task_id=task.id):
                 self._write_index()
             return task
@@ -335,6 +331,27 @@ class TaskLogStore:
             task=task,
         )
         return self.save(task)
+
+    def archive_completed_task(self, task_id: str) -> TaskRecord:
+        task = self.get(task_id)
+        if task.status is not TaskStatus.COMPLETED:
+            raise ValueError("只有已完成任务可以归档。")
+        if task.draft_result is None:
+            raise ValueError("任务缺少正文结果，无法归档。")
+        if task.storage_state == "archive":
+            return task
+        self.append_event(
+            task_id,
+            stage="completed",
+            message="用户已确认结果，任务已归档。",
+            event_type="task.archived",
+            payload={"summary": "用户已确认结果，任务已归档", "display_level": "public"},
+            task=task,
+        )
+        self._archive_completed_task(task)
+        self._sync_to_db(task)
+        self._write_index()
+        return task
 
     def set_cancelled(self, task_id: str, story_plan: StoryPlan, comment: str) -> TaskRecord:
         task = self.get(task_id)

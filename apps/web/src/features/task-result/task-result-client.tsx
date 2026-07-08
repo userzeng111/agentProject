@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -17,8 +17,8 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { fetchTextRef, getApiBase, getResult } from "@/lib/api";
-import { workspaceHref } from "@/lib/task-routes";
+import { archiveTask, fetchTextRef, getApiBase, getResult } from "@/lib/api";
+import { archiveDetailHref, workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { NovelReader } from "@/components/novel-reader";
@@ -33,11 +33,13 @@ const WORKFLOW_STEPS = [
 ];
 
 export default function TaskResultClient({ taskId }: { taskId?: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const resolvedTaskId = taskId || searchParams.get("id") || "";
   const [result, setResult] = useState<ResultResponse | null>(null);
   const [resultMarkdown, setResultMarkdown] = useState("");
   const [loading, setLoading] = useState(true);
+  const [archiving, setArchiving] = useState(false);
   const [error, setError] = useState("");
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMsg, setSnackbarMsg] = useState("");
@@ -73,6 +75,22 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
     URL.revokeObjectURL(url);
     showSnackbar("已导出 Markdown 文件");
   }, [resultMarkdown, result?.meta.title, resolvedTaskId, showSnackbar]);
+
+  const handleArchive = useCallback(async () => {
+    if (!resolvedTaskId || archiving) return;
+    if (!window.confirm("确认已检查生成结果并归档？归档后可在归档库中查看。")) return;
+    setArchiving(true);
+    try {
+      await archiveTask(resolvedTaskId);
+      showSnackbar("任务已归档");
+      router.push(archiveDetailHref(resolvedTaskId));
+    } catch (archiveError) {
+      setError(archiveError instanceof Error ? archiveError.message : "归档失败");
+      showSnackbar("归档失败");
+    } finally {
+      setArchiving(false);
+    }
+  }, [archiving, resolvedTaskId, router, showSnackbar]);
 
   const load = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -134,6 +152,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
     }
     return ref.startsWith("http") ? ref : `${getApiBase()}${ref}`;
   };
+  const canArchive = result.meta.status === "completed" && result.meta.storage_state !== "archive";
 
   return (
     <ProjectShell
@@ -148,9 +167,16 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
         { label: result.meta.status, variant: "outlined" },
       ]}
       actions={
-        <Button component={Link} href={workspaceHref(resolvedTaskId)} variant="outlined" size="small">
-          返回工作台
-        </Button>
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {canArchive ? (
+            <Button variant="contained" size="small" disabled={archiving} onClick={() => void handleArchive()}>
+              {archiving ? "归档中..." : "确认归档"}
+            </Button>
+          ) : null}
+          <Button component={Link} href={workspaceHref(resolvedTaskId)} variant="outlined" size="small">
+            返回工作台
+          </Button>
+        </Stack>
       }
       stageNav={<StageNav stages={WORKFLOW_STEPS} activeStep={3} />}
     >
