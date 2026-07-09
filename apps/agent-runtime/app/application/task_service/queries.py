@@ -25,6 +25,16 @@ from app.storage import db_repository
 
 logger = logging.getLogger(__name__)
 
+LLM_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "reasoning_tokens",
+)
+
 
 class TaskServiceQueriesMixin:
 
@@ -1092,8 +1102,7 @@ class TaskServiceQueriesMixin:
         return ""
 
     def _build_llm_report(self, task: TaskRecord) -> dict[str, Any]:
-        token_fields = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens")
-        usage_total = {field: 0 for field in token_fields}
+        usage_total = {field: 0 for field in LLM_TOKEN_FIELDS}
         by_model: dict[str, dict[str, Any]] = {}
         by_stage: dict[str, dict[str, Any]] = {}
         timing_by_stage: dict[str, dict[str, Any]] = {}
@@ -1115,10 +1124,14 @@ class TaskServiceQueriesMixin:
                 usage = self._normalize_usage_tokens(payload)
                 model = str(payload.get("model") or task.model_id or "unknown")
                 stage = event.stage or "unknown"
-                provider_prompt_cache_hit = usage["cached_tokens"] > 0 or usage["cache_read_input_tokens"] > 0
+                provider_prompt_cache_hit = (
+                    usage["cached_tokens"] > 0
+                    or usage["cache_read_input_tokens"] > 0
+                    or usage["cache_creation_input_tokens"] > 0
+                )
                 if provider_prompt_cache_hit:
                     provider_prompt_cache_hit_count += 1
-                for field in token_fields:
+                for field in LLM_TOKEN_FIELDS:
                     usage_total[field] += usage[field]
                 self._add_llm_usage_bucket(by_model, model, usage)
                 self._add_llm_usage_bucket(by_stage, stage, usage)
@@ -1209,9 +1222,20 @@ class TaskServiceQueriesMixin:
             timing_count,
             max(exchange_count - runtime_response_cache_hit_count, 0),
         ) + parse_failed_request_count
+        usage_missing_count = max(request_count - usage_count, 0)
+        if request_count <= 0:
+            usage_status = "unknown"
+        elif usage_count == 0:
+            usage_status = "missing"
+        elif usage_missing_count > 0:
+            usage_status = "partial"
+        else:
+            usage_status = "complete"
         return {
             "usage_total": usage_total,
             "usage_count": usage_count,
+            "usage_missing_count": usage_missing_count,
+            "usage_status": usage_status,
             "request_count": request_count,
             "by_model": by_model,
             "by_stage": by_stage,
@@ -1228,17 +1252,46 @@ class TaskServiceQueriesMixin:
         }
 
     def _normalize_usage_tokens(self, payload: dict[str, Any]) -> dict[str, int]:
-        input_tokens = self._safe_non_negative_int(payload.get("input_tokens"), payload.get("prompt_tokens"))
-        output_tokens = self._safe_non_negative_int(payload.get("output_tokens"), payload.get("completion_tokens"))
-        total_tokens = self._safe_non_negative_int(payload.get("total_tokens"))
+        prompt_details = self._safe_dict(payload.get("prompt_tokens_details"))
+        completion_details = self._safe_dict(payload.get("completion_tokens_details"))
+        input_details = self._safe_dict(payload.get("input_tokens_details"), payload.get("input_token_details"))
+        output_details = self._safe_dict(payload.get("output_tokens_details"), payload.get("output_token_details"))
+        input_tokens = self._safe_first_positive_int(payload.get("input_tokens"), payload.get("prompt_tokens"))
+        output_tokens = self._safe_first_positive_int(payload.get("output_tokens"), payload.get("completion_tokens"))
+        total_tokens = self._safe_first_positive_int(payload.get("total_tokens"))
         if total_tokens == 0:
             total_tokens = input_tokens + output_tokens
+        cache_creation_input_tokens = self._safe_first_positive_int(
+            payload.get("cache_creation_input_tokens"),
+            input_details.get("cache_creation_input_tokens"),
+            input_details.get("cache_creation"),
+            input_details.get("cache_creation_tokens"),
+        )
+        if cache_creation_input_tokens == 0:
+            cache_creation_input_tokens = self._safe_non_negative_int(
+                payload.get("claude_cache_creation_5_m_tokens")
+            ) + self._safe_non_negative_int(payload.get("claude_cache_creation_1_h_tokens"))
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
-            "cached_tokens": self._safe_non_negative_int(payload.get("cached_tokens")),
-            "cache_read_input_tokens": self._safe_non_negative_int(payload.get("cache_read_input_tokens")),
+            "cached_tokens": self._safe_first_positive_int(
+                payload.get("cached_tokens"),
+                prompt_details.get("cached_tokens"),
+                input_details.get("cached_tokens"),
+            ),
+            "cache_read_input_tokens": self._safe_first_positive_int(
+                payload.get("cache_read_input_tokens"),
+                input_details.get("cache_read_input_tokens"),
+                input_details.get("cache_read"),
+                input_details.get("cache_read_tokens"),
+            ),
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "reasoning_tokens": self._safe_first_positive_int(
+                payload.get("reasoning_tokens"),
+                completion_details.get("reasoning_tokens"),
+                output_details.get("reasoning_tokens"),
+            ),
         }
 
     def _add_llm_usage_bucket(
@@ -1250,17 +1303,20 @@ class TaskServiceQueriesMixin:
         bucket = buckets.setdefault(
             key,
             {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "cache_read_input_tokens": 0,
+                **{field: 0 for field in LLM_TOKEN_FIELDS},
                 "usage_count": 0,
             },
         )
-        for field in ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens"):
+        for field in LLM_TOKEN_FIELDS:
             bucket[field] += usage[field]
         bucket["usage_count"] += 1
+
+    @staticmethod
+    def _safe_dict(*values: Any) -> dict[str, Any]:
+        for value in values:
+            if isinstance(value, dict):
+                return value
+        return {}
 
     @staticmethod
     def _safe_non_negative_float(*values: Any) -> float:
@@ -1285,6 +1341,22 @@ class TaskServiceQueriesMixin:
                 continue
             return max(parsed, 0)
         return 0
+
+    @staticmethod
+    def _safe_first_positive_int(*values: Any) -> int:
+        fallback = 0
+        for value in values:
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            parsed = max(parsed, 0)
+            if parsed > 0:
+                return parsed
+            fallback = max(fallback, parsed)
+        return fallback
 
     def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}

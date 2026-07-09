@@ -447,6 +447,8 @@ class BatchedChapterGenerationTests(unittest.TestCase):
             chapter = session.query(NovelOutlineChapterModel).filter_by(task_id=task.id, chapter_number=1).first()
             self.assertIsNotNone(chapter)
             self.assertTrue(chapter.md_ref)
+            self.assertTrue(str(chapter.md_ref).endswith(".md"))
+            self.assertTrue(str(chapter.json_ref).endswith(".json"))
             self.assertEqual(chapter.artifact_state, "present")
         self.assertEqual(recovered.status, TaskStatus.WAITING_CHAPTER_REVIEW)
 

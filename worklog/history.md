@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：LLM 摘要 token 用量解析与展示缺失
+  路径：`worklog/archive/LLM日志/20260709-01-llm-summary-token-usage-parse-and-display.md`
+  摘要：扩展 LLM usage 解析/聚合/展示为七类统计字段，支持白鹿真实接口嵌套 usage，全量测试 413+129 通过。
+
 - 标题：完成任务自动归档与 LLM 请求计数漏计问题
   路径：`worklog/archive/任务流转/20260707-01-completed-auto-archive-and-llm-request-count.md`
   摘要：完成 completed 待用户确认后显式归档，并将 LLM 请求数与用量事件数分离，已通过后端、前端与 E2E 验证。

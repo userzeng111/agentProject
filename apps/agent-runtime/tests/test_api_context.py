@@ -690,6 +690,8 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 "total_tokens": 140,
                 "cached_tokens": 30,
                 "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 0,
+                "reasoning_tokens": 0,
             },
         )
         self.assertEqual(report["by_model"]["gpt-5.4"]["total_tokens"], 140)
@@ -710,6 +712,69 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["slowest_step"]["duration_ms"], 52000.0)
         self.assertEqual(report["slowest_first_token"]["exchange_label"], "full-story-verification")
         self.assertEqual(report["slowest_first_token"]["first_token_ms"], 4200.0)
+
+    def test_workspace_endpoint_normalizes_real_provider_usage_shapes(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="K2.6",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="drafting",
+            message="模型调用用量已更新。",
+            event_type="model.usage",
+            unit_id="chapter-01",
+            payload={
+                "prompt_tokens": 216,
+                "completion_tokens": 272,
+                "total_tokens": 488,
+                "output_tokens": 0,
+                "usage_semantic": "openai",
+                "usage_source": "anthropic",
+                "prompt_tokens_details": {
+                    "cached_tokens": 33,
+                    "text_tokens": 200,
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 44,
+                    "text_tokens": 228,
+                },
+                "input_tokens_details": {
+                    "cache_read": 11,
+                },
+                "claude_cache_creation_5_m_tokens": 5,
+                "claude_cache_creation_1_h_tokens": 4,
+                "model": "K2.6",
+                "finish_reason": "stop",
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(
+            report["usage_total"],
+            {
+                "input_tokens": 216,
+                "output_tokens": 272,
+                "total_tokens": 488,
+                "cached_tokens": 33,
+                "cache_read_input_tokens": 11,
+                "cache_creation_input_tokens": 9,
+                "reasoning_tokens": 44,
+            },
+        )
+        self.assertEqual(report["by_model"]["K2.6"]["reasoning_tokens"], 44)
+        self.assertEqual(report["by_stage"]["drafting"]["cache_creation_input_tokens"], 9)
+        self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
+        self.assertTrue(report["latest_usage"]["provider_prompt_cache_hit"])
+        self.assertEqual(report["latest_usage"]["output_tokens"], 272)
 
     def test_workspace_llm_report_counts_requests_without_usage_events(self) -> None:
         task = self.task_service.create_task(
@@ -763,6 +828,8 @@ class ApiContextIntegrationTests(unittest.TestCase):
         report = response.json()["llm_report"]
         self.assertEqual(report["usage_count"], 0)
         self.assertEqual(report["request_count"], 2)
+        self.assertEqual(report["usage_missing_count"], 2)
+        self.assertEqual(report["usage_status"], "missing")
         self.assertEqual(report["exchange_count"], 1)
         self.assertEqual(report["timing_count"], 1)
 

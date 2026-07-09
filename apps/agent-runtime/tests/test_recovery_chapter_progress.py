@@ -14,6 +14,8 @@ from app.domain.models import ChapterDraft, StoryPlan, TaskCreateRequest, TaskMo
 from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import init_db
+from app.storage.database import get_session
+from app.storage.db_models import NovelOutlineChapterModel
 from app.storage.db_repository import get_novel_project, update_project_status, upsert_novel_project
 from app.storage.task_store import TaskLogStore
 
@@ -220,6 +222,139 @@ class RecoveryChapterProgressTests(unittest.TestCase):
         assert project is not None
         self.assertEqual(project.completed_chapter_count, 3)
         self.assertEqual(project.next_chapter_number, 4)
+
+    def test_recover_to_stable_completes_when_all_chapter_files_exist(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="玄幻大陆废材逆袭",
+                model_id="K2.6",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="玄脉逆天",
+            logline="废材少年重开玄脉踏上逆袭之路。",
+            world_notes=["玄幻大陆以玄脉定天赋。"],
+            character_notes=["主角曾被认定为废材。"],
+            chapter_plan=[
+                {"number": number, "title": f"第{number}章", "goal": f"推进第{number}章"}
+                for number in range(1, 4)
+            ],
+        )
+        store.write_context_snapshot(
+            task.id,
+            stage="planning",
+            snapshot_name="outline-revision-history",
+            payload={
+                "messages": [
+                    {"role": "assistant", "content": story_plan.model_dump_json()},
+                ],
+            },
+        )
+        for number in range(1, 4):
+            service._write_chapter_file(
+                task.id,
+                chapter_number=number,
+                title=f"第{number}章",
+                summary=f"第{number}章摘要",
+                content=f"第{number}章正文",
+            )
+        task = store.set_waiting_manual_action(
+            task.id,
+            "运行失败：模型返回的 JSON 无法解析。",
+            payload={
+                "summary": "运行失败，等待人工恢复。",
+                "display_level": "public",
+                "reason": "recoverable_runtime_error",
+            },
+        )
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.COMPLETED)
+        self.assertIsNotNone(recovered.draft_result)
+        assert recovered.draft_result is not None
+        self.assertEqual(len(recovered.draft_result.chapters), 3)
+        self.assertIn("第3章正文", recovered.draft_result.body)
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.status, TaskStatus.COMPLETED.value)
+        self.assertEqual(project.completed_chapter_count, 3)
+        self.assertEqual(project.next_chapter_number, 4)
+        with get_session() as session:
+            rows = (
+                session.query(NovelOutlineChapterModel)
+                .filter_by(task_id=task.id)
+                .order_by(NovelOutlineChapterModel.chapter_number.asc())
+                .all()
+            )
+            self.assertEqual(len(rows), 3)
+            for row in rows:
+                self.assertEqual(row.artifact_state, "present")
+                self.assertTrue(str(row.md_ref).endswith(".md"))
+                self.assertTrue(str(row.json_ref).endswith(".json"))
+                self.assertTrue(row.content_hash)
+                self.assertGreater(int(row.file_size or 0), 0)
+
+    def test_mark_failed_unless_stable_completes_when_all_chapter_files_exist(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="玄幻大陆废材逆袭",
+                model_id="K2.6",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="玄脉逆天",
+            logline="废材少年重开玄脉踏上逆袭之路。",
+            world_notes=["玄幻大陆以玄脉定天赋。"],
+            character_notes=["主角曾被认定为废材。"],
+            chapter_plan=[
+                {"number": number, "title": f"第{number}章", "goal": f"推进第{number}章"}
+                for number in range(1, 3)
+            ],
+        )
+        store.set_ready_for_batch(task.id, story_plan)
+        for number in range(1, 3):
+            service._write_chapter_file(
+                task.id,
+                chapter_number=number,
+                title=f"第{number}章",
+                summary=f"第{number}章摘要",
+                content=f"第{number}章正文",
+            )
+        store.mark_stage(
+            task.id,
+            status=TaskStatus.ASSEMBLING,
+            stage="verification",
+            progress=95,
+            message="正在进行最终验证。",
+            event_type="verification.running",
+        )
+
+        recovered = service._mark_failed_unless_stable(
+            task.id,
+            "运行失败：模型返回的 JSON 无法解析。",
+        )
+
+        self.assertEqual(recovered.status, TaskStatus.COMPLETED)
+        self.assertIsNotNone(recovered.draft_result)
+        assert recovered.draft_result is not None
+        self.assertEqual(len(recovered.draft_result.chapters), 2)
+        self.assertIn("第2章正文", recovered.draft_result.body)
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.status, TaskStatus.COMPLETED.value)
+        self.assertEqual(project.completed_chapter_count, 2)
+        self.assertEqual(project.next_chapter_number, 3)
 
     def test_get_current_chapters_warns_when_index_json_is_corrupt(self) -> None:
         tmp_dir, store, service = self._build_service()

@@ -166,6 +166,8 @@ export default function DebugPanel({
   const stateCheck = diagnostics.stateCheck;
   const context = diagnostics.context;
   const llm = diagnostics.llm;
+  const llmUsageMissing = typeof llm.usageMissingCount === "number" && llm.usageMissingCount > 0;
+  const formatLlmToken = (value: unknown) => (llm.usageStatus === "missing" && llmUsageMissing ? "未上报" : formatNumber(value));
   const jsonParseFailureBreakdown = (llm.jsonParseFailureBreakdown || {}) as Record<string, unknown>;
   const agentTrace = diagnostics.agentTrace;
   const rag = diagnostics.rag as StatusBlock & { source?: string; lastQueryStage?: string; injectionEvidence?: string };
@@ -227,6 +229,8 @@ export default function DebugPanel({
               { label: "交换", value: formatNumber(llm.exchangeCount) },
               { label: "响应缓存命中", value: formatNumber(llm.runtimeResponseCacheHitCount ?? llm.cacheHitCount) },
               { label: "供应商缓存命中", value: formatNumber(llm.providerPromptCacheHitCount) },
+              { label: "用量上报缺失", value: formatNumber(llm.usageMissingCount) },
+              { label: "用量状态", value: llm.usageStatus || "未上报" },
               { label: "重试", value: formatNumber(llm.retryCount) },
               { label: "修复", value: formatNumber(llm.repairCount) },
               { label: "JSON 解析失败", value: formatNumber(llm.jsonParseFailedCount) },
@@ -245,12 +249,20 @@ export default function DebugPanel({
           />
           <MetricChips
             items={[
-              { label: "输入 tokens", value: formatNumber(llm.tokens?.inputTokens) },
-              { label: "输出 tokens", value: formatNumber(llm.tokens?.outputTokens) },
-              { label: "总 tokens", value: formatNumber(llm.tokens?.totalTokens) },
-              { label: "缓存 tokens", value: formatNumber(llm.tokens?.cachedTokens || llm.tokens?.cacheReadInputTokens) },
+              { label: "输入 tokens", value: formatLlmToken(llm.tokens?.inputTokens) },
+              { label: "输出 tokens", value: formatLlmToken(llm.tokens?.outputTokens) },
+              { label: "总 tokens", value: formatLlmToken(llm.tokens?.totalTokens) },
+              { label: "缓存命中 tokens", value: formatLlmToken(llm.tokens?.cachedTokens) },
+              { label: "缓存读取 tokens", value: formatLlmToken(llm.tokens?.cacheReadInputTokens) },
+              { label: "缓存创建 tokens", value: formatLlmToken(llm.tokens?.cacheCreationInputTokens) },
+              { label: "推理 tokens", value: formatLlmToken(llm.tokens?.reasoningTokens) },
             ]}
           />
+          {llmUsageMissing ? (
+            <Alert severity="warning">
+              有 {formatNumber(llm.usageMissingCount)} 次模型请求没有上报 token 用量；历史任务无法从本地消息记录反推真实接口 token。
+            </Alert>
+          ) : null}
           <Typography variant="body2" color="text.secondary">
             最新模型：{llm.latestModel || "未上报"}
           </Typography>

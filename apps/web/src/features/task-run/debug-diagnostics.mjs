@@ -54,6 +54,17 @@ function toInteger(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function toFirstPositiveInteger(values = [], fallback = 0) {
+  let safeFallback = Math.max(toInteger(fallback, 0), 0);
+  for (const value of asArray(values)) {
+    if (value === null || value === undefined || value === "" || typeof value === "boolean") continue;
+    const parsed = Math.max(toInteger(value, 0), 0);
+    if (parsed > 0) return parsed;
+    safeFallback = Math.max(safeFallback, parsed);
+  }
+  return safeFallback;
+}
+
 function toNumber(value, fallback = 0) {
   if (value === null || value === undefined || value === "" || typeof value === "boolean") return fallback;
   const parsed = Number(value);
@@ -144,15 +155,103 @@ function emptyTimingDetail() {
 
 function normalizeTokens(usage = {}) {
   const source = asObject(usage);
-  const inputTokens = toInteger(source.input_tokens ?? source.inputTokens ?? source.prompt_tokens);
-  const outputTokens = toInteger(source.output_tokens ?? source.outputTokens ?? source.completion_tokens);
-  const totalTokens = toInteger(source.total_tokens ?? source.totalTokens, inputTokens + outputTokens);
+  const nestedUsage = asObject(source.usage);
+  const promptDetails = asObject(source.prompt_tokens_details ?? source.promptTokensDetails ?? nestedUsage.prompt_tokens_details);
+  const completionDetails = asObject(
+    source.completion_tokens_details ?? source.completionTokensDetails ?? nestedUsage.completion_tokens_details,
+  );
+  const inputDetails = asObject(
+    source.input_tokens_details ??
+      source.input_token_details ??
+      source.inputTokensDetails ??
+      nestedUsage.input_tokens_details ??
+      nestedUsage.input_token_details,
+  );
+  const outputDetails = asObject(
+    source.output_tokens_details ??
+      source.output_token_details ??
+      source.outputTokensDetails ??
+      nestedUsage.output_tokens_details ??
+      nestedUsage.output_token_details,
+  );
+  const inputTokens = toFirstPositiveInteger([
+    source.input_tokens,
+    source.inputTokens,
+    source.prompt_tokens,
+    nestedUsage.input_tokens,
+    nestedUsage.inputTokens,
+    nestedUsage.prompt_tokens,
+  ]);
+  const outputTokens = toFirstPositiveInteger([
+    source.output_tokens,
+    source.outputTokens,
+    source.completion_tokens,
+    nestedUsage.output_tokens,
+    nestedUsage.outputTokens,
+    nestedUsage.completion_tokens,
+  ]);
+  const totalTokens = toFirstPositiveInteger(
+    [source.total_tokens, source.totalTokens, nestedUsage.total_tokens, nestedUsage.totalTokens],
+    inputTokens + outputTokens,
+  );
   return {
     inputTokens,
     outputTokens,
     totalTokens,
-    cachedTokens: toInteger(source.cached_tokens ?? source.cachedTokens),
-    cacheReadInputTokens: toInteger(source.cache_read_input_tokens ?? source.cacheReadInputTokens),
+    cachedTokens: toFirstPositiveInteger([
+      source.cachedTokens,
+      source.cached_tokens,
+      nestedUsage.cached_tokens,
+      nestedUsage.cachedTokens,
+      promptDetails.cached_tokens,
+      promptDetails.cachedTokens,
+      inputDetails.cached_tokens,
+      inputDetails.cachedTokens,
+    ]),
+    cacheReadInputTokens: toFirstPositiveInteger([
+      source.cache_read_input_tokens,
+      source.cacheReadInputTokens,
+      nestedUsage.cache_read_input_tokens,
+      nestedUsage.cacheReadInputTokens,
+      promptDetails.cache_read_input_tokens,
+      promptDetails.cacheReadInputTokens,
+      inputDetails.cache_read_input_tokens,
+      inputDetails.cacheReadInputTokens,
+      inputDetails.cache_read,
+      inputDetails.cacheRead,
+      inputDetails.cache_read_tokens,
+      inputDetails.cacheReadTokens,
+    ]),
+    cacheCreationInputTokens: toFirstPositiveInteger(
+      [
+        source.cache_creation_input_tokens,
+        source.cacheCreationInputTokens,
+        nestedUsage.cache_creation_input_tokens,
+        nestedUsage.cacheCreationInputTokens,
+        promptDetails.cache_creation_input_tokens,
+        promptDetails.cacheCreationInputTokens,
+        inputDetails.cache_creation_input_tokens,
+        inputDetails.cacheCreationInputTokens,
+        inputDetails.cache_creation,
+        inputDetails.cacheCreation,
+        inputDetails.cache_creation_tokens,
+        inputDetails.cacheCreationTokens,
+      ],
+      toInteger(source.claude_cache_creation_5_m_tokens) +
+        toInteger(source.claude_cache_creation_1_h_tokens) +
+        toInteger(nestedUsage.claude_cache_creation_5_m_tokens) +
+        toInteger(nestedUsage.claude_cache_creation_1_h_tokens),
+    ),
+    reasoningTokens: toFirstPositiveInteger([
+      source.reasoning_tokens,
+      source.reasoningTokens,
+      nestedUsage.reasoning_tokens,
+      nestedUsage.reasoningTokens,
+      completionDetails.reasoning_tokens,
+      completionDetails.reasoningTokens,
+      outputDetails.reasoning_tokens,
+      outputDetails.reasoningTokens,
+    ]),
   };
 }
 
@@ -162,6 +261,8 @@ function addTokenTotals(total, usage) {
   total.totalTokens += usage.totalTokens;
   total.cachedTokens += usage.cachedTokens;
   total.cacheReadInputTokens += usage.cacheReadInputTokens;
+  total.cacheCreationInputTokens += usage.cacheCreationInputTokens;
+  total.reasoningTokens += usage.reasoningTokens;
 }
 
 function eventModel(event) {
@@ -342,6 +443,8 @@ function deriveLlmFromEvents(events = []) {
     totalTokens: 0,
     cachedTokens: 0,
     cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    reasoningTokens: 0,
   };
   let requestCount = 0;
   let exchangeCount = 0;
@@ -351,13 +454,15 @@ function deriveLlmFromEvents(events = []) {
   let timingRequestCount = 0;
   let nonCachedExchangeCount = 0;
   let parseFailedRequestCount = 0;
+  let usageCount = 0;
 
   for (const event of asArray(events)) {
     if (event?.event_type === "model.usage") {
       requestCount += 1;
+      usageCount += 1;
       const usage = normalizeTokens(event.payload);
       addTokenTotals(totals, usage);
-      if (usage.cachedTokens > 0 || usage.cacheReadInputTokens > 0) {
+      if (usage.cachedTokens > 0 || usage.cacheReadInputTokens > 0 || usage.cacheCreationInputTokens > 0) {
         providerPromptCacheHitCount += 1;
       }
     }
@@ -380,6 +485,7 @@ function deriveLlmFromEvents(events = []) {
   return {
     totals,
     requestCount,
+    usageCount,
     exchangeCount,
     cacheHitCount,
     runtimeResponseCacheHitCount,
@@ -557,11 +663,29 @@ function buildLlm(workspace = {}) {
     Math.max(reportExchangeCount - reportRuntimeCacheHitCount, 0),
     eventSummary.requestCount,
   );
+  const requestCount = reportRequestCount ?? legacyReportRequestCount;
+  const observedUsageCount = Math.max(reportUsageCount, eventSummary.usageCount);
+  const reportedUsageMissingCount = numberOrNull(report.usage_missing_count ?? report.usageMissingCount);
+  const usageMissingCount = reportedUsageMissingCount ?? Math.max(requestCount - observedUsageCount, 0);
+  const usageStatus = String(
+    report.usage_status ??
+      report.usageStatus ??
+      (requestCount <= 0
+        ? "unknown"
+        : observedUsageCount <= 0
+          ? "missing"
+          : usageMissingCount > 0
+            ? "partial"
+            : "complete"),
+  );
 
   return {
     status: Object.keys(report).length || events.length ? "available" : "unknown",
     tokens,
-    requestCount: reportRequestCount ?? legacyReportRequestCount,
+    requestCount,
+    usageCount: observedUsageCount,
+    usageMissingCount,
+    usageStatus,
     exchangeCount: toInteger(report.exchange_count, eventSummary.exchangeCount),
     cacheHitCount: toInteger(report.cache_hit_count, eventSummary.cacheHitCount),
     runtimeResponseCacheHitCount: toInteger(

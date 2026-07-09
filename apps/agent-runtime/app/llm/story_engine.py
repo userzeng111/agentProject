@@ -489,6 +489,7 @@ class StoryEngine(BaseAgent):
             try:
                 protocol = str(resolver(model) or protocol).strip().lower()
             except Exception:
+                logger.warning("解析验证模型协议失败 model=%s", model, exc_info=True)
                 protocol = str(getattr(self.settings, "default_protocol", "openai") or "openai").strip().lower()
         if protocol != "openai":
             return {}

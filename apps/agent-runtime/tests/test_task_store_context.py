@@ -1,9 +1,17 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from app.domain.models import TaskCreateRequest, TaskMode
+from app.storage.database import init_db
 from app.storage.task_store import TaskLogStore
+
+
+class FailingQueue(asyncio.Queue[dict[str, Any]]):
+    def put_nowait(self, item: dict[str, Any]) -> None:
+        raise RuntimeError("订阅连接已关闭")
 
 
 class TaskStoreContextTests(unittest.TestCase):
@@ -76,6 +84,34 @@ class TaskStoreContextTests(unittest.TestCase):
 
             with self.assertRaises(FileNotFoundError):
                 store.read_text(second.id, f"tasklog/runs/{first.id}/request.md")
+
+    def test_broadcast_event_warns_and_removes_subscriber_when_queue_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            init_db(str(Path(tmp_dir) / "data.db"))
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            task = store.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="广播失败日志覆盖",
+                    model_id="gpt-5.4",
+                )
+            )
+            failing_queue = FailingQueue()
+            store._subscribers.setdefault(task.id, []).append(failing_queue)
+
+            with self.assertLogs("app.storage.task_store", level="WARNING") as logs:
+                store.broadcast_event(
+                    task.id,
+                    stage="unit",
+                    message="实时事件",
+                    event_type="unit.event",
+                )
+
+            self.assertNotIn(task.id, store._subscribers)
+            output = "\n".join(logs.output)
+            self.assertIn("任务事件广播失败", output)
+            self.assertIn(task.id, output)
+            self.assertIn("unit.event", output)
 
 
 if __name__ == "__main__":

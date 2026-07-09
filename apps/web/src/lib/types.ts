@@ -281,6 +281,8 @@ export interface LlmUsageSummary {
   total_tokens?: number;
   cached_tokens?: number;
   cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  reasoning_tokens?: number;
   usage_count?: number;
 }
 
@@ -323,6 +325,8 @@ export interface LlmExchangeSummary {
 export interface LlmReport {
   usage_total?: LlmUsageSummary;
   usage_count?: number;
+  usage_missing_count?: number;
+  usage_status?: string;
   request_count?: number;
   by_model?: Record<string, LlmUsageSummary>;
   by_stage?: Record<string, LlmUsageSummary>;

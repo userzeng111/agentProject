@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   buildAgentDebugDiagnostics,
   buildStateCheck,
 } from "./debug-diagnostics.mjs";
+
+const debugPanelSource = readFileSync(
+  fileURLToPath(new URL("./debug-panel.tsx", import.meta.url)),
+  "utf8",
+);
 
 function workspace(overrides = {}) {
   return {
@@ -220,6 +227,8 @@ test("LLM 摘要包含调用、缓存、重试、修复、解析失败、模型�
           total_tokens: 200,
           cached_tokens: 20,
           cache_read_input_tokens: 10,
+          cache_creation_input_tokens: 6,
+          reasoning_tokens: 4,
         },
         usage_count: 2,
         exchange_count: 3,
@@ -267,6 +276,8 @@ test("LLM 摘要包含调用、缓存、重试、修复、解析失败、模型�
     totalTokens: 200,
     cachedTokens: 20,
     cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 6,
+    reasoningTokens: 4,
   });
   assert.equal(diagnostics.llm.requestCount, 2);
   assert.equal(diagnostics.llm.exchangeCount, 3);
@@ -421,6 +432,8 @@ test("LLM usage_total 为空对象时从事件用量兜底统计 token", () => {
             total_tokens: 160,
             cached_tokens: 20,
             cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 7,
+            reasoning_tokens: 5,
             model: "K2.6",
           },
         },
@@ -434,9 +447,107 @@ test("LLM usage_total 为空对象时从事件用量兜底统计 token", () => {
     totalTokens: 160,
     cachedTokens: 20,
     cacheReadInputTokens: 10,
+    cacheCreationInputTokens: 7,
+    reasoningTokens: 5,
   });
   assert.equal(diagnostics.llm.requestCount, 1);
   assert.equal(diagnostics.llm.providerPromptCacheHitCount, 1);
+});
+
+test("LLM 事件兜底可归一化真实接口嵌套 usage 字段", () => {
+  const diagnostics = buildAgentDebugDiagnostics(
+    workspace({
+      llm_report: {
+        usage_total: {},
+        usage_count: 0,
+      },
+      recent_events: [
+        {
+          event_type: "model.usage",
+          stage: "drafting",
+          payload: {
+            usage: {
+              prompt_tokens: 300,
+              completion_tokens: 90,
+              total_tokens: 390,
+              prompt_tokens_details: {
+                cached_tokens: 40,
+                cache_read_input_tokens: 25,
+                cache_creation_input_tokens: 15,
+              },
+              completion_tokens_details: {
+                reasoning_tokens: 12,
+              },
+            },
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(diagnostics.llm.tokens, {
+    inputTokens: 300,
+    outputTokens: 90,
+    totalTokens: 390,
+    cachedTokens: 40,
+    cacheReadInputTokens: 25,
+    cacheCreationInputTokens: 15,
+    reasoningTokens: 12,
+  });
+  assert.equal(diagnostics.llm.providerPromptCacheHitCount, 1);
+});
+
+test("LLM 事件兜底优先使用真实接口中的非零 token 字段", () => {
+  const diagnostics = buildAgentDebugDiagnostics(
+    workspace({
+      llm_report: {
+        usage_total: {},
+        usage_count: 0,
+      },
+      recent_events: [
+        {
+          event_type: "model.usage",
+          stage: "drafting",
+          payload: {
+            input_tokens: 216,
+            output_tokens: 0,
+            completion_tokens: 272,
+            total_tokens: 488,
+            prompt_tokens_details: {
+              cached_tokens: 33,
+            },
+            completion_tokens_details: {
+              reasoning_tokens: 44,
+            },
+            input_token_details: {
+              cache_read: 11,
+            },
+            claude_cache_creation_5_m_tokens: 5,
+            claude_cache_creation_1_h_tokens: 4,
+          },
+        },
+      ],
+    }),
+  );
+
+  assert.deepEqual(diagnostics.llm.tokens, {
+    inputTokens: 216,
+    outputTokens: 272,
+    totalTokens: 488,
+    cachedTokens: 33,
+    cacheReadInputTokens: 11,
+    cacheCreationInputTokens: 9,
+    reasoningTokens: 44,
+  });
+  assert.equal(diagnostics.llm.providerPromptCacheHitCount, 1);
+});
+
+test("LLM 面板分开展示缓存命中、缓存读取、缓存创建与推理 token", () => {
+  assert.match(debugPanelSource, /缓存命中 tokens/);
+  assert.match(debugPanelSource, /缓存读取 tokens/);
+  assert.match(debugPanelSource, /缓存创建 tokens/);
+  assert.match(debugPanelSource, /推理 tokens/);
+  assert.doesNotMatch(debugPanelSource, /cachedTokens\s*\|\|\s*llm\.tokens\?\.cacheReadInputTokens/);
 });
 
 test("LLM 请求数优先使用 request_count 而不是 usage_count", () => {
@@ -447,12 +558,16 @@ test("LLM 请求数优先使用 request_count 而不是 usage_count", () => {
         usage_count: 0,
         request_count: 3,
         exchange_count: 2,
+        usage_missing_count: 3,
+        usage_status: "missing",
       },
     }),
   );
 
   assert.equal(diagnostics.llm.requestCount, 3);
   assert.equal(diagnostics.llm.exchangeCount, 2);
+  assert.equal(diagnostics.llm.usageMissingCount, 3);
+  assert.equal(diagnostics.llm.usageStatus, "missing");
 });
 
 test("LLM 请求数可从旧事件 timing 与解析失败兜底", () => {
@@ -497,6 +612,14 @@ test("LLM 请求数可从旧事件 timing 与解析失败兜底", () => {
   assert.equal(diagnostics.llm.requestCount, 2);
   assert.equal(diagnostics.llm.exchangeCount, 2);
   assert.equal(diagnostics.llm.runtimeResponseCacheHitCount, 1);
+  assert.equal(diagnostics.llm.usageMissingCount, 2);
+  assert.equal(diagnostics.llm.usageStatus, "missing");
+});
+
+test("LLM 面板展示用量上报缺失，避免把未上报误读为真实 0 token", () => {
+  assert.match(debugPanelSource, /用量上报缺失/);
+  assert.match(debugPanelSource, /usageMissingCount/);
+  assert.match(debugPanelSource, /usageStatus/);
 });
 
 test("Agent Trace 摘要包含最近轮次、计数、评分、问题、警告和结论", () => {

@@ -444,6 +444,119 @@ class TaskServiceRecoveryMixin:
             return None
         return story_plan, completed_chapters
 
+    def _recover_completed_result_from_available_chapters(
+        self,
+        task: TaskRecord,
+        *,
+        source: str,
+        failure_message: str = "",
+    ) -> TaskRecord | None:
+        story_plan = task.story_plan or self._load_story_plan_from_history(task.id)
+        if story_plan is None:
+            return None
+        planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
+        if planned_total <= 0:
+            return None
+        completed_chapters = self._load_completed_chapters_until_gap(task.id, max_chapters=planned_total)
+        if len(completed_chapters) < planned_total:
+            return None
+        return self._recover_completed_result_from_chapters(
+            task,
+            story_plan=story_plan,
+            completed_chapters=completed_chapters,
+            source=source,
+            failure_message=failure_message,
+        )
+
+    def _recover_completed_result_from_chapters(
+        self,
+        task: TaskRecord,
+        *,
+        story_plan: StoryPlan,
+        completed_chapters: list[dict[str, Any]],
+        source: str,
+        failure_message: str = "",
+    ) -> TaskRecord | None:
+        planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
+        if planned_total <= 0 or len(completed_chapters) < planned_total:
+            return None
+        chapters = completed_chapters[:planned_total]
+        for expected_number, chapter in enumerate(chapters, start=1):
+            if int(chapter.get("number") or 0) != expected_number:
+                return None
+            if not str(chapter.get("content") or "").strip():
+                return None
+
+        from app.storage.db_repository import (
+            seed_outline_chapters,
+            update_project_status,
+            upsert_novel_project,
+            upsert_outline_chapter_draft,
+        )
+
+        current_task = self.store.get(task.id)
+        current_task.story_plan = story_plan
+        current_task.pending_review = None
+        current_task = self.store.save(current_task)
+
+        upsert_novel_project(current_task, story_plan)
+        seed_outline_chapters(task.id, story_plan)
+        for chapter in chapters:
+            chapter_number = int(chapter.get("number") or 0)
+            title = str(chapter.get("title") or f"第{chapter_number}章")
+            summary = str(chapter.get("summary") or "")
+            content = str(chapter.get("content") or "")
+            self._write_chapter_file(
+                task.id,
+                chapter_number=chapter_number,
+                title=title,
+                summary=summary,
+                content=content,
+            )
+            upsert_outline_chapter_draft(
+                task.id,
+                chapter_number=chapter_number,
+                title=title,
+                summary=summary,
+                batch_no=0,
+                md_ref=f"tasklog/runs/{task.id}/chapters/{chapter_number:02d}.md",
+                json_ref=f"tasklog/runs/{task.id}/chapters/{chapter_number:02d}.json",
+                content=content,
+            )
+
+        normalized_spec = current_task.normalized_spec if isinstance(current_task.normalized_spec, dict) else {}
+        draft_result = self._build_draft_result_from_chapters(
+            story_plan=story_plan,
+            chapters=chapters,
+            normalized_spec=normalized_spec,
+        )
+        artifacts = self._build_artifacts(story_plan, draft_result)
+        record = self.store.set_completed(task.id, story_plan, draft_result, artifacts)
+        update_project_status(
+            task.id,
+            status=TaskStatus.COMPLETED.value,
+            completed_chapter_count=planned_total,
+            next_chapter_number=planned_total + 1,
+            active_batch_no=None,
+            active_continue_request_id="",
+            blocked_from_status="",
+            current_generating_chapter_number=None,
+        )
+        self.store.append_event(
+            task.id,
+            stage="completed",
+            message="已从已落盘章节恢复完成结果。",
+            event_type="task.recovered",
+            payload={
+                "summary": "已根据章节文件重建正文结果，任务进入已完成待确认状态。",
+                "display_level": "public",
+                "source": source,
+                "completed_chapter_count": planned_total,
+                "failure_message": failure_message,
+            },
+        )
+        return self.store.save(self.store.get(record.id))
+
     def _recover_ready_for_batch_from_history(self, task: TaskRecord) -> TaskRecord | None:
         if task.status is not TaskStatus.WAITING_MANUAL_ACTION or task.pending_review is not None:
             return None
@@ -454,6 +567,17 @@ class TaskServiceRecoveryMixin:
         story_plan, completed_chapters = history_resume
         completed_count = len(completed_chapters)
         next_chapter_number = completed_count + 1
+        planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
+        if planned_total > 0 and completed_count >= planned_total:
+            completed_record = self._recover_completed_result_from_chapters(
+                task,
+                story_plan=story_plan,
+                completed_chapters=completed_chapters,
+                source="outline_and_chapter_history",
+                failure_message=str(task.error_message or ""),
+            )
+            if completed_record is not None:
+                return completed_record
 
         from app.storage.db_repository import (
             seed_outline_chapters,
@@ -579,7 +703,7 @@ class TaskServiceRecoveryMixin:
                         title=str(chapter_data.get("title") or chapter.title or f"第{chapter.chapter_number}章"),
                         summary=str(chapter_data.get("summary") or chapter.summary or ""),
                         batch_no=int(chapter.batch_no or 0),
-                        md_ref=f"tasklog/runs/{task.id}/chapters/{int(chapter.chapter_number):02d}.json",
+                        md_ref=f"tasklog/runs/{task.id}/chapters/{int(chapter.chapter_number):02d}.md",
                         json_ref=f"tasklog/runs/{task.id}/chapters/{int(chapter.chapter_number):02d}.json",
                         content=str(chapter_data.get("content") or ""),
                     )
@@ -935,12 +1059,25 @@ class TaskServiceRecoveryMixin:
         for number in range(1, upper_bound + 1):
             payload = self._load_chapter_draft_from_history(task_id, number)
             if payload is None:
+                payload = self._load_chapter_draft_from_file(task_id, number)
+            if payload is None:
                 break
             chapter_number = int(payload.get("number") or number)
             if chapter_number != number:
                 break
             items.append(payload)
         return items
+
+    def _load_chapter_draft_from_file(self, task_id: str, chapter_number: int) -> dict[str, Any] | None:
+        try:
+            payload = self._load_chapter_file_payload(task_id, chapter_number)
+        except Exception:
+            return None
+        try:
+            draft = ChapterDraft.model_validate(payload)
+        except Exception:
+            return None
+        return draft.model_dump(mode="json")
 
     def _load_chapter_draft_from_history(self, task_id: str, chapter_number: int) -> dict[str, Any] | None:
         relative_path = f"context/drafting/chapter-{chapter_number:02d}-history.json"

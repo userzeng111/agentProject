@@ -49,6 +49,17 @@ class OpenAIAdapterTests(unittest.TestCase):
         self.assertEqual(payload["model"], "gpt-5.4")
         self.assertEqual(payload["messages"], [{"role": "user", "content": "hi"}])
         self.assertTrue(payload["stream"])
+        self.assertEqual(payload["stream_options"], {"include_usage": True})
+
+    def test_build_payload_preserves_explicit_stream_usage_option(self):
+        payload = self.adapter.build_payload(
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.4",
+            stream=True,
+            stream_options={"include_usage": False, "extra": "keep"},
+        )
+
+        self.assertEqual(payload["stream_options"], {"include_usage": False, "extra": "keep"})
 
     def test_parse_completion_response(self):
         response = {
@@ -82,6 +93,24 @@ class OpenAIAdapterTests(unittest.TestCase):
         parsed = self.adapter.parse_stream_chunk(chunk)
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed["usage"], {"total_tokens": 42})
+
+    def test_parse_stream_chunk_preserves_usage_with_choices(self):
+        chunk = {
+            "choices": [
+                {"delta": {}, "finish_reason": "stop"}
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+        }
+
+        parsed = self.adapter.parse_stream_chunk(chunk)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["finish_reason"], "stop")
+        self.assertEqual(parsed["usage"]["total_tokens"], 15)
 
     def test_parse_stream_chunk_none_for_empty(self):
         self.assertIsNone(self.adapter.parse_stream_chunk({}))

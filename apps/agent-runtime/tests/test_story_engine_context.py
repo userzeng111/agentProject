@@ -82,6 +82,11 @@ class StreamSuccessGateway(StreamGatewayBase):
         yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False))
 
 
+class ProtocolResolverFailsGateway(StreamSuccessGateway):
+    def _resolve_protocol(self, model: str) -> str:
+        raise RuntimeError(f"无法解析模型协议: {model}")
+
+
 class StreamSuccessWithUsageGateway(StreamGatewayBase):
     def __init__(self, payload: dict, usage: dict) -> None:
         self.payload = payload
@@ -1829,6 +1834,44 @@ class StoryEngineContextTests(unittest.TestCase):
             )
 
             self.assertEqual(gateway.stream_calls[0]["kwargs"].get("reasoning_effort"), "low")
+
+    def test_verify_full_story_warns_when_protocol_resolver_fails_and_uses_default_protocol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    VERIFICATION_REASONING_EFFORT="low",
+                    DEFAULT_PROTOCOL="openai",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = ProtocolResolverFailsGateway(
+                {
+                    "overall_score": 98,
+                    "issues": [],
+                    "summary": "验证通过",
+                }
+            )
+            engine.gateway_client = gateway
+
+            with self.assertLogs("app.llm.story_engine", level="WARNING") as logs:
+                engine.verify_full_story(
+                    completed_chapters=[
+                        {"number": 1, "title": "第一章", "content": "第一章正文"},
+                    ],
+                    story_plan={
+                        "working_title": "验证协议回退",
+                        "chapter_plan": [{"number": 1, "title": "第一章"}],
+                    },
+                    spec={"mode": "short_story", "model_id": "mimo-v2.5-pro"},
+                    model="mimo-v2.5-pro",
+                )
+
+            self.assertEqual(gateway.stream_calls[0]["kwargs"].get("reasoning_effort"), "low")
+            output = "\n".join(logs.output)
+            self.assertIn("解析验证模型协议失败", output)
+            self.assertIn("mimo-v2.5-pro", output)
 
     def test_verify_full_story_retries_reasoning_only_length_without_generic_repair(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -111,6 +111,14 @@ class OpenAIAdapter(ProtocolAdapter):
             "stream": stream,
         }
         payload.update(kwargs)
+        if stream:
+            stream_options = payload.get("stream_options")
+            if stream_options is None:
+                payload["stream_options"] = {"include_usage": True}
+            elif isinstance(stream_options, dict):
+                next_stream_options = dict(stream_options)
+                next_stream_options.setdefault("include_usage", True)
+                payload["stream_options"] = next_stream_options
         return payload
 
     def parse_completion_response(self, response_json: dict[str, Any]) -> str:
@@ -138,7 +146,7 @@ class OpenAIAdapter(ProtocolAdapter):
             "content": content,
             "reasoning_content": reasoning_content,
             "finish_reason": finish_reason,
-            "usage": None,
+            "usage": chunk_data.get("usage"),
         }
 
 

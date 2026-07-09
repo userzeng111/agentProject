@@ -687,6 +687,18 @@ class TaskServiceCoreMixin:
         current = self.store.get(task_id)
         if self._is_stop_requested(task_id):
             return current
+        recovered_completed = self._recover_completed_result_from_available_chapters(
+            current,
+            source="runtime_failure",
+            failure_message=message,
+        )
+        if recovered_completed is not None:
+            logger.warning(
+                "后台异常发生时章节已完整落盘，已恢复为完成态。task_id=%s reason=%s",
+                task_id,
+                message,
+            )
+            return self._safe_sync_supervisor_plan(task_id, fallback=recovered_completed)
         if self._has_stable_terminal_state(current):
             logger.warning(
                 "任务已进入稳定状态，跳过失败覆盖。task_id=%s status=%s reason=%s",

@@ -651,7 +651,20 @@ class TaskLogStore:
         for queue in self._subscribers.get(task_id, []):
             try:
                 queue.put_nowait(payload)
-            except (asyncio.QueueFull, Exception):
+            except asyncio.QueueFull:
+                logger.warning(
+                    "任务事件广播失败 task_id=%s event_type=%s reason=queue_full",
+                    task_id,
+                    event.event_type,
+                )
+                dead_queues.append(queue)
+            except Exception:
+                logger.warning(
+                    "任务事件广播失败 task_id=%s event_type=%s",
+                    task_id,
+                    event.event_type,
+                    exc_info=True,
+                )
                 dead_queues.append(queue)
         for queue in dead_queues:
             self.unsubscribe(task_id, queue)
