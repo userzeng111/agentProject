@@ -112,6 +112,67 @@ class OpenAIAdapterTests(unittest.TestCase):
         self.assertEqual(parsed["finish_reason"], "stop")
         self.assertEqual(parsed["usage"]["total_tokens"], 15)
 
+    def test_parse_stream_chunk_extracts_nested_choice_usage(self):
+        chunk = {
+            "choices": [
+                {
+                    "delta": {"content": ""},
+                    "finish_reason": "stop",
+                    "usage": {
+                        "prompt_tokens": 8,
+                        "completion_tokens": 3,
+                        "total_tokens": 11,
+                    },
+                }
+            ],
+        }
+
+        parsed = self.adapter.parse_stream_chunk(chunk)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["usage"]["total_tokens"], 11)
+        self.assertEqual(parsed["usage_source_path"], "choices[0].usage")
+
+    def test_parse_stream_chunk_extracts_nested_delta_usage(self):
+        chunk = {
+            "choices": [
+                {
+                    "delta": {
+                        "content": "",
+                        "usage": {
+                            "prompt_tokens": 13,
+                            "completion_tokens": 5,
+                            "total_tokens": 18,
+                        },
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+        parsed = self.adapter.parse_stream_chunk(chunk)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["usage"]["total_tokens"], 18)
+        self.assertEqual(parsed["usage_source_path"], "choices[0].delta.usage")
+
+    def test_parse_completion_usage_extracts_nested_response_usage(self):
+        response = {
+            "choices": [{"message": {"content": "{}"}}],
+            "response": {
+                "usage": {
+                    "prompt_tokens": 21,
+                    "completion_tokens": 9,
+                    "total_tokens": 30,
+                }
+            },
+        }
+
+        usage = self.adapter.parse_completion_usage(response)
+
+        self.assertEqual(usage["total_tokens"], 30)
+        self.assertEqual(usage["usage_source_path"], "response.usage")
+
     def test_parse_stream_chunk_none_for_empty(self):
         self.assertIsNone(self.adapter.parse_stream_chunk({}))
 
@@ -135,7 +196,7 @@ class AnthropicAdapterTests(unittest.TestCase):
         self.assertEqual(payload["model"], "kimi-k2-6")
         self.assertEqual(payload["system"], "SYS")
         self.assertNotIn({"role": "system", "content": "SYS"}, payload["messages"])
-        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertNotIn("max_tokens", payload)
         self.assertFalse(payload["stream"])
 
     def test_build_payload_without_system(self):

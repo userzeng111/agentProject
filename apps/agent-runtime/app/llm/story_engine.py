@@ -320,7 +320,7 @@ class StoryEngine(BaseAgent):
             self.gateway_client = OpenAICompatibleGatewayClient(
                 base_url=settings.openai_base_url,
                 api_key=settings.openai_api_key,
-                model=settings.default_chat_model,
+                model="",
                 timeout=timeout_cfg,
                 default_protocol=settings.default_protocol,
                 protocol_overrides_resolver=lambda: settings.effective_protocol_overrides,
@@ -328,8 +328,6 @@ class StoryEngine(BaseAgent):
                 anthropic_version=settings.anthropic_version,
                 model_capabilities_settings=settings,
             )
-        self._runtime_default_model: str | None = None
-
         # ── Skill 加载（继承自 BaseAgent） ──
         self._load_skills()
 
@@ -400,7 +398,9 @@ class StoryEngine(BaseAgent):
 
     def resolve_model(self, model: str | None) -> str:
         candidate = (model or "").strip()
-        return candidate or self._runtime_default_model or self.settings.default_chat_model
+        if not candidate:
+            raise ValueError("请显式选择当前供应商返回的模型后再执行任务。")
+        return candidate
 
     @staticmethod
     def _escape_user_input(text: str) -> str:
@@ -433,7 +433,12 @@ class StoryEngine(BaseAgent):
         return parsed if parsed >= 0 else default
 
     def _generation_max_tokens(self, model: str | None) -> int | None:
-        return resolve_generation_max_tokens(model, settings=self.settings)
+        candidate = self.resolve_model(model)
+        gateway = self.gateway_client
+        resolver = getattr(gateway, "get_model_max_output_tokens", None)
+        if callable(resolver):
+            return resolver(candidate)
+        return resolve_generation_max_tokens(None, settings=self.settings)
 
     def _outline_generation_max_tokens(self, spec: dict[str, Any], model: str | None = None) -> int | None:
         return self._generation_max_tokens(model or spec.get("model_id") or spec.get("model"))
@@ -501,12 +506,6 @@ class StoryEngine(BaseAgent):
         if model_max_tokens is not None:
             retry_max_tokens = min(retry_max_tokens, model_max_tokens)
         return retry_max_tokens if retry_max_tokens > base_max_tokens else None
-
-    def set_runtime_default_model(self, model_id: str) -> None:
-        """设置运行时默认模型覆盖。"""
-        self._runtime_default_model = model_id
-        if self.gateway_client is not None:
-            self.gateway_client.model = model_id
 
     def list_models(self) -> list[dict[str, Any]]:
         if self.gateway_client is None:
@@ -1390,6 +1389,7 @@ class StoryEngine(BaseAgent):
         exchange_callback: Callable[[dict[str, Any]], None] | None,
         max_tokens: int | None = None,
         request_options: dict[str, Any] | None = None,
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, str]]]:
         cache_key = self._response_cache_key(
             model=model,
@@ -1418,7 +1418,34 @@ class StoryEngine(BaseAgent):
         request_kwargs: dict[str, Any] = dict(request_options or {})
         if max_tokens is not None:
             request_kwargs["max_tokens"] = max_tokens
-        payload = self.gateway_client.complete_json(request_messages, model=model, **request_kwargs)
+        active_progress = progress_callback or self.progress_callback or _progress_callback_var.get()
+        complete_json_with_metadata = getattr(self.gateway_client, "complete_json_with_metadata", None)
+        usage: dict[str, Any] = {}
+        usage_model = model
+        usage_finish_reason: str | None = None
+        if callable(complete_json_with_metadata):
+            completion = complete_json_with_metadata(request_messages, model=model, **request_kwargs)
+            if isinstance(completion, dict) and "payload" in completion:
+                payload = completion["payload"]
+                raw_usage = completion.get("usage")
+                if isinstance(raw_usage, dict):
+                    usage = raw_usage
+                usage_model = str(completion.get("model") or model)
+                finish_reason = completion.get("finish_reason")
+                usage_finish_reason = str(finish_reason) if finish_reason else None
+            else:
+                payload = completion
+        else:
+            payload = self.gateway_client.complete_json(request_messages, model=model, **request_kwargs)
+        if usage and active_progress is not None:
+            self._emit_usage_progress(
+                active_progress,
+                stage=stage,
+                unit_id=exchange_label,
+                usage=usage,
+                model=usage_model,
+                finish_reason=usage_finish_reason,
+            )
         self.response_cache.set(cache_key, payload)
         conversation_history = self._append_assistant_message(request_messages, payload)
         self._emit_exchange(
@@ -1559,6 +1586,7 @@ class StoryEngine(BaseAgent):
                 exchange_callback=exchange_callback,
                 max_tokens=max_tokens,
                 request_options=request_options,
+                progress_callback=active_progress,
             )
 
         # 解析 JSON
@@ -1946,6 +1974,30 @@ class StoryEngine(BaseAgent):
                 "prompt_diagnostics": self._prompt_cache_diagnostics(request_messages),
                 "parse_duration_ms": parse_duration_ms,
                 "timing_details": [dict(item) for item in (timing_details or [])],
+            }
+        )
+
+    @staticmethod
+    def _emit_usage_progress(
+        callback: Callable[[dict[str, Any]], None],
+        *,
+        stage: str,
+        unit_id: str,
+        usage: dict[str, Any],
+        model: str,
+        finish_reason: str | None,
+    ) -> None:
+        callback(
+            {
+                "event_type": "model.usage",
+                "stage": stage,
+                "unit_id": unit_id,
+                "message": "模型调用用量已更新。",
+                "payload": {
+                    **usage,
+                    "model": model,
+                    "finish_reason": finish_reason,
+                },
             }
         )
 

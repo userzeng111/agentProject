@@ -45,9 +45,43 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             mock_client.request = MagicMock(side_effect=side_effect)
             mock_client_cls.return_value = mock_client
 
-            result = client.complete([{"role": "user", "content": "test"}])
+            result = client.complete([{"role": "user", "content": "test"}], model="test-model")
             self.assertEqual(result, "成功结果")
             self.assertEqual(call_count, 2)
+
+    def test_complete_json_with_metadata_returns_usage(self) -> None:
+        """非流式 JSON 补全应保留 OpenAI 兼容 usage 元数据。"""
+        client = self._make_client()
+        response = MockResponse(
+            status_code=200,
+            text=json.dumps(
+                {
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {"content": "{\"ok\": true}"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 4,
+                        "total_tokens": 15,
+                    },
+                }
+            ),
+        )
+
+        with patch.object(client, "_request", return_value=response):
+            result = client.complete_json_with_metadata([{"role": "user", "content": "test"}], model="test-model")
+
+        self.assertEqual(result["payload"], {"ok": True})
+        self.assertEqual(result["usage"]["prompt_tokens"], 11)
+        self.assertEqual(result["usage"]["completion_tokens"], 4)
+        self.assertEqual(result["usage"]["total_tokens"], 15)
+        self.assertEqual(result["usage"]["usage_source_path"], "usage")
+        self.assertEqual(result["model"], "test-model")
+        self.assertEqual(result["finish_reason"], "stop")
 
     def test_three_empty_responses_raises_gateway_error(self) -> None:
         """连续3次空响应，应抛出 GatewayClientError。"""
@@ -64,7 +98,7 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             mock_client_cls.return_value = mock_client
 
             with self.assertRaises(GatewayClientError) as ctx:
-                client.complete([{"role": "user", "content": "test"}])
+                client.complete([{"role": "user", "content": "test"}], model="test-model")
             self.assertIn("已重试3次", str(ctx.exception))
             self.assertIn("内容为空", str(ctx.exception))
 
@@ -90,7 +124,7 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             mock_client.request = MagicMock(side_effect=side_effect)
             mock_client_cls.return_value = mock_client
 
-            result = client.complete([{"role": "user", "content": "test"}])
+            result = client.complete([{"role": "user", "content": "test"}], model="test-model")
             self.assertEqual(result, "成功结果")
             self.assertEqual(call_count, 2)
 
@@ -109,7 +143,7 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             mock_client_cls.return_value = mock_client
 
             with self.assertRaises(GatewayClientError) as ctx:
-                client.complete([{"role": "user", "content": "test"}])
+                client.complete([{"role": "user", "content": "test"}], model="test-model")
             self.assertIn("已重试3次", str(ctx.exception))
             self.assertIn("JSON解析失败", str(ctx.exception))
 
@@ -135,7 +169,7 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             mock_client.request = MagicMock(side_effect=side_effect)
             mock_client_cls.return_value = mock_client
 
-            result = client.complete([{"role": "user", "content": "test"}])
+            result = client.complete([{"role": "user", "content": "test"}], model="test-model")
             self.assertEqual(result, "成功结果")
             self.assertEqual(call_count, 2)
 
@@ -149,7 +183,7 @@ class GatewayEmptyResponseRetryTests(unittest.TestCase):
             side_effect=GatewayClientError("网关请求失败：连接失败"),
         ):
             with self.assertRaises(GatewayClientError) as ctx:
-                client.complete([{"role": "user", "content": "test"}])
+                client.complete([{"role": "user", "content": "test"}], model="test-model")
 
         self.assertIn("网关请求失败", str(ctx.exception))
 

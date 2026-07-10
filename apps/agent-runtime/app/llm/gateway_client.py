@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from app.observability import get_logger
 import re
 import threading
@@ -48,6 +49,25 @@ class StreamChunk:
         self.usage = usage or {}
 
 
+class CompletionResult:
+    """非流式响应文本与模型用量元数据。"""
+
+    __slots__ = ("content", "usage", "model", "finish_reason")
+
+    def __init__(
+        self,
+        *,
+        content: str = "",
+        usage: dict[str, Any] | None = None,
+        model: str = "",
+        finish_reason: str | None = None,
+    ) -> None:
+        self.content = content
+        self.usage = usage or {}
+        self.model = model
+        self.finish_reason = finish_reason
+
+
 class OpenAICompatibleGatewayClient:
     @staticmethod
     def _pop_observability_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
@@ -62,7 +82,7 @@ class OpenAICompatibleGatewayClient:
         self,
         base_url: str,
         api_key: str,
-        model: str,
+        model: str = "",
         timeout: httpx.Timeout | dict[str, float] | None = None,
         default_protocol: str = "openai",
         protocol_overrides: dict[str, str] | None = None,
@@ -74,7 +94,6 @@ class OpenAICompatibleGatewayClient:
         self.raw_base_url = base_url.rstrip("/")
         self.anthropic_raw_base_url = anthropic_base_url.rstrip("/") if anthropic_base_url else None
         self.api_key = api_key
-        self.model = model
         self.default_protocol = self._normalize_protocol(default_protocol)
         self.protocol_overrides = {
             str(key): self._normalize_protocol(value)
@@ -102,6 +121,8 @@ class OpenAICompatibleGatewayClient:
         self._client_lock = threading.Lock()
         self._client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
+        self._model_directory_lock = threading.Lock()
+        self._model_directory: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def _normalize_protocol(protocol: str | None) -> str:
@@ -139,7 +160,7 @@ class OpenAICompatibleGatewayClient:
         return headers
 
     def _resolve_protocol(self, model: str | None = None) -> str:
-        resolved = model or self.model
+        resolved = str(model or "").strip()
         overrides = dict(self.protocol_overrides)
         if self.protocol_overrides_resolver is not None:
             try:
@@ -206,29 +227,123 @@ class OpenAICompatibleGatewayClient:
             "prompt_cache_ttl": str(getattr(settings, "provider_prompt_cache_ttl", "") or "").strip() or None,
         }
 
-    def _resolve_max_tokens(self, model: str) -> int:
-        """根据模型 catalog 返回该模型支持的最大输出 token 数。"""
-        from app.llm.model_catalog import get_model_max_output_tokens
-        max_tokens = get_model_max_output_tokens(model, settings=self.model_capabilities_settings)
+    @staticmethod
+    def _usage_payload(parsed: dict[str, Any]) -> dict[str, Any]:
+        usage = parsed.get("usage")
+        if not isinstance(usage, dict):
+            return {}
+        payload = dict(usage)
+        usage_source_path = parsed.get("usage_source_path")
+        if usage_source_path:
+            payload.setdefault("usage_source_path", str(usage_source_path))
+        return payload
+
+    @staticmethod
+    def _usage_log_fields(usage: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "usage_source_path": usage.get("usage_source_path"),
+            "prompt_tokens": usage.get("prompt_tokens") or usage.get("input_tokens"),
+            "completion_tokens": usage.get("completion_tokens") or usage.get("output_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+            "cached_tokens": usage.get("cached_tokens"),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+            "reasoning_tokens": usage.get("reasoning_tokens"),
+        }
+
+    @staticmethod
+    def _resolve_request_model(model: str | None) -> str:
+        resolved_model = str(model or "").strip()
+        if not resolved_model:
+            raise GatewayClientError("未显式选择模型，调用已拒绝。")
+        return resolved_model
+
+    def _resolve_max_tokens(self, model: str, raw_model: dict[str, Any] | None = None) -> int | None:
+        """优先使用当前供应商目录返回的输出上限，缺失时使用通用配置默认值。"""
+        from app.llm.model_capabilities_config import extract_provider_model_limits, resolve_generation_max_tokens
+
+        if isinstance(raw_model, dict):
+            provider_limits, _ = extract_provider_model_limits(raw_model)
+            max_tokens = provider_limits.get("max_output_tokens")
+            if max_tokens is not None:
+                return int(max_tokens)
+        with self._model_directory_lock:
+            cached = deepcopy(self._model_directory.get(model, {}))
+        if cached:
+            provider_limits, _ = extract_provider_model_limits(cached)
+            max_tokens = provider_limits.get("max_output_tokens")
+            if max_tokens is not None:
+                return int(max_tokens)
+        max_tokens = resolve_generation_max_tokens(None, settings=self.model_capabilities_settings)
         if max_tokens is not None:
             return int(max_tokens)
-        return 4096
+        return None
 
-    def _inject_max_tokens(self, model: str, kwargs: dict[str, Any]) -> dict[str, Any]:
-        """若 kwargs 未显式指定 max_tokens，则从 model catalog 自动注入。"""
+    def _inject_max_tokens(
+        self,
+        model: str,
+        kwargs: dict[str, Any],
+        raw_model: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """若调用方未给输出上限，按当前目录或通用配置默认值注入。"""
         if "max_tokens" not in kwargs:
-            kwargs = {**kwargs, "max_tokens": self._resolve_max_tokens(model)}
+            max_tokens = self._resolve_max_tokens(model, raw_model)
+            if max_tokens is not None:
+                kwargs = {**kwargs, "max_tokens": max_tokens}
         return kwargs
 
     def list_models(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/models", protocol=self.default_protocol)
         self._ensure_success(response, "读取模型列表失败")
         payload = response.json()
-        return payload.get("data", [])
+        raw_models = payload.get("data", [])
+        if not isinstance(raw_models, list):
+            raise GatewayClientError("读取模型列表失败：响应 data 字段不是数组。")
+        models = [item for item in raw_models if isinstance(item, dict) and str(item.get("id") or "").strip()]
+        with self._model_directory_lock:
+            self._model_directory = {
+                str(item["id"]).strip(): deepcopy(item)
+                for item in models
+            }
+        return deepcopy(models)
+
+    def ensure_model_available(self, model: str | None, *, force_refresh: bool = False) -> dict[str, Any]:
+        """确认模型仍属于当前供应商目录，并返回原始模型项。"""
+        model_id = self._resolve_request_model(model)
+        with self._model_directory_lock:
+            raw_model = deepcopy(self._model_directory.get(model_id, {}))
+        if force_refresh or not raw_model:
+            self.list_models()
+            with self._model_directory_lock:
+                raw_model = deepcopy(self._model_directory.get(model_id, {}))
+        if not raw_model:
+            raise GatewayClientError(
+                f"模型 {model_id} 不在当前供应商模型目录中，请刷新目录后显式重新选择。"
+            )
+        return raw_model
+
+    def get_model_max_output_tokens(self, model: str | None, *, force_refresh: bool = False) -> int | None:
+        model_id = self._resolve_request_model(model)
+        if force_refresh:
+            raw_model = self.ensure_model_available(model_id, force_refresh=True)
+            return self._resolve_max_tokens(model_id, raw_model)
+        with self._model_directory_lock:
+            raw_model = deepcopy(self._model_directory.get(model_id, {}))
+        return self._resolve_max_tokens(model_id, raw_model)
 
     def complete(self, messages: list[dict[str, str]], model: str | None = None, **kwargs: Any) -> str:
-        resolved_model = model or self.model
-        kwargs = self._inject_max_tokens(resolved_model, kwargs)
+        return self.complete_with_metadata(messages=messages, model=model, **kwargs).content
+
+    def complete_with_metadata(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> CompletionResult:
+        resolved_model = self._resolve_request_model(model)
+        with self._model_directory_lock:
+            raw_model = deepcopy(self._model_directory.get(resolved_model, {}))
+        kwargs = self._inject_max_tokens(resolved_model, kwargs, raw_model)
         protocol = self._resolve_protocol(resolved_model)
         adapter = self._get_adapter(resolved_model)
         kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
@@ -254,10 +369,24 @@ class OpenAICompatibleGatewayClient:
                     raise GatewayClientError(f"调用聊天补全失败（已重试3次）：{last_error_info}")
                 body = response.json()
                 result = adapter.parse_completion_response(body)
+                usage = adapter.parse_completion_usage(body)
                 duration_ms = (time.perf_counter() - start) * 1000
                 record_llm_call(resolved_model, duration_ms, success=True)
+                log_performance(
+                    logger,
+                    "llm_complete_usage",
+                    model=resolved_model,
+                    messages=len(messages),
+                    usage_present=bool(usage),
+                    **self._usage_log_fields(usage),
+                )
                 logger.info("llm_complete model=%s messages=%d duration_ms=%.2f", resolved_model, len(messages), duration_ms)
-                return result
+                return CompletionResult(
+                    content=result,
+                    usage=usage,
+                    model=str(body.get("model") or resolved_model),
+                    finish_reason=self._completion_finish_reason(body),
+                )
             except json.JSONDecodeError as exc:
                 last_error_info = f"响应状态{response.status_code}，JSON解析失败"
                 logger.warning(
@@ -309,6 +438,23 @@ class OpenAICompatibleGatewayClient:
         **kwargs: Any,
     ) -> Any:
         raw = self.complete(messages=messages, model=model, **kwargs)
+        return self._parse_json_content(raw)
+
+    def complete_json_with_metadata(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        result = self.complete_with_metadata(messages=messages, model=model, **kwargs)
+        return {
+            "payload": self._parse_json_content(result.content),
+            "usage": result.usage,
+            "model": result.model,
+            "finish_reason": result.finish_reason,
+        }
+
+    def _parse_json_content(self, raw: str) -> Any:
         cleaned = self._strip_markdown_fences(raw)
 
         try:
@@ -318,6 +464,17 @@ class OpenAICompatibleGatewayClient:
             if extracted is not None:
                 return extracted
             raise GatewayClientError(f"模型返回的 JSON 无法解析：{raw[:240]}") from exc
+
+    @staticmethod
+    def _completion_finish_reason(body: dict[str, Any]) -> str | None:
+        choices = body.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            if isinstance(choice, dict):
+                finish_reason = choice.get("finish_reason")
+                return str(finish_reason) if finish_reason else None
+        stop_reason = body.get("stop_reason")
+        return str(stop_reason) if stop_reason else None
 
     def _strip_markdown_fences(self, raw: str) -> str:
         cleaned = raw.strip()
@@ -413,8 +570,10 @@ class OpenAICompatibleGatewayClient:
         **kwargs: Any,
     ) -> AsyncGenerator[StreamChunk, None]:
         """流式调用聊天补全，逐 chunk yield StreamChunk。"""
-        resolved_model = model or self.model
-        kwargs = self._inject_max_tokens(resolved_model, kwargs)
+        resolved_model = self._resolve_request_model(model)
+        with self._model_directory_lock:
+            raw_model = deepcopy(self._model_directory.get(resolved_model, {}))
+        kwargs = self._inject_max_tokens(resolved_model, kwargs, raw_model)
         protocol = self._resolve_protocol(resolved_model)
         adapter = self._get_adapter(resolved_model)
         kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
@@ -481,9 +640,18 @@ class OpenAICompatibleGatewayClient:
                     parsed = adapter.parse_stream_chunk(chunk_data)
                     if parsed is None:
                         continue
-                    if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                    usage_payload = self._usage_payload(parsed)
+                    if usage_payload:
                         usage_chunk_count += 1
-                        yield StreamChunk(usage=parsed["usage"])
+                        log_performance(
+                            logger,
+                            "llm_stream_usage",
+                            model=resolved_model,
+                            messages=len(messages),
+                            **self._usage_log_fields(usage_payload),
+                        )
+                    if usage_payload and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                        yield StreamChunk(usage=usage_payload)
                         continue
                     content = parsed.get("content", "") or ""
                     reasoning_content = parsed.get("reasoning_content", "") or ""
@@ -508,7 +676,7 @@ class OpenAICompatibleGatewayClient:
                         reasoning_content=reasoning_content,
                         finish_reason=parsed.get("finish_reason"),
                         model=chunk_data.get("model", ""),
-                        usage=parsed.get("usage"),
+                        usage=usage_payload,
                     )
         except Exception:
             duration_ms = (time.perf_counter() - start) * 1000
@@ -523,9 +691,11 @@ class OpenAICompatibleGatewayClient:
         **kwargs: Any,
     ) -> Generator[StreamChunk, None, None]:
         """同步流式调用聊天补全，逐 chunk yield StreamChunk。5xx 和网络错误自动重试。"""
-        resolved_model = model or self.model
+        resolved_model = self._resolve_request_model(model)
         kwargs, observability = self._pop_observability_kwargs(kwargs)
-        kwargs = self._inject_max_tokens(resolved_model, kwargs)
+        with self._model_directory_lock:
+            raw_model = deepcopy(self._model_directory.get(resolved_model, {}))
+        kwargs = self._inject_max_tokens(resolved_model, kwargs, raw_model)
         protocol = self._resolve_protocol(resolved_model)
         adapter = self._get_adapter(resolved_model)
         kwargs = {**self._provider_prompt_cache_kwargs(adapter), **kwargs}
@@ -595,9 +765,20 @@ class OpenAICompatibleGatewayClient:
                         parsed = adapter.parse_stream_chunk(chunk_data)
                         if parsed is None:
                             continue
-                        if parsed.get("usage") is not None and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                        usage_payload = self._usage_payload(parsed)
+                        if usage_payload:
                             usage_chunk_count += 1
-                            yield StreamChunk(usage=parsed["usage"])
+                            log_performance(
+                                logger,
+                                "llm_stream_sync_usage",
+                                model=resolved_model,
+                                messages=len(messages),
+                                attempt=attempt + 1,
+                                **observability,
+                                **self._usage_log_fields(usage_payload),
+                            )
+                        if usage_payload and not parsed.get("content") and not parsed.get("finish_reason") and not parsed.get("reasoning_content"):
+                            yield StreamChunk(usage=usage_payload)
                             continue
                         content = parsed.get("content", "") or ""
                         reasoning_content = parsed.get("reasoning_content", "") or ""
@@ -624,7 +805,7 @@ class OpenAICompatibleGatewayClient:
                             reasoning_content=reasoning_content,
                             finish_reason=parsed.get("finish_reason"),
                             model=chunk_data.get("model", ""),
-                            usage=parsed.get("usage"),
+                            usage=usage_payload,
                         )
                     return  # 成功完成，退出重试循环
             except httpx.HTTPError as exc:

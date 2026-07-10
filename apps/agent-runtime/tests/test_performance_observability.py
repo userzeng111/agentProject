@@ -57,11 +57,39 @@ class _FakeStreamResponse:
         return b""
 
 
+class _FakeMixedUsageStreamResponse:
+    status_code = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def iter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"甲"},"finish_reason":null}],"model":"test-model"}'
+        yield (
+            'data: {"choices":[{"delta":{},"finish_reason":"stop",'
+            '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}],"model":"test-model"}'
+        )
+        yield "data: [DONE]"
+
+    def read(self) -> bytes:
+        return b""
+
+
 class _FakeClient:
     is_closed = False
 
     def stream(self, *args: Any, **kwargs: Any) -> _FakeStreamResponse:
         return _FakeStreamResponse()
+
+
+class _FakeMixedUsageClient:
+    is_closed = False
+
+    def stream(self, *args: Any, **kwargs: Any) -> _FakeMixedUsageStreamResponse:
+        return _FakeMixedUsageStreamResponse()
 
 
 class _StubSearchBackend:
@@ -261,13 +289,44 @@ def test_llm_stream_sync_logs_chunk_metrics(caplog: pytest.LogCaptureFixture) ->
     client._client = _FakeClient()
 
     with caplog.at_level(logging.DEBUG, logger="app.llm.gateway_client"):
-        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}]))
+        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}], model="test-model"))
 
     assert [chunk.content for chunk in chunks if chunk.content] == ["甲"]
     messages = _messages(caplog)
     assert "llm_stream_sync_first_token" in messages
+    assert "llm_stream_sync_usage" in messages
+    assert "usage_source_path=usage" in messages
+    assert "completion_tokens=2" in messages
     assert "llm_stream_sync_metrics" in messages
     assert "chunk_count=2" in messages
+    assert "usage_chunk_count=1" in messages
+    assert "finish_reason=stop" in messages
+
+
+def test_llm_stream_sync_logs_usage_when_finish_reason_chunk_contains_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = OpenAICompatibleGatewayClient(
+        base_url="http://example.com",
+        api_key="test-key",
+        model="test-model",
+    )
+    client._client = _FakeMixedUsageClient()
+
+    with caplog.at_level(logging.DEBUG, logger="app.llm.gateway_client"):
+        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}], model="test-model"))
+
+    usage_chunks = [chunk for chunk in chunks if chunk.usage]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].finish_reason == "stop"
+    assert usage_chunks[0].usage["total_tokens"] == 5
+    messages = _messages(caplog)
+    assert "llm_stream_sync_usage" in messages
+    assert "usage_source_path=choices[0].usage" in messages
+    assert "prompt_tokens=3" in messages
+    assert "completion_tokens=2" in messages
+    assert "total_tokens=5" in messages
+    assert "usage_chunk_count=1" in messages
     assert "finish_reason=stop" in messages
 
 
@@ -283,6 +342,7 @@ def test_llm_stream_sync_logs_stage_and_exchange_label(caplog: pytest.LogCapture
         list(
             client.complete_stream_sync(
                 [{"role": "user", "content": "测试"}],
+                model="test-model",
                 _obs_stage="planning",
                 _obs_exchange_label="outline",
             )

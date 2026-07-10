@@ -70,6 +70,29 @@ class StreamFailsBeforeChunkGateway(StreamGatewayBase):
         }
 
 
+class StreamFailsBeforeChunkWithUsageGateway(StreamGatewayBase):
+    def __init__(self, payload: dict, usage: dict) -> None:
+        self.payload = payload
+        self.usage = usage
+        self.stream_calls: list[dict] = []
+        self.complete_json_with_metadata_calls = 0
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.stream_calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        if False:
+            yield StreamChunk()
+        raise GatewayClientError("同步流式调用启动失败，状态码 504")
+
+    def complete_json_with_metadata(self, messages, model=None, **kwargs):
+        self.complete_json_with_metadata_calls += 1
+        return {
+            "payload": dict(self.payload),
+            "usage": dict(self.usage),
+            "model": model or "",
+            "finish_reason": "stop",
+        }
+
+
 class StreamSuccessGateway(StreamGatewayBase):
     def __init__(self, payload: dict) -> None:
         self.payload = payload
@@ -299,6 +322,20 @@ class ConcurrentChapterGateway(StreamGatewayBase):
 
 
 class StoryEngineContextTests(unittest.TestCase):
+    def test_resolve_model_requires_explicit_model_even_when_setting_contains_legacy_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    _env_file=None,
+                    LLM_API_KEY="test-key",
+                    DEFAULT_CHAT_MODEL="legacy-configured-model",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "显式选择"):
+                engine.resolve_model(None)
+
     def test_story_engine_validates_planned_chapter_count_within_target_range(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -1122,6 +1159,50 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertEqual(len(usage_events), 1)
             self.assertEqual(usage_events[0]["payload"]["cached_tokens"], 2856)
             self.assertEqual(usage_events[0]["payload"]["cache_read_input_tokens"], 2856)
+
+    def test_non_stream_fallback_emits_usage_progress_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="K2.6",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = StreamFailsBeforeChunkWithUsageGateway(
+                payload={
+                    "number": 1,
+                    "title": "第一章",
+                    "summary": "主角重开玄脉。",
+                    "content": "第一章正文",
+                },
+                usage={
+                    "prompt_tokens": 40,
+                    "completion_tokens": 12,
+                    "total_tokens": 52,
+                    "usage_source_path": "usage",
+                },
+            )
+            events: list[dict] = []
+
+            payload, _ = engine._complete_stream_json_with_cache(  # noqa: SLF001
+                request_messages=[
+                    {"role": "system", "content": "你是章节起草助手。"},
+                    {"role": "user", "content": "当前章节序号：1\n请输出 JSON。"},
+                ],
+                model="K2.6",
+                stage="drafting",
+                exchange_label="chapter-01",
+                exchange_callback=None,
+                progress_callback=events.append,
+                max_tokens=1024,
+            )
+
+            self.assertEqual(payload["number"], 1)
+            usage_events = [event for event in events if event.get("event_type") == "model.usage"]
+            self.assertEqual(len(usage_events), 1)
+            self.assertEqual(usage_events[0]["payload"]["total_tokens"], 52)
+            self.assertEqual(usage_events[0]["payload"]["usage_source_path"], "usage")
 
     def test_stream_exchange_callback_includes_timing_details(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
