@@ -283,9 +283,12 @@ export async function mockCommonApiRoutes(page: Page) {
             },
           },
         ],
-        meta: { default_model: "gpt-5.4", cached: true },
+        meta: { cached: true },
       },
     });
+  });
+  await page.route("**/api/model-validation**", async (route) => {
+    await route.fulfill({ json: { model_id: "gpt-5.4", status: "unverified" } });
   });
   await page.route("**/api/settings/rag**", async (route) => {
     await route.fulfill({

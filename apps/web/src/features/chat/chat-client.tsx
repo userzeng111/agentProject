@@ -46,7 +46,6 @@ import {
   isGatewayBackedModel,
   resolveChatSelectValue,
   resolveConversationModel,
-  resolveDefaultChatModelId,
 } from "./model-selection.mjs";
 import ModelValidationPanel from "./model-validation-panel";
 import {
@@ -138,7 +137,7 @@ export function ChatClient() {
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
   const [ragAvailable, setRagAvailable] = useState<boolean | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
-  const [defaultModelId, setDefaultModelId] = useState("");
+  const [modelCatalogLoaded, setModelCatalogLoaded] = useState(false);
   const [currentModel, setCurrentModel] = useState("");
   const [validationPanelOpen, setValidationPanelOpen] = useState(false);
   const [validationState, setValidationState] = useState(() => createInitialValidationState(""));
@@ -215,19 +214,17 @@ export function ChatClient() {
         const catalog = await getModelCatalog();
         const nextModels = catalog.data ?? [];
         setModels(nextModels);
-        const requestedDefault = catalog.meta?.default_model ?? "";
-        const nextDefault = resolveDefaultChatModelId(nextModels, requestedDefault);
-        setDefaultModelId(nextDefault);
+        setModelCatalogLoaded(true);
       } catch {
         setModels([]);
-        setDefaultModelId("");
+        setModelCatalogLoaded(false);
       }
     }
     void loadModelCatalog();
   }, []);
 
   useEffect(() => {
-    if (!currentConvId) {
+    if (!currentConvId || !modelCatalogLoaded) {
       return;
     }
     const queryModelId = queryModelRef.current;
@@ -239,12 +236,13 @@ export function ChatClient() {
       return;
     }
     const conv = getConversation(currentConvId);
+    const currentSelection = resolveChatSelectValue(currentModel, models);
     const savedModel = conv?.model || "";
-    const nextModel = resolveConversationModel(savedModel, models, defaultModelId);
-    if (nextModel && currentModel !== nextModel) {
+    const nextModel = currentSelection || resolveConversationModel(savedModel, models);
+    if (currentModel !== nextModel) {
       setCurrentModel(nextModel);
     }
-  }, [currentConvId, currentModel, defaultModelId, models]);
+  }, [currentConvId, currentModel, modelCatalogLoaded, models]);
 
   useEffect(() => {
     async function loadRagStatus() {
@@ -292,7 +290,7 @@ export function ChatClient() {
       // 空消息也要保存（更新时间戳）
       const conv = getConversation(currentConvId);
       if (conv) {
-        saveConversation({ ...conv, model: currentModel || conv.model, updatedAt: Date.now() });
+        saveConversation({ ...conv, model: currentModel, updatedAt: Date.now() });
       }
       return;
     }
@@ -304,7 +302,7 @@ export function ChatClient() {
       ...conv,
       title,
       messages: serialized,
-      model: currentModel || conv.model,
+      model: currentModel,
       updatedAt: Date.now(),
     });
     setConversationList(listConversations());
@@ -335,23 +333,23 @@ export function ChatClient() {
       setActiveConversationId(id);
       setCurrentConvId(id);
       setMessages(restoreMessages(conv.messages));
-      setCurrentModel(conv.model || defaultModelId);
+      setCurrentModel(conv.model || "");
       setExpandedThinking({});
       setMobileDrawerOpen(false);
     },
-    [currentConvId, defaultModelId],
+    [currentConvId],
   );
 
   // ── 新建会话 ──
   const handleNewConversation = useCallback(() => {
-    const newConv = createConversation(defaultModelId);
+    const newConv = createConversation();
     setCurrentConvId(newConv.id);
     setMessages([]);
-    setCurrentModel(newConv.model ?? defaultModelId);
+    setCurrentModel(newConv.model ?? "");
     setExpandedThinking({});
     setConversationList(listConversations());
     setMobileDrawerOpen(false);
-  }, [defaultModelId]);
+  }, []);
 
   // ── 删除会话 ──
   const handleDeleteConversation = useCallback(
@@ -369,24 +367,66 @@ export function ChatClient() {
             setActiveConversationId(nextConv.id);
             setCurrentConvId(nextConv.id);
             setMessages(restoreMessages(nextConv.messages));
-            setCurrentModel(nextConv.model || defaultModelId);
+            setCurrentModel(nextConv.model || "");
           }
         } else {
-          const newConv = createConversation(defaultModelId);
+          const newConv = createConversation();
           setCurrentConvId(newConv.id);
           setMessages([]);
-          setCurrentModel(newConv.model ?? defaultModelId);
+          setCurrentModel(newConv.model ?? "");
           setConversationList(listConversations());
         }
       }
       showSnackbar("会话已删除", "success");
     },
-    [currentConvId, defaultModelId, showSnackbar],
+    [currentConvId, showSnackbar],
   );
 
   const selectableModels = models.filter((item) => isGatewayBackedModel(item));
-  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels, defaultModelId);
+  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels);
   const selectedModel = selectableModels.find((item) => item.id === chatSelectValue) ?? null;
+  const chatModelMenuItems = selectableModels.length
+    ? [
+        <MenuItem key="empty-model" value="" disabled>
+          <em>请选择聊天模型</em>
+        </MenuItem>,
+        ...selectableModels.map((item) => (
+          <MenuItem key={item.id} value={item.id}>
+            <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 500,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.display_name || item.id}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {getModelValidationLabel(item)}
+                {item.provider ? ` · ${item.provider}` : ""}
+              </Typography>
+            </Stack>
+          </MenuItem>
+        )),
+      ]
+    : [
+        <MenuItem key="no-model" value="" disabled>
+          暂无可用模型
+        </MenuItem>,
+      ];
 
   const beginStreaming = useCallback(() => {
     activeStreamCountRef.current += 1;
@@ -401,7 +441,7 @@ export function ChatClient() {
   // ── 发送消息 ──
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || !chatSelectValue) return;
 
     abortControllerRef.current?.abort();
     validationAbortControllerRef.current?.abort();
@@ -432,7 +472,7 @@ export function ChatClient() {
 
     await streamChat(
       apiMessages,
-      currentModel || undefined,
+      chatSelectValue,
       Boolean(ragAvailable),
       (chunk: ChatStreamChunk) => {
         if (chunk.reasoning_content) {
@@ -497,13 +537,13 @@ export function ChatClient() {
       },
       abortControllerRef.current?.signal,
     );
-  }, [beginStreaming, currentModel, endStreaming, input, loading, messages, ragAvailable]);
+  }, [beginStreaming, chatSelectValue, endStreaming, input, loading, messages, ragAvailable]);
 
   const refreshModelCatalog = useCallback(async (refresh = true) => {
     const catalog = await getModelCatalog({ refresh });
     const nextModels = catalog.data ?? [];
     setModels(nextModels);
-    setDefaultModelId(resolveDefaultChatModelId(nextModels, catalog.meta?.default_model ?? ""));
+    setModelCatalogLoaded(true);
   }, []);
 
   const updateValidationAssistant = useCallback((runId: string, update: (message: DisplayMessage) => DisplayMessage) => {
@@ -851,7 +891,26 @@ export function ChatClient() {
                 minWidth: 0,
                 width: { xs: "auto", sm: 220 },
               }}
-              helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
+              helperText={chatSelectValue ? "当前会话已显式选择模型" : "请选择当前在线模型后再发送消息"}
+              SelectProps={{
+                displayEmpty: true,
+                renderValue: (value) => (value ? String(value) : <em>请选择聊天模型</em>),
+                MenuProps: {
+                  PaperProps: {
+                    "data-testid": "chat-model-menu",
+                    sx: {
+                      maxHeight: "min(52vh, 420px)",
+                      width: { xs: "calc(100vw - 32px)", sm: 320 },
+                      maxWidth: "calc(100vw - 32px)",
+                      overflowY: "auto",
+                      overscrollBehavior: "contain",
+                    },
+                  },
+                  MenuListProps: {
+                    sx: { py: 0.5 },
+                  },
+                },
+              }}
               FormHelperTextProps={{
                 sx: {
                   overflowWrap: "anywhere",
@@ -859,43 +918,7 @@ export function ChatClient() {
                 },
               }}
             >
-              {selectableModels.length ? (
-                selectableModels.map((item) => (
-                  <MenuItem key={item.id} value={item.id}>
-                    <Stack spacing={0.25} sx={{ minWidth: 0 }}>
-                      <Typography
-                        variant="body2"
-                        sx={{
-                          fontWeight: 500,
-                          minWidth: 0,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {item.display_name || item.id}
-                      </Typography>
-                      <Typography
-                        variant="caption"
-                        color="text.secondary"
-                        sx={{
-                          minWidth: 0,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {getModelValidationLabel(item)}
-                        {item.provider ? ` · ${item.provider}` : ""}
-                      </Typography>
-                    </Stack>
-                  </MenuItem>
-                ))
-              ) : (
-                <MenuItem value="" disabled>
-                  暂无可用模型
-                </MenuItem>
-              )}
+              {chatModelMenuItems}
             </TextField>
           </Stack>
         </Box>
@@ -1192,7 +1215,7 @@ export function ChatClient() {
             aria-label="发送消息"
             color="primary"
             onClick={handleSend}
-            disabled={!input.trim() || loading}
+            disabled={!input.trim() || loading || !chatSelectValue}
             sx={{
               bgcolor: "primary.main",
               color: "white",

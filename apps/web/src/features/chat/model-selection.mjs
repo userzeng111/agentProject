@@ -18,32 +18,20 @@ export function getModelValidationLabel(model) {
   return "未验证";
 }
 
-export function resolveDefaultChatModelId(models, requestedDefault = "") {
-  const gatewayBackedModels = (models || []).filter((item) => isGatewayBackedModel(item));
-  const requestedDefaultAvailable = gatewayBackedModels.some((item) => item.id === requestedDefault);
-  if (requestedDefaultAvailable) {
-    return requestedDefault;
-  }
-  return gatewayBackedModels[0]?.id ?? "";
-}
-
-export function resolveConversationModel(savedModel, models, defaultModelId = "") {
+export function resolveConversationModel(savedModel, models) {
   const savedGatewayModel =
     savedModel &&
     (models || []).some((item) => item.id === savedModel && isGatewayBackedModel(item))
       ? savedModel
       : "";
-  return savedGatewayModel || defaultModelId || "";
+  return savedGatewayModel;
 }
 
-export function resolveChatSelectValue(currentModel, models, defaultModelId = "") {
+export function resolveChatSelectValue(currentModel, models) {
   const availableModels = (models || []).filter((item) => isGatewayBackedModel(item));
-  const current = currentModel || defaultModelId || "";
+  const current = currentModel || "";
   if (current && availableModels.some((item) => item.id === current)) {
     return current;
   }
-  if (defaultModelId && availableModels.some((item) => item.id === defaultModelId)) {
-    return defaultModelId;
-  }
-  return availableModels[0]?.id ?? "";
+  return "";
 }

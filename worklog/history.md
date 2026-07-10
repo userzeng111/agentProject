@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：AI 对话与模型验证 UI 回归排查
+  路径：`worklog/archive/UI优化/20260710-01-AI对话与模型验证UI回归排查.md`
+  摘要：修复聊天模型无法选择、模型验证入口不可用及长模型菜单重叠穿模，并完成桌面和移动端回归验证。
+
 - 标题：LLM 摘要 token 用量解析与展示缺失
   路径：`worklog/archive/LLM日志/20260709-01-llm-summary-token-usage-parse-and-display.md`
   摘要：扩展 LLM usage 解析/聚合/展示为七类统计字段，支持白鹿真实接口嵌套 usage，全量测试 413+129 通过。
