@@ -11,7 +11,6 @@ from pathlib import Path
 
 from app.application.task_service import TaskService
 from app.domain.models import ChapterDraft, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
-from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import init_db
 from app.storage.database import get_session
@@ -19,13 +18,17 @@ from app.storage.db_models import NovelOutlineChapterModel
 from app.storage.db_repository import get_novel_project, update_project_status, upsert_novel_project
 from app.storage.task_store import TaskLogStore
 
-from tests.fakes import FakeGatewayClient
+from tests.fakes import FakeGatewayClient, build_verified_gateway_model_catalog
 
 
 class FakeEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.gateway_client = FakeGatewayClient()
+        self.gateway_client.list_models = lambda: [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "K2.6", "object": "model", "owned_by": "moonshot"},
+        ]
         self.progress_callback = None
 
     def set_runtime_default_model(self, model_id: str) -> None:
@@ -44,7 +47,7 @@ class RecoveryChapterProgressTests(unittest.TestCase):
         )
         store = TaskLogStore(root_dir=str(Path(tmp_dir.name) / "tasklog"))
         engine = FakeEngine(settings)
-        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
         service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
         return tmp_dir, store, service
 

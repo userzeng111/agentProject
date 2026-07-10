@@ -682,6 +682,7 @@ class TaskLogStore:
                     data = json.loads(snapshot_path.read_text(encoding="utf-8"))
                     task = TaskRecord.model_validate(data)
                     task.storage_state = storage_state
+                    self._migrate_legacy_model_fields(task_dir, task)
                     loaded[task.id] = task
                 except json.JSONDecodeError:
                     logger.warning("跳过损坏的任务快照 %s: JSON 解析失败", snapshot_path)
@@ -689,6 +690,43 @@ class TaskLogStore:
                     logger.warning("跳过无法加载的任务 %s", snapshot_path)
         with self._lock:
             self._tasks.update(loaded)
+
+    def _migrate_legacy_model_fields(self, task_dir: Path, task: TaskRecord) -> None:
+        legacy_paths = self._legacy_model_field_paths(task_dir)
+        if not legacy_paths:
+            return
+        try:
+            self._write_json(task_dir / "task.json", task.model_dump(mode="json"))
+            self._write_json(task_dir / "state" / "task.json", task.model_dump(mode="json"))
+            self._write_json(task_dir / "meta.json", self._meta_payload(task))
+            self._write_json(task_dir / "request.json", self._request_payload(task))
+            logger.info(
+                "已规范化历史任务模型字段 task_id=%s files=%s",
+                task.id,
+                ",".join(legacy_paths),
+            )
+        except OSError:
+            logger.warning(
+                "规范化历史任务模型字段失败 task_id=%s files=%s",
+                task.id,
+                ",".join(legacy_paths),
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _legacy_model_field_paths(task_dir: Path) -> list[str]:
+        paths: list[str] = []
+        for relative_path in ("task.json", "state/task.json", "meta.json", "request.json"):
+            path = task_dir / relative_path
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and "default_model_id" in payload:
+                paths.append(relative_path)
+        return paths
 
     def _write_specs(self) -> None:
         specs = {
@@ -853,7 +891,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "status": task.status.value,
@@ -880,7 +918,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "status": task.status.value,
@@ -900,7 +938,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "input": task.input.model_dump(mode="json"),
@@ -915,7 +953,7 @@ class TaskLogStore:
             f"- mode: {task.mode.value}",
             f"- creative_mode: {task.creative_mode.value if task.creative_mode else '无'}",
             f"- novel_size: {task.novel_size.value if task.novel_size else '无'}",
-            f"- model_id: {task.model_id or 'gpt-5.4'}",
+            f"- model_id: {task.model_id or '未设置'}",
             f"- prompt: {task.input.prompt}",
             f"- genre: {task.input.genre}",
             f"- style: {task.input.style}",

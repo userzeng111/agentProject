@@ -220,7 +220,7 @@ class TaskServiceRecoveryMixin:
 
     def _preview_recover_to_stable(self, task: TaskRecord) -> RecoveryPreview | None:
         allowed_model_ids = self._recovery_allowed_model_ids()
-        default_model_id = self._resolve_task_model_id(task)
+        creative_model_id = (task.model_id or "").strip()
         last_action_model_id = task.last_action_model_id or ""
 
         target_stage = ""
@@ -345,7 +345,7 @@ class TaskServiceRecoveryMixin:
             target_batch_no=target_batch_no,
             reuse_existing_draft=reuse_existing_draft,
             will_resume_generation=target_stage == "waiting_chapter_generation",
-            default_model_id=default_model_id,
+            creative_model_id=creative_model_id,
             last_action_model_id=last_action_model_id,
             allowed_model_ids=allowed_model_ids,
             fallback_actions=["restart_from_input"],
@@ -368,7 +368,7 @@ class TaskServiceRecoveryMixin:
             target_stage=TaskStatus.PLANNING.value,
             target_stage_label=_STAGE_LABELS[TaskStatus.PLANNING.value],
             will_resume_generation=True,
-            default_model_id=self._resolve_task_model_id(task),
+            creative_model_id=(task.model_id or "").strip(),
             last_action_model_id=task.last_action_model_id or "",
             allowed_model_ids=self._recovery_allowed_model_ids(),
             fallback_actions=[],
@@ -1338,6 +1338,16 @@ class TaskServiceRecoveryMixin:
             return False
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
         patch: dict[str, Any] = {}
+        checkpoint_auto_review_enabled = bool(values.get("auto_review")) or self._resolve_task_auto_review(task)
+        if checkpoint_auto_review_enabled:
+            checkpoint_policy = values.get("auto_review_policy")
+            resolved_policy = self._resolve_auto_review_policy(
+                task,
+                action_model_id,
+                policy_source=checkpoint_policy if isinstance(checkpoint_policy, dict) else None,
+            )
+            if resolved_policy != checkpoint_policy:
+                patch["auto_review_policy"] = resolved_policy
         input_payload = values.get("input_payload")
         if isinstance(input_payload, dict) and str(input_payload.get("model_id") or "").strip() != resolved_model_id:
             patch["input_payload"] = self._with_model_id(input_payload, resolved_model_id)
