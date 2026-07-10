@@ -265,7 +265,6 @@ class TaskServiceContinuationMixin:
                             from app.agents.dynamic.bridge import DynamicReviewBridge
                             bridge = DynamicReviewBridge(
                                 gateway_client=gateway_client,
-                                default_model=getattr(_settings, "auto_review_auditor_model", "MiniMax-M2.7-highspeed"),
                                 max_workers=getattr(_settings, "auto_review_max_workers", 6),
                             )
                             decision = bridge.review(review, policy)

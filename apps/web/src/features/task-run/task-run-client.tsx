@@ -159,8 +159,6 @@ function resolveWorkspaceTaskModelId(workspace?: WorkspaceResponse | null) {
   return (
     workspace?.request_preview?.creative_model_id ||
     workspace?.meta.creative_model_id ||
-    workspace?.request_preview?.default_model_id ||
-    workspace?.meta.default_model_id ||
     workspace?.request_preview?.model_id ||
     workspace?.meta.model_id ||
     ""
@@ -172,7 +170,7 @@ function formatWorkspaceReviewModel(workspace?: WorkspaceResponse | null) {
   const reviewModelId = workspace?.request_preview?.review_model_id || workspace?.meta.review_model_id || "";
   const creativeModelId = resolveWorkspaceTaskModelId(workspace);
   if (mode === "follow_creative") {
-    return `跟随创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
+    return `跟随任务创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
   }
   return reviewModelId || "未设置";
 }
@@ -415,6 +413,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const currentActionModelIdRef = useRef("");
   const currentTaskModelIdRef = useRef("");
   const currentModelOptionsRef = useRef<ModelOption[]>([]);
+  const actionModelInitializedRef = useRef(false);
+  const recoveryModelInitializedRef = useRef(false);
 
   // 提前计算 thinkingGroups，确保相关 hook 位于条件 return 之前，避免 Hook 数量不一致
   const thinkingGroups = useMemo(() => {
@@ -497,7 +497,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           error_message: task.error_message,
           model_id: task.model_id || current.meta.model_id,
           creative_model_id: task.creative_model_id || current.meta.creative_model_id,
-          default_model_id: task.default_model_id || current.meta.default_model_id,
           last_action_model_id: task.last_action_model_id || current.meta.last_action_model_id,
           last_action_kind: task.last_action_kind || current.meta.last_action_kind,
           auto_review_model_mode: task.auto_review_model_mode || current.meta.auto_review_model_mode,
@@ -602,6 +601,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     setRecoveryDialogOpen(false);
     setSelectedRecoveryAction("recover_to_stable");
     setRecoveryModelId("");
+    actionModelInitializedRef.current = false;
+    recoveryModelInitializedRef.current = false;
   }, [resolvedTaskId]);
 
   const selectableModels: ModelOption[] = selectNovelTaskModels(models);
@@ -611,15 +612,24 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const validationErrorModelId = resolvedActionModelId || actionModelId || currentTaskModelId;
   const recoveryPreview = resolveRecoveryPreview(workspace, selectedRecoveryAction);
   const recoverySelectableModels = filterRecoveryModels(selectableModels, recoveryPreview?.allowed_model_ids);
-  const defaultRecoveryModelId =
-    recoveryPreview?.default_model_id ||
+  const recoveryTaskCreativeModelId =
+    recoveryPreview?.creative_model_id ||
     currentTaskModelId ||
     "";
 
   useEffect(() => {
-    if (actionModelId && selectableModels.some((item) => item.id === actionModelId)) {
+    if (actionModelId) {
+      if (selectableModels.some((item) => item.id === actionModelId)) {
+        return;
+      }
+      localStorage.removeItem("novel-agent:action-model-id");
+      setActionModelId("");
       return;
     }
+    if (actionModelInitializedRef.current || !selectableModels.length) {
+      return;
+    }
+    actionModelInitializedRef.current = true;
     const savedModelId = localStorage.getItem("novel-agent:action-model-id");
     if (savedModelId && selectableModels.some((item) => item.id === savedModelId)) {
       setActionModelId(savedModelId);
@@ -635,6 +645,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const hasValidActionModel = Boolean(resolvedActionModelId);
 
   function handleActionModelChange(nextModelId: string) {
+    actionModelInitializedRef.current = true;
     setActionModelId(nextModelId);
     if (nextModelId) {
       localStorage.setItem("novel-agent:action-model-id", nextModelId);
@@ -648,15 +659,23 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     if (!recoveryDialogOpen) {
       return;
     }
-    if (recoveryModelId && recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+    if (recoveryModelId) {
+      if (recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+        return;
+      }
+      setRecoveryModelId("");
       return;
     }
-    if (defaultRecoveryModelId && recoverySelectableModels.some((item) => item.id === defaultRecoveryModelId)) {
-      setRecoveryModelId(defaultRecoveryModelId);
+    if (recoveryModelInitializedRef.current || !recoverySelectableModels.length) {
+      return;
+    }
+    recoveryModelInitializedRef.current = true;
+    if (recoveryTaskCreativeModelId && recoverySelectableModels.some((item) => item.id === recoveryTaskCreativeModelId)) {
+      setRecoveryModelId(recoveryTaskCreativeModelId);
       return;
     }
     setRecoveryModelId("");
-  }, [defaultRecoveryModelId, recoveryDialogOpen, recoveryModelId, recoverySelectableModels]);
+  }, [recoveryDialogOpen, recoveryModelId, recoverySelectableModels, recoveryTaskCreativeModelId]);
 
   useEffect(() => {
     if (!resolvedTaskId) {
@@ -813,7 +832,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   async function handleRun() {
     if (!hasValidActionModel) {
-      setError("任务默认模型当前不可用，请先手动选择本次动作模型。");
+      setError("任务创作模型当前不可用，请先手动选择本次动作模型。");
       return;
     }
     try {
@@ -870,7 +889,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   async function handleContinueDraft() {
     if (!hasValidActionModel) {
-      setError("任务默认模型当前不可用，请先手动选择本次动作模型。");
+      setError("任务创作模型当前不可用，请先手动选择本次动作模型。");
       return;
     }
     try {
@@ -1007,7 +1026,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       title={workspaceTitle}
       metaItems={[
         { label: `任务 ID：${workspace.meta.task_id}`, variant: "outlined" },
-        { label: `创作模型：${workspaceCreativeModel}`, variant: "outlined" },
+        { label: `任务创作模型：${workspaceCreativeModel}`, variant: "outlined" },
         { label: `审核模型：${workspaceReviewModel}`, variant: "outlined" },
       ]}
       actions={<Chip color={status.color} label={status.label} />}
@@ -1231,17 +1250,17 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
                 ) : !hasValidActionModel ? (
                   <Alert severity="warning">
-                    任务默认模型当前不在可用模型列表中，请先手动选择本次动作模型。
+                    任务创作模型当前不在可用模型列表中，请先手动选择本次动作模型。
                   </Alert>
                 ) : null}
                 <Typography variant="caption" color="text.secondary">
                   {formatModelRefreshStatus(modelRefresh)}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  默认沿用当前任务模型；开始执行和继续创作时都可临时切换。恢复动作请在恢复面板中单独选择模型。
+                  首次进入时可预填任务创作模型；开始执行和继续创作时都可临时切换。恢复动作请在恢复面板中单独选择模型。
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
-                  创作模型：{workspace.meta.creative_model_id || workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}
+                  任务创作模型：{workspace.meta.creative_model_id || workspace.meta.model_id || "未设置"}
                   {workspace.meta.last_action_model_id
                     ? ` · 最近一次创作动作模型：${workspace.meta.last_action_model_id}${formatActionKindLabel(workspace.meta.last_action_kind) ? `（${formatActionKindLabel(workspace.meta.last_action_kind)}）` : ""}`
                     : ""}
@@ -1272,7 +1291,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 variant="outlined"
               />
               <Chip
-                label={`创作模型：${workspace.meta.creative_model_id || workspace.meta.default_model_id || workspace.meta.model_id || "未设置"}`}
+                label={`任务创作模型：${workspace.meta.creative_model_id || workspace.meta.model_id || "未设置"}`}
                 size="small"
                 variant="outlined"
               />
@@ -1701,12 +1720,12 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                     Task ID：{workspace.meta.task_id}
                   </Typography>
                   <Typography variant="body2" color="text.secondary">
-                    任务默认模型：
-                    {workspace.request_preview?.default_model_id ||
-                      workspace.meta.default_model_id ||
+                    任务创作模型：
+                    {workspace.request_preview?.creative_model_id ||
+                      workspace.meta.creative_model_id ||
                       workspace.request_preview?.model_id ||
                       workspace.meta.model_id ||
-                      "默认模型"}
+                      "未设置"}
                     {workspace.request_preview?.last_action_model_id
                       ? ` · 最近一次动作模型：${workspace.request_preview.last_action_model_id}${formatActionKindLabel(workspace.request_preview.last_action_kind) ? `（${formatActionKindLabel(workspace.request_preview.last_action_kind)}）` : ""}`
                       : ""}
@@ -1779,13 +1798,16 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         models={selectableModels}
         selectedAction={selectedRecoveryAction}
         selectedModelId={recoveryModelId}
-        defaultModelId={defaultRecoveryModelId}
+        taskCreativeModelId={recoveryTaskCreativeModelId}
         submitting={running}
         onActionChange={(action) => {
           setSelectedRecoveryAction(action);
           setRecoveryModelId("");
         }}
-        onModelChange={setRecoveryModelId}
+        onModelChange={(modelId) => {
+          recoveryModelInitializedRef.current = true;
+          setRecoveryModelId(modelId);
+        }}
         onCancel={() => setRecoveryDialogOpen(false)}
         onConfirm={() =>
           void handleRecover({

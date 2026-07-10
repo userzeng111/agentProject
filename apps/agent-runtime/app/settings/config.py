@@ -36,7 +36,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANTHROPIC_BASE_URL"),
     )
     default_chat_model: str = Field(
-        default="glm-5.1",
+        default="",
         validation_alias=AliasChoices("DEFAULT_CHAT_MODEL"),
     )
     openai_api_key: str | None = Field(
@@ -49,11 +49,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AUTO_REVIEW"),
     )
     auto_review_auditor_model: str = Field(
-        default="MiniMax-M2.7-highspeed",
+        default="",
         validation_alias=AliasChoices("AUTO_REVIEW_AUDITOR_MODEL"),
     )
     auto_review_synthesis_model: str = Field(
-        default="MiniMax-M2.7-highspeed",
+        default="",
         validation_alias=AliasChoices("AUTO_REVIEW_SYNTHESIS_MODEL"),
     )
     auto_review_model_mode: str = Field(

@@ -161,13 +161,6 @@ export async function getStyleProfiles() {
   return Array.isArray(response.items) ? response.items : [];
 }
 
-export async function updateDefaultModel(modelId: string) {
-  return request<{ default_model: string; supported_models: string[] }>("/api/settings/default-model", {
-    method: "PATCH",
-    body: JSON.stringify({ model_id: modelId }),
-  });
-}
-
 export function getRagSettings() {
   return request<RagSettingsStatus>("/api/settings/rag");
 }

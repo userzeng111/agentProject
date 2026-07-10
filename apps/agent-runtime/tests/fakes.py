@@ -1,8 +1,75 @@
 """测试中共享的 Fake 类，减少各测试文件中的重复定义。"""
 
+from collections.abc import Iterable
 from typing import Any
 
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
+
+
+class VerifiedGatewayCompatibilityProvider:
+    """测试专用兼容性报告提供者，不改变模型目录的可见性规则。"""
+
+    def get_report(self, model_id: str) -> dict[str, Any]:
+        return {
+            "model_id": model_id,
+            "status": "verified",
+            "validated_at": "test",
+            "validator_version": "test",
+            "summary": "测试网关模型已验证",
+            "failure_reason": "",
+            "checks": [],
+            "evidence": {},
+        }
+
+
+def build_verified_gateway_model_catalog(settings: Any, gateway_client: Any, **kwargs: Any):
+    """构建仅对假网关目录生效的已验证模型目录。"""
+    from app.llm.model_catalog import ModelCatalogService
+
+    return ModelCatalogService(
+        settings=settings,
+        gateway_client=gateway_client,
+        compatibility_provider=VerifiedGatewayCompatibilityProvider(),
+        **kwargs,
+    )
+
+
+class FakeVerifiedGatewayModelCatalog:
+    """供直接构图测试使用的当前供应商已验证模型目录。"""
+
+    def __init__(self, model_ids: Iterable[str]) -> None:
+        self._model_ids = frozenset(str(model_id).strip() for model_id in model_ids if str(model_id).strip())
+
+    def get_model_profile(self, model_id: str | None) -> dict[str, Any]:
+        candidate = str(model_id or "").strip()
+        available = candidate in self._model_ids
+        capabilities = (
+            {
+                "context_window": {
+                    "max_input_tokens": 128000,
+                    "max_output_tokens": 8192,
+                    "max_total_tokens": 136192,
+                },
+                "cache": {"runtime_context_cache": True},
+                "features": {"novel_task_supported": True},
+            }
+            if available
+            else {
+                "context_window": {},
+                "cache": {},
+                "features": {"novel_task_supported": False},
+            }
+        )
+        return {
+            "id": candidate,
+            "provider": "openai_compatible",
+            "capabilities": capabilities,
+            "metadata": {
+                "source": "gateway" if available else "missing",
+                "compatibility": "verified" if available else "unverified",
+                "profile_version": "test",
+            },
+        }
 
 
 class FakePacket:

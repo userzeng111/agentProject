@@ -56,10 +56,8 @@ class AgentFactory:
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
-        default_model: str = "MiniMax-M2.7-highspeed",
     ) -> None:
         self._gateway_client = gateway_client
-        self._default_model = default_model
 
     def create(self, blueprint: AgentBlueprint) -> DynamicAgent:
         """根据蓝图创建单个 DynamicAgent 实例。"""
@@ -183,7 +181,9 @@ class AgentFactory:
             ]
 
             # 调用 LLM
-            use_model = model or self._default_model
+            use_model = str(model or "").strip()
+            if not use_model:
+                raise ValueError("动态 Agent 缺少显式模型，调用已拒绝。")
 
             # 使用 BaseAgent 的 JSON 调用能力
             base = BaseAgent(gateway_client=self._gateway_client)

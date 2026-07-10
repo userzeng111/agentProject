@@ -5,7 +5,7 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import AliasChoices, BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 def utc_now() -> datetime:
@@ -144,7 +144,7 @@ class TaskInput(BaseModel):
 
 
 class TaskCreateRequest(TaskInput):
-    model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model"))
+    model_id: str | None = Field(default=None, validation_alias=AliasChoices("model_id", "model", "default_model_id"))
     auto_review: bool | None = None  # 是否开启自动审核 [NEW]
     auto_review_model_mode: AutoReviewModelMode | None = None
     review_model_id: str = ""
@@ -167,7 +167,7 @@ class TaskCreateRequest(TaskInput):
 class ResumeRequest(BaseModel):
     approved: bool
     comment: str = ""
-    model_id: str = ""
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "default_model_id"))
 
 
 class RollbackChapterPlanRequest(BaseModel):
@@ -177,11 +177,11 @@ class RollbackChapterPlanRequest(BaseModel):
 class ContinueDraftRequest(BaseModel):
     requested_chapter_count: int
     continue_request_id: str
-    model_id: str = ""
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "default_model_id"))
 
 
 class TaskActionRequest(BaseModel):
-    model_id: str = ""
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "default_model_id"))
 
 
 class RecoveryMode(str, Enum):
@@ -197,7 +197,10 @@ class RecoveryPreview(BaseModel):
     target_batch_no: int | None = None
     reuse_existing_draft: bool = False
     will_resume_generation: bool = False
-    default_model_id: str = ""
+    creative_model_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("creative_model_id", "default_model_id"),
+    )
     last_action_model_id: str = ""
     allowed_model_ids: list[str] = Field(default_factory=list)
     fallback_actions: list[str] = Field(default_factory=list)
@@ -214,7 +217,7 @@ class RecoveryOption(BaseModel):
 
 class RecoveryRequest(BaseModel):
     recovery_mode: RecoveryMode = RecoveryMode.RECOVER_TO_STABLE
-    model_id: str = ""
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "default_model_id"))
 
 
 class SourceAsset(BaseModel):
@@ -395,7 +398,7 @@ class TaskRecord(BaseModel):
     chapter_count_min: int | None = None
     chapter_count_max: int | None = None
     chapter_word_min: int | None = None
-    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "model"))
+    model_id: str = Field(default="", validation_alias=AliasChoices("model_id", "model", "default_model_id"))
     auto_review_model_mode: AutoReviewModelMode | None = None
     review_model_id: str = ""
     status: TaskStatus = TaskStatus.CREATED
@@ -452,12 +455,6 @@ class TaskRecord(BaseModel):
             input_data.chapter_word_min = self.chapter_word_min
         return self
 
-    @computed_field
-    @property
-    def default_model_id(self) -> str:
-        return self.model_id
-
-
 class TaskSummary(BaseModel):
     task_id: str
     title: str
@@ -466,8 +463,10 @@ class TaskSummary(BaseModel):
     novel_size: NovelSize | None = None
     chapter_word_min: int | None = None
     model_id: str
-    creative_model_id: str = ""
-    default_model_id: str = ""
+    creative_model_id: str = Field(
+        default="",
+        validation_alias=AliasChoices("creative_model_id", "default_model_id"),
+    )
     last_action_model_id: str = ""
     last_action_kind: str = ""
     auto_review_model_mode: AutoReviewModelMode | None = None

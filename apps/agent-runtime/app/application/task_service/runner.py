@@ -291,7 +291,7 @@ class TaskServiceRunnerMixin:
                     "task_id": task_id,
                     "stage": stage,
                     "exchange_label": exchange_label,
-                    "model": str(event.get("model") or self.engine.settings.default_chat_model),
+                    "model": str(event.get("model") or ""),
                     "finish_reason": event.get("finish_reason"),
                     "parse_error": str(event.get("parse_error") or ""),
                     "raw_response_preview": raw_preview,
@@ -351,7 +351,7 @@ class TaskServiceRunnerMixin:
             cache_key = event.get("cache_key")
             prompt_diagnostics = event.get("prompt_diagnostics") if isinstance(event.get("prompt_diagnostics"), dict) else {}
             parse_duration_ms = event.get("parse_duration_ms")
-            model_name = str(event.get("model") or self.engine.settings.default_chat_model)
+            model_name = str(event.get("model") or "")
             timing_details = event.get("timing_details") if isinstance(event.get("timing_details"), list) else []
             message = (
                 f"{stage} 阶段已命中模型响应缓存：{exchange_label}"

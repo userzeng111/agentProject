@@ -1,5 +1,17 @@
 # 历史问题索引
 
+- 标题：默认模型硬编码与运行时模型目录统一
+  路径：`worklog/archive/LLM日志/20260710-01-默认模型硬编码与运行时目录统一.md`
+  摘要：盘点并移除运行时固定模型默认值，以供应商 API 模型目录作为唯一可选模型来源，后端 434+130 测试全通过。
+
+- 标题：LLM 摘要 token 仍为 0 与白鹿 usage 采集复核
+  路径：`worklog/archive/LLM日志/20260709-02-task-0472d31d26-token-usage-still-zero.md`
+  摘要：扩展嵌套 usage 解析与 llm_report 聚合修复，白鹿真实探针验证 token 非零，420+129 测试全通过。
+
+- 标题：task_68472f411a 章节文件已落盘但仍出现问题分析
+  路径：`worklog/archive/任务恢复/20260709-01-task-68472f411a-chapter-files-landed-but-still-problem.md`
+  摘要：恢复链路修复使 task_68472f411a 从 waiting_manual_action 恢复为 completed，8 章 draft_result 与 artifact 全部重建回填。
+
 - 标题：AI 对话与模型验证 UI 回归排查
   路径：`worklog/archive/UI优化/20260710-01-AI对话与模型验证UI回归排查.md`
   摘要：修复聊天模型无法选择、模型验证入口不可用及长模型菜单重叠穿模，并完成桌面和移动端回归验证。

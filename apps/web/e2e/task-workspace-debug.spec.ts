@@ -57,7 +57,6 @@ test.describe("任务工作台调试中心", () => {
         status: "waiting_outline_review",
         current_stage: "waiting_outline_review",
         title: "调试字段覆盖任务",
-        default_model_id: "gpt-5.4",
         model_id: "gpt-5.4",
         creative_model_id: "gpt-5.4",
         review_model_id: "gpt-5.4",
@@ -75,7 +74,7 @@ test.describe("任务工作台调试中心", () => {
             target_stage_label: "大纲规划",
             target_chapter_numbers: [1, 2],
             will_resume_generation: false,
-            default_model_id: "gpt-5.4",
+            creative_model_id: "gpt-5.4",
             last_action_model_id: "gpt-5.4",
             allowed_model_ids: ["gpt-5.4"],
           },
@@ -84,7 +83,7 @@ test.describe("任务工作台调试中心", () => {
       request_preview: {
         prompt: "调试字段覆盖提示词",
         model_id: "gpt-5.4",
-        default_model_id: "gpt-5.4",
+        creative_model_id: "gpt-5.4",
         model_capabilities: {
           context_window: {
             max_input_tokens: 8000,
@@ -137,9 +136,11 @@ test.describe("任务工作台调试中心", () => {
         injection_evidence: "context_snapshot:3",
       },
       llm_report: {
+        request_count: 2,
         usage_count: 2,
         exchange_count: 3,
         cache_hit_count: 1,
+        runtime_response_cache_hit_count: 1,
         usage_total: {
           input_tokens: 1000,
           output_tokens: 280,
@@ -248,6 +249,25 @@ test.describe("任务工作台调试中心", () => {
     });
 
     await mockTaskWorkspace(page, workspace);
+    await page.route("**/api/models**", async (route) => {
+      await route.fulfill({
+        json: {
+          data: [
+            {
+              id: "gpt-5.4",
+              display_name: "GPT 5.4",
+              provider: "gateway",
+              metadata: { source: "gateway:list_models", compatibility: "verified" },
+              capabilities: {
+                features: ["novel"],
+                context_window: { max_input_tokens: 8000, max_output_tokens: 4000 },
+              },
+            },
+          ],
+          meta: { cached: true },
+        },
+      });
+    });
     await page.route(`**/api/tasks/${taskId}/recover`, async (route) => {
       recoverRequests += 1;
       await route.fulfill({ json: { id: taskId, task_id: taskId, status: "planning" } });
@@ -260,7 +280,7 @@ test.describe("任务工作台调试中心", () => {
       "可恢复异常",
       "请求：2",
       "交换：3",
-      "缓存命中：1",
+      "响应缓存命中：1",
       "JSON 解析失败：1",
       "输入 tokens：1,000",
       "总 tokens：1,280",
@@ -296,7 +316,7 @@ test.describe("任务工作台调试中心", () => {
     await page.getByRole("button", { name: "打开恢复面板" }).click();
     await expect(page.getByRole("heading", { name: "恢复方案确认" })).toBeVisible();
     await expect(page.getByText("恢复目标：大纲规划")).toBeVisible();
-    await expect(page.getByText("默认模型：gpt-5.4")).toBeVisible();
+    await expect(page.getByLabel("恢复方案确认").getByText("任务创作模型：gpt-5.4")).toBeVisible();
     await expect(page.getByRole("button", { name: "确认执行当前动作" })).toBeEnabled();
     await page.getByRole("button", { name: "确认执行当前动作" }).click();
     await expect.poll(() => recoverRequests, { message: "确认恢复应请求 recover API" }).toBe(1);

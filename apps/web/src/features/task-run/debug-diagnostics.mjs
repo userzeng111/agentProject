@@ -25,8 +25,6 @@ const RUNNING_STATUSES = new Set([
 ]);
 const TRUNCATED_FINISH_REASONS = new Set(["length", "max_tokens"]);
 const PROVIDER_REFUSAL_PATTERNS = [
-  "白鹿无法回答此问题",
-  "白鹿的回答出现问题",
   "模型供应商返回了错误消息",
   "模型输出被上游内容安全策略过滤",
   "content_filter",

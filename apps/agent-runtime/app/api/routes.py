@@ -143,16 +143,10 @@ def build_router(
 
     @router.patch("/settings/default-model")
     def update_default_model(payload: dict[str, str]):
-        model_id = payload.get("model_id", "").strip()
-        if not model_id:
-            raise HTTPException(status_code=400, detail="model_id 不能为空。")
-        try:
-            return task_service.update_default_model(model_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:
-            logger.exception("更新默认模型失败 model_id=%s", model_id)
-            raise HTTPException(status_code=500, detail=f"更新默认模型失败：{exc}") from exc
+        raise HTTPException(
+            status_code=410,
+            detail="全局默认模型已移除，请在任务、聊天或恢复动作中显式选择模型。",
+        )
 
     @router.get("/settings/protocols")
     def get_protocol_settings():

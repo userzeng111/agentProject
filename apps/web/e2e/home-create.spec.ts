@@ -10,34 +10,6 @@ function parseCssColor(color: string) {
   };
 }
 
-function modelCatalog(defaultModel = "gpt-5.4") {
-  return {
-    data: [
-      {
-        id: "gpt-5.4",
-        display_name: "GPT 5.4",
-        provider: "gateway",
-        metadata: { source: "gateway:list_models" },
-        capabilities: {
-          features: ["novel"],
-          context_window: { max_input_tokens: 8000, max_output_tokens: 4000 },
-        },
-      },
-      {
-        id: "gpt-5.5",
-        display_name: "GPT 5.5",
-        provider: "gateway",
-        metadata: { source: "gateway:list_models" },
-        capabilities: {
-          features: ["novel"],
-          context_window: { max_input_tokens: 16000, max_output_tokens: 8000 },
-        },
-      },
-    ],
-    meta: { default_model: defaultModel, cached: true },
-  };
-}
-
 test.describe("首页 Dashboard 与创建任务", () => {
   test("首页以作品库项目卡片展示任务并在移动端无横向溢出", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
@@ -104,13 +76,15 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await expect(page).toHaveURL(/\/new\/?\?retry_from=task_failed_fixture/);
   });
 
-  test("首页支持删除失败任务和切换默认模型", async ({ page }) => {
+  test("首页支持删除失败任务且不暴露全局默认模型切换", async ({ page }) => {
     await mockCommonApiRoutes(page);
-    await page.route("**/api/models**", async (route) => {
-      await route.fulfill({ json: modelCatalog() });
-    });
     let deleteRequests = 0;
     let defaultModelRequests = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/settings/default-model") {
+        defaultModelRequests += 1;
+      }
+    });
     await page.route("**/api/tasks/task_failed_fixture", async (route) => {
       if (route.request().method() === "DELETE") {
         deleteRequests += 1;
@@ -119,18 +93,11 @@ test.describe("首页 Dashboard 与创建任务", () => {
       }
       await route.fallback();
     });
-    await page.route("**/api/settings/default-model", async (route) => {
-      defaultModelRequests += 1;
-      const payload = route.request().postDataJSON() as Record<string, unknown>;
-      expect(payload.model_id).toBe("gpt-5.5");
-      await route.fulfill({ json: { default_model: "gpt-5.5", supported_models: ["gpt-5.4", "gpt-5.5"] } });
-    });
 
     await page.goto("/", { waitUntil: "commit" });
     await expect(page.getByText("小说工坊").first()).toBeVisible();
-    await page.getByRole("combobox").click();
-    await page.getByRole("option", { name: /GPT 5.5/ }).click();
-    await expect.poll(() => defaultModelRequests, { message: "切换默认模型应请求设置接口" }).toBe(1);
+    await expect(page.getByRole("combobox", { name: /默认模型/ })).toHaveCount(0);
+    await expect(page.getByText("全局默认模型")).toHaveCount(0);
 
     await page.getByRole("tab", { name: "失败 (1)" }).click();
     page.once("dialog", async (dialog) => {
@@ -139,6 +106,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     });
     await page.getByRole("button", { name: /删除/ }).click();
     await expect.poll(() => deleteRequests, { message: "删除失败任务应请求 delete API" }).toBe(1);
+    expect(defaultModelRequests, "首页不应请求已废弃的全局默认模型设置接口").toBe(0);
   });
 
   test("创建页提交成功后进入任务工作台", async ({ page }) => {

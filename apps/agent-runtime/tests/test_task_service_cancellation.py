@@ -4,7 +4,6 @@ from pathlib import Path
 
 from app.application.task_service import TaskService
 from app.domain.models import TaskCreateRequest, TaskMode, TaskStatus
-from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import get_session
 from app.storage.db_models import (
@@ -14,6 +13,7 @@ from app.storage.db_models import (
     NovelProjectModel,
 )
 from app.storage.task_store import TaskLogStore
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FakeGatewayClient:
@@ -59,7 +59,7 @@ class TaskServiceCancellationTests(unittest.TestCase):
         )
         store = TaskLogStore(root_dir=str(Path(tmp_dir.name) / "tasklog"))
         engine = FakeEngine(settings)
-        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
         service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
         return tmp_dir, store, service
 

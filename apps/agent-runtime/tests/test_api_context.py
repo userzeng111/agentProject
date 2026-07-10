@@ -10,13 +10,28 @@ from fastapi.testclient import TestClient
 from app.api.routes import build_router
 from app.application.task_service import TaskService
 from app.domain.models import CreativeMode, DraftResult, NovelSize, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
-from app.llm.model_catalog import ModelCatalogService
 from app.llm.gateway_client import StreamChunk
 from app.llm.story_engine import StoryEngine
 from app.rag.service import RagHit
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
-from tests.fakes import FakeRagService
+from tests.fakes import FakeRagService, build_verified_gateway_model_catalog
+
+
+class FakeGatewayModelDirectory:
+    """为任务接口测试提供当前供应商可见的模型目录。"""
+
+    def list_models(self):
+        return [
+            {
+                "id": "gpt-5.4",
+                "object": "model",
+                "owned_by": "openai",
+                "context_length": 256000,
+            },
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+            {"id": "K2.6", "object": "model", "owned_by": "custom"},
+        ]
 
 
 class FakeModelCompatibilityService:
@@ -78,12 +93,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         settings = Settings(
             LLM_API_KEY="",
-            DEFAULT_CHAT_MODEL="gpt-5.4",
+            DEFAULT_CHAT_MODEL="",
             tasklog_root=str(Path(self.tmp_dir.name) / "tasklog"),
         )
         store = TaskLogStore(root_dir=str(Path(self.tmp_dir.name) / "tasklog"))
         engine = StoryEngine(settings)
-        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
         task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
         app = FastAPI()
@@ -100,22 +115,23 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["meta"]["default_model"], "gpt-5.4")
-        self.assertIn("capabilities", payload["data"][0])
-        self.assertIn("context_window", payload["data"][0]["capabilities"])
+        self.assertNotIn("default_model", payload["meta"])
+        gpt_model = next(item for item in payload["data"] if item["id"] == "gpt-5.4")
+        self.assertIn("capabilities", gpt_model)
+        self.assertIn("context_window", gpt_model["capabilities"])
 
     def test_protocol_settings_endpoint_returns_configured_default_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 _env_file=None,
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 DEFAULT_PROTOCOL="anthropic",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             app = FastAPI()
@@ -317,7 +333,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(service.queue.calls, 1)
         self.assertTrue(service.unsubscribed)
 
-    def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
+    def test_create_task_returns_400_for_model_absent_from_gateway_catalog(self) -> None:
         response = self.client.post(
             "/api/tasks",
             json={
@@ -334,7 +350,21 @@ class ApiContextIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("未完成兼容性验证", response.json()["detail"])
+        self.assertIn("不在当前供应商模型目录", response.json()["detail"])
+
+    def test_create_task_requires_an_explicit_model(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "prompt": "写一个无默认模型的小说任务",
+                "creative_mode": "original",
+                "novel_size": "short",
+                "chapter_word_min": 1800,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("请显式选择", response.json()["detail"])
 
     def test_workspace_endpoint_returns_context_status(self) -> None:
         task = self.task_service.create_task(
@@ -381,6 +411,26 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
 
+    def test_workspace_payload_omits_legacy_default_model_alias(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇任务模型字段契约测试小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["meta"]["creative_model_id"], "gpt-5.4")
+        self.assertEqual(payload["request_preview"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["meta"])
+        self.assertNotIn("default_model_id", payload["request_preview"])
+
     def test_workspace_endpoint_returns_debug_summary_fields(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
@@ -416,7 +466,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["pending_review_summary"]["review_type"], "outline_review")
         self.assertNotIn("story_plan", payload["pending_review_summary"])
 
-    def test_workspace_endpoint_returns_default_and_last_action_model_fields(self) -> None:
+    def test_workspace_endpoint_returns_creative_and_last_action_model_fields(self) -> None:
         self.task_service.model_catalog.ensure_novel_generation_model_supported = lambda _model_id: None
         self.task_service._start_background = lambda *args, **kwargs: None
 
@@ -436,10 +486,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["meta"]["model_id"], "gpt-5.4")
-        self.assertEqual(payload["meta"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["meta"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["meta"])
         self.assertEqual(payload["meta"]["last_action_model_id"], "glm-5.1")
         self.assertEqual(payload["meta"]["last_action_kind"], "run")
-        self.assertEqual(payload["request_preview"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["request_preview"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["request_preview"])
         self.assertEqual(payload["request_preview"]["last_action_model_id"], "glm-5.1")
         self.assertEqual(payload["allowed_actions"], [])
         self.assertEqual(payload["recommended_action"], "")
@@ -775,6 +827,62 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
         self.assertTrue(report["latest_usage"]["provider_prompt_cache_hit"])
         self.assertEqual(report["latest_usage"]["output_tokens"], 272)
+
+    def test_workspace_endpoint_normalizes_nested_usage_payload(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="K2.6",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="drafting",
+            message="模型调用用量已更新。",
+            event_type="model.usage",
+            unit_id="chapter-01",
+            payload={
+                "usage": {
+                    "prompt_tokens": 305,
+                    "completion_tokens": 32,
+                    "total_tokens": 337,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 64,
+                        "cache_read_input_tokens": 48,
+                    },
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 12,
+                    },
+                },
+                "usage_source_path": "usage",
+                "model": "K2.6",
+                "finish_reason": "length",
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(
+            report["usage_total"],
+            {
+                "input_tokens": 305,
+                "output_tokens": 32,
+                "total_tokens": 337,
+                "cached_tokens": 64,
+                "cache_read_input_tokens": 48,
+                "cache_creation_input_tokens": 0,
+                "reasoning_tokens": 12,
+            },
+        )
+        self.assertEqual(report["usage_count"], 1)
+        self.assertEqual(report["usage_status"], "complete")
+        self.assertEqual(report["by_model"]["K2.6"]["total_tokens"], 337)
+        self.assertEqual(report["latest_usage"]["finish_reason"], "length")
 
     def test_workspace_llm_report_counts_requests_without_usage_events(self) -> None:
         task = self.task_service.create_task(
@@ -1149,7 +1257,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(call_messages[0]["role"], "system")
         self.assertIn("港口档案", call_messages[0]["content"])
 
-    def test_chat_completions_uses_updated_runtime_default_model_when_request_model_missing(self) -> None:
+    def test_chat_completions_rejects_missing_model_and_removed_default_model_endpoint(self) -> None:
         class FakeGateway:
             def __init__(self) -> None:
                 self.calls = []
@@ -1167,13 +1275,13 @@ class ApiContextIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FakeGateway()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             from app.services import ChatService
@@ -1182,13 +1290,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
             chat_service = ChatService(
                 gateway_client=engine.gateway_client,
                 rag_service=None,
-                default_model_resolver=lambda: engine.resolve_model(None),
             )
             app.include_router(build_router(task_service, chat_service=chat_service), prefix="/api")
             client = TestClient(app)
 
             update_response = client.patch("/api/settings/default-model", json={"model_id": "glm-5.1"})
-            self.assertEqual(update_response.status_code, 200)
+            self.assertEqual(update_response.status_code, 410)
 
             response = client.post(
                 "/api/chat/completions",
@@ -1198,22 +1305,22 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(engine.gateway_client.calls[0]["model"], "glm-5.1")
-            self.assertEqual(response.json()["model"], "glm-5.1")
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("未指定模型", response.json()["detail"])
+            self.assertEqual(engine.gateway_client.calls, [])
 
     def test_upload_asset_rejects_file_larger_than_configured_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 _env_file=None,
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 UPLOAD_MAX_BYTES=4,
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             task = task_service.create_task(
                 TaskCreateRequest(

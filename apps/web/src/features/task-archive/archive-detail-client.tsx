@@ -488,7 +488,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
       metaItems={[
         { label: detail.meta.title },
         { label: `类型：${taskTypeLabel}`, variant: "outlined" },
-        { label: `任务默认模型：${detail.meta.default_model_id || detail.meta.model_id || "默认模型"}`, variant: "outlined" },
+        { label: `任务创作模型：${detail.meta.creative_model_id || detail.meta.model_id || "未设置"}`, variant: "outlined" },
         ...(detail.meta.last_action_model_id
           ? [{ label: `最近一次动作模型：${detail.meta.last_action_model_id}`, variant: "outlined" as const }]
           : []),

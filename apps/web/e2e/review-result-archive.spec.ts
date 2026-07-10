@@ -16,7 +16,6 @@ function makeReview(reviewType = "outline") {
             : "waiting_outline_review",
       summary: "审核摘要",
       creative_model_id: "gpt-5.4",
-      default_model_id: "gpt-5.4",
       review_model_id: "gpt-5.4",
     },
     review_type: normalizedReviewType,

@@ -11,9 +11,7 @@ import {
   Chip,
   Container,
   Grid,
-  MenuItem,
   Pagination,
-  Select,
   Skeleton,
   Snackbar,
   Stack,
@@ -22,13 +20,12 @@ import {
   Typography,
 } from "@mui/material";
 import { ArrowForward as ArrowForwardIcon, Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
-import { deleteTask, getDashboard, getModelCatalog, getProtocolSettings, normalizeModelOptions, setModelProtocol, updateDefaultModel } from "@/lib/api";
+import { deleteTask, getDashboard, getModelCatalog, getProtocolSettings, normalizeModelOptions, setModelProtocol } from "@/lib/api";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { newProjectHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
-import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 import { resolveTaskHref } from "@/features/task-dashboard/task-card-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
@@ -329,7 +326,6 @@ function SidebarStats({
   dashboard,
   models,
   modelRefresh,
-  onModelChange,
   onRefreshModels,
   protocolOverrides,
   onToggleProtocol,
@@ -337,7 +333,6 @@ function SidebarStats({
   dashboard: DashboardResponse;
   models: ModelOption[];
   modelRefresh: ModelRefreshState;
-  onModelChange: (modelId: string) => void;
   onRefreshModels: () => void;
   protocolOverrides: Record<string, string>;
   onToggleProtocol: (modelId: string, currentProtocol: string) => void;
@@ -355,9 +350,7 @@ function SidebarStats({
     },
   ];
 
-  const currentDefault = dashboard.model_summary?.default_model ?? "";
   const selectableModels: ModelOption[] = selectNovelTaskModels(models);
-  const selectValue = selectableModels.some((item) => item.id === currentDefault) ? currentDefault : "";
 
   return (
     <Stack spacing={2}>
@@ -379,80 +372,23 @@ function SidebarStats({
         </Card>
       ))}
 
-      {/* 默认模型切换卡片 */}
-      <Card>
-        <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
-          <Stack spacing={1.5}>
-            <Typography variant="overline" color="text.secondary">
-              默认模型
-            </Typography>
-            <Stack direction="row" spacing={1}>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<ReplayIcon />}
-                onClick={onRefreshModels}
-              >
-                刷新模型
-              </Button>
-            </Stack>
-            <Select
-              size="small"
-              value={selectValue}
-              onChange={(e) => onModelChange(e.target.value)}
-              sx={{ fontSize: "0.9rem" }}
-            >
-              {!selectableModels.length && (
-                <MenuItem value="" disabled>
-                  当前没有可用于小说任务流的在线模型
-                </MenuItem>
-              )}
-              {selectableModels.map((m) => {
-                const proto = protocolOverrides[m.id] || m.metadata?.protocol || "openai";
-                return (
-                  <MenuItem key={m.id} value={m.id}>
-                    <Stack direction="row" spacing={1} alignItems="center" sx={{ width: "100%" }}>
-                      <Stack spacing={0.25} sx={{ flex: 1 }}>
-                        <Typography sx={{ fontSize: "0.875rem", fontWeight: 500 }}>
-                          {m.display_name || m.id}
-                        </Typography>
-                        {m.provider && (
-                          <Typography variant="caption" color="text.secondary">
-                            {m.provider}
-                          </Typography>
-                        )}
-                      </Stack>
-                      <Chip
-                        label={proto}
-                        size="small"
-                        color={proto === "anthropic" ? "info" : "default"}
-                        variant="outlined"
-                        sx={{ height: 20, fontSize: "0.7rem" }}
-                      />
-                    </Stack>
-                  </MenuItem>
-                );
-              })}
-            </Select>
-            <Typography variant="caption" color="text.secondary">
-              默认使用 Agent Team 当前默认模型；可在任务动作里临时覆盖。
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              可用小说模型 {selectableModels.length} 个
-            </Typography>
-            <Typography variant="caption" color="text.secondary">
-              {formatModelRefreshStatus(modelRefresh)}
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-
       {/* 协议设置卡片 */}
       <Card>
         <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
           <Stack spacing={1.5}>
-            <Typography variant="overline" color="text.secondary">
-              模型协议
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              <Typography variant="overline" color="text.secondary">
+                在线模型协议
+              </Typography>
+              <Button size="small" variant="outlined" startIcon={<ReplayIcon />} onClick={onRefreshModels}>
+                刷新
+              </Button>
+            </Stack>
+            <Typography variant="caption" color="text.secondary">
+              已验证小说模型 {selectableModels.length} 个
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {formatModelRefreshStatus(modelRefresh)}
             </Typography>
             {selectableModels.slice(0, 10).map((m) => {
               const proto = protocolOverrides[m.id] || m.metadata?.protocol || "openai";
@@ -533,8 +469,6 @@ export default function Home() {
     error: "",
   });
   const [error, setError] = useState("");
-  const [validationErrorHref, setValidationErrorHref] = useState<string | null>(null);
-  const [modelUpdating, setModelUpdating] = useState(false);
   const [protocolOverrides, setProtocolOverrides] = useState<Record<string, string>>({});
   const [protocolUpdating, setProtocolUpdating] = useState(false);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
@@ -550,7 +484,6 @@ export default function Home() {
       .then((response) => {
         setDashboard(response);
         setError("");
-        setValidationErrorHref(null);
       })
       .catch((reason) => {
         setError(reason instanceof Error ? reason.message : "读取首页聚合数据失败");
@@ -622,24 +555,6 @@ export default function Home() {
       });
   }, [dashboard, showSnackbar, fetchDashboard]);
 
-  const handleModelChange = (modelId: string) => {
-    if (modelUpdating) return;
-    setModelUpdating(true);
-    void updateDefaultModel(modelId)
-      .then(() => {
-        // 更新成功后刷新 dashboard 和模型列表
-        setValidationErrorHref(null);
-        fetchDashboard();
-        fetchModels(false);
-      })
-      .catch((reason) => {
-        const message = reason instanceof Error ? reason.message : "未知错误";
-        setError(`切换模型失败：${message}`);
-        setValidationErrorHref(getValidationLinkFromError(message, modelId));
-      })
-      .finally(() => setModelUpdating(false));
-  };
-
   const handleToggleProtocol = useCallback((modelId: string, currentProtocol: string) => {
     if (protocolUpdating) return;
     const nextProtocol = currentProtocol === "openai" ? "anthropic" : "openai";
@@ -672,7 +587,7 @@ export default function Home() {
             >
               小说工坊
             </Typography>
-            <Chip label="LangChain + LangGraph + GPT-5.4" size="small" />
+            <Chip label="LangChain + LangGraph" size="small" />
             <Typography variant="body2" color="text.secondary" sx={{ width: "100%" }}>
               从灵感到成稿，AI 辅助小说创作。输入创意，审核大纲，生成初稿。
             </Typography>
@@ -687,20 +602,7 @@ export default function Home() {
           </Stack>
         </Stack>
 
-        {error ? (
-          <Alert
-            severity="error"
-            action={
-              validationErrorHref ? (
-                <Button component={Link} href={validationErrorHref} color="inherit" size="small">
-                  去 AI 对话验证
-                </Button>
-              ) : undefined
-            }
-          >
-            {error}
-          </Alert>
-        ) : null}
+        {error ? <Alert severity="error">{error}</Alert> : null}
 
         {dashboard ? (
           <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
@@ -715,7 +617,6 @@ export default function Home() {
                 dashboard={dashboard}
                 models={models}
                 modelRefresh={modelRefresh}
-                onModelChange={handleModelChange}
                 onRefreshModels={() => fetchModels(true)}
                 protocolOverrides={protocolOverrides}
                 onToggleProtocol={handleToggleProtocol}

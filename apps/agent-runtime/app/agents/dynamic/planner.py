@@ -39,10 +39,8 @@ class PlannerAgent(BaseAgent):
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
-        default_model: str = "MiniMax-M2.7-highspeed",
     ) -> None:
         super().__init__(gateway_client=gateway_client)
-        self.default_model = default_model
 
     def plan(
         self,
@@ -61,7 +59,9 @@ class PlannerAgent(BaseAgent):
         Returns:
             TaskDAG（有向无环图）
         """
-        use_model = model or self.default_model
+        use_model = str(model or "").strip()
+        if not use_model:
+            raise ValueError("动态规划缺少显式模型，调用已拒绝。")
 
         if not blueprints:
             logger.warning("蓝图列表为空，返回空 DAG blueprint_count=%d", len(blueprints))

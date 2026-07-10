@@ -114,13 +114,13 @@ function formatActionKindLabel(kind?: string) {
 }
 
 function resolveReviewTaskModelId(review?: ReviewResponse | null) {
-  return review?.meta.creative_model_id || review?.meta.default_model_id || review?.meta.model_id || "";
+  return review?.meta.creative_model_id || review?.meta.model_id || "";
 }
 
 function formatReviewModelLabel(review: ReviewResponse) {
   if (review.meta.auto_review_model_mode === "follow_creative") {
     const creativeModelId = resolveReviewTaskModelId(review);
-    return `跟随创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
+    return `跟随任务创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
   }
   return review.meta.review_model_id || "未设置";
 }
@@ -548,7 +548,7 @@ function ReviewActionModelSelector({
   modelRefresh,
   actionModelId,
   setActionModelId,
-  defaultModelId,
+  taskCreativeModelId,
   lastActionModelId,
   lastActionKind,
   reviewModelLabel,
@@ -558,7 +558,7 @@ function ReviewActionModelSelector({
   modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (value: string) => void;
-  defaultModelId?: string;
+  taskCreativeModelId?: string;
   lastActionModelId?: string;
   lastActionKind?: string;
   reviewModelLabel?: string;
@@ -578,7 +578,7 @@ function ReviewActionModelSelector({
     >
       <Stack spacing={1.5}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-          <Typography variant="subtitle2">审核后继续创作模型</Typography>
+          <Typography variant="subtitle2">审核后继续使用的任务创作模型</Typography>
           <Button size="small" variant="outlined" onClick={onRefreshModels}>
             刷新模型
           </Button>
@@ -591,7 +591,7 @@ function ReviewActionModelSelector({
           sx={{ maxWidth: 360 }}
         >
           <MenuItem value="">
-            <em>请选择审核后继续创作模型</em>
+            <em>请选择审核后继续使用的任务创作模型</em>
           </MenuItem>
           {models.length ? (
             models.map((model) => (
@@ -608,16 +608,16 @@ function ReviewActionModelSelector({
         {!models.length ? (
           <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
         ) : !resolvedModelId ? (
-          <Alert severity="warning">任务创作模型当前不在可用模型列表中，请先手动选择审核后继续创作模型。</Alert>
+          <Alert severity="warning">任务创作模型当前不在可用模型列表中，请先手动选择审核后继续使用的任务创作模型。</Alert>
         ) : null}
         <Typography variant="caption" color="text.secondary">
           {formatModelRefreshStatus(modelRefresh)}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          默认沿用当前创作模型；点击通过或驳回后继续生成时可临时切换。自动审核模型由创建任务时的审核模型配置决定。
+          首次进入时可预填当前任务创作模型；模型失效后需手动重新选择。自动审核模型由创建任务时的审核模型配置决定。
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          创作模型：{defaultModelId || "未设置"}
+          任务创作模型：{taskCreativeModelId || "未设置"}
           {lastActionModelId
             ? ` · 最近一次创作动作模型：${lastActionModelId}${formatActionKindLabel(lastActionKind) ? `（${formatActionKindLabel(lastActionKind)}）` : ""}`
             : ""}
@@ -952,7 +952,7 @@ function OutlineReview({
                   modelRefresh={modelRefresh}
                   actionModelId={actionModelId}
                   setActionModelId={setActionModelId}
-                  defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
                   lastActionModelId={review.meta.last_action_model_id}
                   lastActionKind={review.meta.last_action_kind}
                   reviewModelLabel={formatReviewModelLabel(review)}
@@ -1101,7 +1101,7 @@ function ChapterPairReview({
                   modelRefresh={modelRefresh}
                   actionModelId={actionModelId}
                   setActionModelId={setActionModelId}
-                  defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
                   lastActionModelId={review.meta.last_action_model_id}
                   lastActionKind={review.meta.last_action_kind}
                   reviewModelLabel={formatReviewModelLabel(review)}
@@ -1259,7 +1259,7 @@ function VerificationReview({
                   modelRefresh={modelRefresh}
                   actionModelId={actionModelId}
                   setActionModelId={setActionModelId}
-                  defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
                   lastActionModelId={review.meta.last_action_model_id}
                   lastActionKind={review.meta.last_action_kind}
                   reviewModelLabel={formatReviewModelLabel(review)}
@@ -1313,6 +1313,8 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const currentActionModelIdRef = useRef("");
   const currentTaskModelIdRef = useRef("");
   const currentModelOptionsRef = useRef<ModelOption[]>([]);
+  const actionModelInitializedRef = useRef(false);
+  const recoveryModelInitializedRef = useRef(false);
 
   const loadReview = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -1407,21 +1409,32 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     setSelectedRecoveryAction("recover_to_stable");
     setRecoveryModelId("");
     setReviewInvalidated(false);
+    actionModelInitializedRef.current = false;
+    recoveryModelInitializedRef.current = false;
   }, [resolvedTaskId]);
 
   const resolvedActionModelId = models.some((item) => item.id === actionModelId) ? actionModelId : "";
   const primaryRecoveryAction = derivePrimaryRecoveryAction(review);
   const recoveryPreview = resolveRecoveryPreview(review, selectedRecoveryAction);
   const recoverySelectableModels = filterRecoveryModels(models, recoveryPreview?.allowed_model_ids);
-  const defaultRecoveryModelId =
-    recoveryPreview?.default_model_id ||
+  const recoveryTaskCreativeModelId =
+    recoveryPreview?.creative_model_id ||
     currentTaskModelId ||
     "";
 
   useEffect(() => {
-    if (actionModelId && models.some((item) => item.id === actionModelId)) {
+    if (actionModelId) {
+      if (models.some((item) => item.id === actionModelId)) {
+        return;
+      }
+      localStorage.removeItem("novel-agent:action-model-id");
+      setActionModelId("");
       return;
     }
+    if (actionModelInitializedRef.current || !models.length) {
+      return;
+    }
+    actionModelInitializedRef.current = true;
     const savedModelId = localStorage.getItem("novel-agent:action-model-id");
     if (savedModelId && models.some((item) => item.id === savedModelId)) {
       setActionModelId(savedModelId);
@@ -1437,6 +1450,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const hasValidActionModel = Boolean(resolvedActionModelId);
 
   function handleActionModelChange(nextModelId: string) {
+    actionModelInitializedRef.current = true;
     setActionModelId(nextModelId);
     if (nextModelId) {
       localStorage.setItem("novel-agent:action-model-id", nextModelId);
@@ -1450,15 +1464,23 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     if (!recoveryDialogOpen) {
       return;
     }
-    if (recoveryModelId && recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+    if (recoveryModelId) {
+      if (recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+        return;
+      }
+      setRecoveryModelId("");
       return;
     }
-    if (defaultRecoveryModelId && recoverySelectableModels.some((item) => item.id === defaultRecoveryModelId)) {
-      setRecoveryModelId(defaultRecoveryModelId);
+    if (recoveryModelInitializedRef.current || !recoverySelectableModels.length) {
+      return;
+    }
+    recoveryModelInitializedRef.current = true;
+    if (recoveryTaskCreativeModelId && recoverySelectableModels.some((item) => item.id === recoveryTaskCreativeModelId)) {
+      setRecoveryModelId(recoveryTaskCreativeModelId);
       return;
     }
     setRecoveryModelId("");
-  }, [defaultRecoveryModelId, recoveryDialogOpen, recoveryModelId, recoverySelectableModels]);
+  }, [recoveryDialogOpen, recoveryModelId, recoverySelectableModels, recoveryTaskCreativeModelId]);
 
   function handleOpenRecoveryDialog() {
     const nextAction =
@@ -1503,7 +1525,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
 
   async function handleDecision(approved: boolean) {
     if (!hasValidActionModel) {
-      setError("任务默认模型当前不可用，请先手动选择本次执行模型。");
+      setError("任务创作模型当前不可用，请先手动选择本次执行模型。");
       return;
     }
     try {
@@ -1639,7 +1661,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       metaItems={[
         { label: review.meta.title || resolvedTaskId },
         { label: review.meta.status, variant: "outlined" },
-        ...(currentTaskModelId ? [{ label: `创作模型 ${currentTaskModelId}`, variant: "outlined" as const }] : []),
+        ...(currentTaskModelId ? [{ label: `任务创作模型 ${currentTaskModelId}`, variant: "outlined" as const }] : []),
       ]}
       stageNav={<StageNav stages={steps} activeStep={activeStep} />}
       maxWidth="lg"
@@ -1731,13 +1753,16 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           models={models}
           selectedAction={selectedRecoveryAction}
           selectedModelId={recoveryModelId}
-          defaultModelId={defaultRecoveryModelId}
+          taskCreativeModelId={recoveryTaskCreativeModelId}
           submitting={submitting}
           onActionChange={(action) => {
             setSelectedRecoveryAction(action);
             setRecoveryModelId("");
           }}
-          onModelChange={setRecoveryModelId}
+        onModelChange={(modelId) => {
+          recoveryModelInitializedRef.current = true;
+          setRecoveryModelId(modelId);
+        }}
           onCancel={() => setRecoveryDialogOpen(false)}
           onConfirm={() => void handleRecover()}
         />

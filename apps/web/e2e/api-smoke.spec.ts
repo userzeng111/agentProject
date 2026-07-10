@@ -99,7 +99,10 @@ test.describe("API 基线覆盖", () => {
         "injected",
         "injection_evidence",
       ]);
-      expectOwnKeys(workspace.request_preview, "request_preview", ["prompt", "model_id", "default_model_id"]);
+      expectOwnKeys(workspace.meta, "meta", ["model_id", "creative_model_id"]);
+      expect(workspace.meta, "meta 不应返回旧默认模型字段").not.toHaveProperty("default_model_id");
+      expectOwnKeys(workspace.request_preview, "request_preview", ["prompt", "model_id", "creative_model_id"]);
+      expect(workspace.request_preview, "request_preview 不应返回旧默认模型字段").not.toHaveProperty("default_model_id");
       expectOptionalOwnKeys(workspace.context_status, "context_status", ["status", "summary"]);
       expectOptionalOwnKeys(workspace.response_cache_status, "response_cache_status", ["status", "summary"]);
       expectOptionalOwnKeys(workspace.llm_report, "llm_report", ["request_count", "usage_total"]);
@@ -132,10 +135,10 @@ test.describe("API 基线覆盖", () => {
   });
 
   test("写接口负例返回受控错误且不触发真实生成", async ({ request }) => {
-    const invalidDefaultModel = await request.patch(apiPath("/api/settings/default-model"), {
-      data: { model_id: "" },
+    const deprecatedDefaultModel = await request.patch(apiPath("/api/settings/default-model"), {
+      data: { model_id: "playwright-deprecated-model" },
     });
-    expect(invalidDefaultModel.status(), "空默认模型应返回 400").toBe(400);
+    expect(deprecatedDefaultModel.status(), "全局默认模型设置接口已废弃，应返回 410").toBe(410);
 
     const invalidProtocol = await request.patch(apiPath("/api/settings/protocols/playwright-invalid-model"), {
       data: { protocol: "invalid" },

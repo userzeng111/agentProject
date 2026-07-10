@@ -589,11 +589,9 @@ class AutoReviewManager(BaseAgent):
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
-        default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 3,
     ) -> None:
         super().__init__(gateway_client=gateway_client)
-        self.default_model = default_model
         self.max_workers = max_workers
         self._lock = threading.Lock()
 
@@ -656,6 +654,9 @@ class AutoReviewManager(BaseAgent):
         """
         review_type = payload.type
         logger.info("自动审核开始: review_type=%s, auditor_model=%s, synthesis_model=%s", review_type, policy.auditor_model, policy.synthesis_model)
+
+        if not str(policy.auditor_model or "").strip() or not str(policy.synthesis_model or "").strip():
+            return self._fallback_decision("自动审核缺少显式模型，请重新选择当前在线模型后再试。")
 
         try:
             if review_type == "outline_review":
@@ -1043,9 +1044,12 @@ class AutoReviewManager(BaseAgent):
             {"role": "system", "content": "你是一个中文小说质量审核专家，请严格返回 JSON 格式的审核结果，不要输出额外解释。"},
             {"role": "user", "content": prompt},
         ]
+        model_id = str(model or "").strip()
+        if not model_id:
+            raise GatewayClientError("自动审核缺少显式模型，调用已拒绝。")
         response = self._call_llm_json(
             messages,
-            model=model or self.default_model,
+            model=model_id,
             max_retries=1,
         )
         return json.dumps(response, ensure_ascii=False)

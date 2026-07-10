@@ -122,7 +122,7 @@ export default function ArchiveListClient() {
                   novelSize: item.novel_size,
                   mode: item.mode,
                 });
-                const defaultModel = item.default_model_id || item.model_id || "默认模型";
+                const taskCreativeModel = item.creative_model_id || item.model_id || "未设置";
                 return (
                   <Card key={item.task_id} data-testid="archive-card" variant="outlined" sx={{ borderRadius: 2, minWidth: 0 }}>
                     <CardContent>
@@ -161,7 +161,7 @@ export default function ArchiveListClient() {
 
                         <Stack spacing={0.5} sx={{ minWidth: 0 }}>
                           <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-                            任务默认模型：{defaultModel}
+                            任务创作模型：{taskCreativeModel}
                           </Typography>
                           {item.last_action_model_id ? (
                             <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>

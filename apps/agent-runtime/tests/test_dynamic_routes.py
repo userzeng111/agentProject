@@ -22,7 +22,7 @@ def _utc_now() -> datetime:
 class DynamicRoutesTests(unittest.TestCase):
     def test_dynamic_health_reports_degraded_without_gateway(self) -> None:
         app = FastAPI()
-        app.include_router(build_dynamic_router(gateway_client=None, default_model="gpt-5.4"), prefix="/api/v2")
+        app.include_router(build_dynamic_router(gateway_client=None), prefix="/api/v2")
         client = TestClient(app)
 
         response = client.get("/api/v2/dynamic/health")
@@ -93,7 +93,7 @@ class DynamicRoutesTests(unittest.TestCase):
 
         app = FastAPI()
         with patch("app.api.dynamic_routes.TaskOrchestrator", FakeOrchestrator):
-            app.include_router(build_dynamic_router(gateway_client=object(), default_model="gpt-5.4"), prefix="/api/v2")
+            app.include_router(build_dynamic_router(gateway_client=object()), prefix="/api/v2")
             client = TestClient(app)
 
             response = client.post(
@@ -116,6 +116,27 @@ class DynamicRoutesTests(unittest.TestCase):
         self.assertTrue(payload["overall_approved"])
         self.assertEqual(payload["agent_results"][0]["agent_name"], "结构分析师")
         self.assertEqual(payload["synthesis_result"]["agent_name"], "综合裁决")
+
+    def test_dynamic_orchestrate_rejects_missing_explicit_model_before_creating_orchestrator(self) -> None:
+        class UnexpectedOrchestrator:
+            def __init__(self, *args, **kwargs) -> None:
+                raise AssertionError("缺失模型时不应创建编排器")
+
+        app = FastAPI()
+        with patch("app.api.dynamic_routes.TaskOrchestrator", UnexpectedOrchestrator):
+            app.include_router(build_dynamic_router(gateway_client=object()), prefix="/api/v2")
+            client = TestClient(app)
+            response = client.post(
+                "/api/v2/dynamic/orchestrate",
+                json={
+                    "task_type": "outline_review",
+                    "task_description": "审核大纲",
+                    "task_context": {},
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("显式选择", response.json()["detail"])
 
     def test_dynamic_compare_returns_dynamic_summary(self) -> None:
         orchestrator_result = OrchestrationResult(
@@ -149,7 +170,7 @@ class DynamicRoutesTests(unittest.TestCase):
 
         app = FastAPI()
         with patch("app.api.dynamic_routes.TaskOrchestrator", FakeOrchestrator):
-            app.include_router(build_dynamic_router(gateway_client=object(), default_model="gpt-5.4"), prefix="/api/v2")
+            app.include_router(build_dynamic_router(gateway_client=object()), prefix="/api/v2")
             client = TestClient(app)
 
             response = client.post(

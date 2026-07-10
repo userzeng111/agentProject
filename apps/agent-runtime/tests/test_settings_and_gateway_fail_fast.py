@@ -21,6 +21,7 @@ from app.storage.database import get_session
 from app.storage.db_models import TaskIndexModel
 from app.storage.task_store import TaskLogStore
 from app.domain.models import CreativeMode, NovelSize, TaskCreateRequest
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FailingGatewayClient:
@@ -65,6 +66,43 @@ class TimeoutCaptureGatewayClient(OpenAICompatibleGatewayClient):
 
 
 class SettingsAndGatewayFailFastTests(unittest.TestCase):
+    def test_settings_do_not_define_runtime_model_defaults(self) -> None:
+        settings = Settings(_env_file=None)
+
+        self.assertEqual(settings.default_chat_model, "")
+        self.assertEqual(settings.auto_review_auditor_model, "")
+        self.assertEqual(settings.auto_review_synthesis_model, "")
+
+    def test_removed_task_model_requires_explicit_replacement(self) -> None:
+        class CurrentGateway:
+            def list_models(self):
+                return [{"id": "current-provider-model", "object": "model", "owned_by": "provider"}]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                LLM_API_KEY="",
+                DEFAULT_CHAT_MODEL="",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = CurrentGateway()
+            catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=catalog)
+            task = store.create_task(
+                TaskCreateRequest(
+                    prompt="恢复一个模型已下线的任务",
+                    creative_mode=CreativeMode.ORIGINAL,
+                    novel_size=NovelSize.SHORT,
+                    chapter_word_min=1800,
+                    model_id="removed-provider-model",
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "不在当前供应商模型目录"):
+                service._resolve_task_model_id(task)
+
     def test_gateway_normalizes_root_base_url_for_openai_protocol(self) -> None:
         client = OpenAICompatibleGatewayClient(
             base_url="https://gateway.example.com",
@@ -245,7 +283,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 _env_file=None,
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
                 LLM_API_KEY="",
                 LLM_BASE_URL="",
             )
@@ -271,12 +309,12 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FailingGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -310,7 +348,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="mimo-v2.5-pro",
+                default_chat_model="",
                 LLM_DIAGNOSTIC_RAW_RESPONSE_MAX_CHARS=12,
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
@@ -321,7 +359,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                     return [{"id": "mimo-v2.5-pro", "object": "model", "owned_by": "mimo"}]
 
             engine.gateway_client = GatewayWithMimo()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             task = store.create_task(
                 TaskCreateRequest(
@@ -369,12 +407,12 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FailingGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -406,7 +444,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="gpt-5.4",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
@@ -470,7 +508,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 _env_file=None,
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
                 LLM_API_KEY="test-key",
                 LLM_TIMEOUT_CONNECT="10.0",
                 LLM_TIMEOUT_READ="500.0",

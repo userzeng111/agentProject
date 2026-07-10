@@ -6,7 +6,9 @@ from app.context.manager import ContextManager
 from app.context.models import ReferenceMaterial
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
 from app.graph.main_graph import build_default_callbacks, build_graph
+from app.graph.utils.helpers import _resolve_model_profile
 from app.rag.service import RagHit, RagSearchResult
+from tests.fakes import FakeVerifiedGatewayModelCatalog
 
 
 class FakeEngine:
@@ -65,20 +67,6 @@ class FakeEngine:
         return {"overall_score": 100, "issues": []}
 
 
-class FakeModelCatalog:
-    def get_model_profile(self, model_id):
-        return {
-            "id": model_id or "gpt-5.4",
-            "provider": "openai_compatible",
-            "capabilities": {
-                "context_window": {
-                    "max_input_tokens": 256000,
-                    "max_output_tokens": 16000,
-                }
-            },
-        }
-
-
 class FakeRagService:
     def search_for_story_outline(self, *, spec):
         return RagSearchResult(
@@ -108,13 +96,30 @@ class FakeRagService:
         ]
 
 
+class FakeVerifiedGatewayModelCatalogTests(unittest.TestCase):
+    def test_missing_model_has_unknown_context_capabilities(self) -> None:
+        profile = FakeVerifiedGatewayModelCatalog(("gpt-5.4",)).get_model_profile("not-in-gateway")
+
+        self.assertEqual(profile["metadata"]["source"], "missing")
+        self.assertEqual(profile["metadata"]["compatibility"], "unverified")
+        self.assertEqual(profile["capabilities"]["context_window"], {})
+        self.assertEqual(profile["capabilities"]["cache"], {})
+        self.assertFalse(profile["capabilities"]["features"]["novel_task_supported"])
+
+    def test_missing_model_is_rejected_before_context_building(self) -> None:
+        catalog = FakeVerifiedGatewayModelCatalog(("gpt-5.4",))
+
+        with self.assertRaisesRegex(ValueError, "不在当前供应商模型目录中"):
+            _resolve_model_profile(catalog, "not-in-gateway")
+
+
 class GraphContextIntegrationTests(unittest.TestCase):
     def test_graph_builds_outline_and_chapter_pair_context_snapshots(self) -> None:
         engine = FakeEngine()
         callbacks = build_default_callbacks(
             engine,
             context_manager=ContextManager(),
-            model_catalog=FakeModelCatalog(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
         )
         graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-graph-1"}}
@@ -157,7 +162,7 @@ class GraphContextIntegrationTests(unittest.TestCase):
         callbacks = build_default_callbacks(
             engine,
             context_manager=ContextManager(),
-            model_catalog=FakeModelCatalog(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
             rag_service=FakeRagService(),
         )
         graph = build_graph(callbacks=callbacks)

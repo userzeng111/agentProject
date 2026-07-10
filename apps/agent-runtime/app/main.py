@@ -177,7 +177,6 @@ task_service = TaskService(
 chat_service = ChatService(
     gateway_client=engine.gateway_client,
     rag_service=rag_service,
-    default_model_resolver=lambda: engine.resolve_model(None),
 )
 
 app = FastAPI(title=settings.app_name)
@@ -236,7 +235,6 @@ app.include_router(
 # 动态 Agent 编排路由（v2 并行）
 _dynamic_router = build_dynamic_router(
     gateway_client=engine.gateway_client if engine else None,
-    default_model=engine.resolve_model(None) if engine else "",
 )
 app.include_router(_dynamic_router, prefix="/api/v2")
 

@@ -8,9 +8,9 @@ from types import SimpleNamespace
 from app.application.task_service import TaskService
 from app.domain.models import DraftResult, ReviewPayload, StoryPlan, TaskStatus
 from app.domain.models import TaskCreateRequest, TaskMode
-from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FakeGatewayClient:
@@ -41,7 +41,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -67,7 +67,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             service._start_background = lambda *args, **kwargs: None
 
@@ -94,7 +94,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             background_calls: list[tuple] = []
@@ -122,7 +122,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -178,7 +178,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -267,7 +267,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -336,7 +336,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -404,7 +404,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -462,7 +462,7 @@ class TaskServiceSupervisorSeedTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(

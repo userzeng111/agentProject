@@ -47,13 +47,6 @@ class TaskServiceQueriesMixin:
     def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
         return self.model_catalog.list_models_payload(force_refresh=force_refresh)
 
-    def update_default_model(self, model_id: str) -> dict[str, Any]:
-        """更新默认模型，同时持久化到配置文件并更新运行时状态。"""
-        result = self.model_catalog.update_default_model(model_id)
-        # 同步到 StoryEngine，使其立即生效
-        self.engine.set_runtime_default_model(model_id)
-        return result
-
     def get_dashboard(self) -> DashboardResponse:
         tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
         dead_statuses = {
@@ -399,7 +392,7 @@ class TaskServiceQueriesMixin:
     def _to_summary(self, task: TaskRecord) -> TaskSummary:
         title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
         summary = task.events[-1].message if task.events else ""
-        model_id = task.model_id or self.engine.settings.default_chat_model
+        model_id = (task.model_id or "").strip()
         review_model_meta = self._auto_review_model_metadata(task)
         chapter_count, word_count = self._archive_metrics(task)
         last_error_detail = task.error_message
@@ -418,7 +411,6 @@ class TaskServiceQueriesMixin:
             chapter_word_min=task.chapter_word_min,
             model_id=model_id,
             creative_model_id=model_id,
-            default_model_id=model_id,
             last_action_model_id=task.last_action_model_id,
             last_action_kind=task.last_action_kind,
             auto_review_model_mode=review_model_meta["auto_review_model_mode"],
@@ -470,9 +462,7 @@ class TaskServiceQueriesMixin:
     def _model_summary(self) -> dict[str, Any]:
         models = self.model_catalog.list_models()
         supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
-        default_model = self.model_catalog._effective_default_model()
         return {
-            "default_model": default_model,
             "supported_models": supported_models,
         }
 
@@ -696,13 +686,12 @@ class TaskServiceQueriesMixin:
         ]
 
     def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
-        model_id = task.model_id or self.engine.settings.default_chat_model
+        model_id = (task.model_id or "").strip()
         review_model_meta = self._auto_review_model_metadata(task)
         return {
             "prompt": task.input.prompt,
             "model_id": model_id,
             "creative_model_id": model_id,
-            "default_model_id": model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "auto_review_model_mode": review_model_meta["auto_review_model_mode"],
@@ -1252,17 +1241,46 @@ class TaskServiceQueriesMixin:
         }
 
     def _normalize_usage_tokens(self, payload: dict[str, Any]) -> dict[str, int]:
-        prompt_details = self._safe_dict(payload.get("prompt_tokens_details"))
-        completion_details = self._safe_dict(payload.get("completion_tokens_details"))
-        input_details = self._safe_dict(payload.get("input_tokens_details"), payload.get("input_token_details"))
-        output_details = self._safe_dict(payload.get("output_tokens_details"), payload.get("output_token_details"))
-        input_tokens = self._safe_first_positive_int(payload.get("input_tokens"), payload.get("prompt_tokens"))
-        output_tokens = self._safe_first_positive_int(payload.get("output_tokens"), payload.get("completion_tokens"))
-        total_tokens = self._safe_first_positive_int(payload.get("total_tokens"))
+        nested_usage = self._safe_dict(payload.get("usage"))
+        prompt_details = self._safe_dict(
+            payload.get("prompt_tokens_details"),
+            nested_usage.get("prompt_tokens_details"),
+        )
+        completion_details = self._safe_dict(
+            payload.get("completion_tokens_details"),
+            nested_usage.get("completion_tokens_details"),
+        )
+        input_details = self._safe_dict(
+            payload.get("input_tokens_details"),
+            payload.get("input_token_details"),
+            nested_usage.get("input_tokens_details"),
+            nested_usage.get("input_token_details"),
+        )
+        output_details = self._safe_dict(
+            payload.get("output_tokens_details"),
+            payload.get("output_token_details"),
+            nested_usage.get("output_tokens_details"),
+            nested_usage.get("output_token_details"),
+        )
+        input_tokens = self._safe_first_positive_int(
+            payload.get("input_tokens"),
+            payload.get("prompt_tokens"),
+            nested_usage.get("input_tokens"),
+            nested_usage.get("prompt_tokens"),
+        )
+        output_tokens = self._safe_first_positive_int(
+            payload.get("output_tokens"),
+            payload.get("completion_tokens"),
+            nested_usage.get("output_tokens"),
+            nested_usage.get("completion_tokens"),
+        )
+        total_tokens = self._safe_first_positive_int(payload.get("total_tokens"), nested_usage.get("total_tokens"))
         if total_tokens == 0:
             total_tokens = input_tokens + output_tokens
         cache_creation_input_tokens = self._safe_first_positive_int(
             payload.get("cache_creation_input_tokens"),
+            nested_usage.get("cache_creation_input_tokens"),
+            prompt_details.get("cache_creation_input_tokens"),
             input_details.get("cache_creation_input_tokens"),
             input_details.get("cache_creation"),
             input_details.get("cache_creation_tokens"),
@@ -1270,18 +1288,25 @@ class TaskServiceQueriesMixin:
         if cache_creation_input_tokens == 0:
             cache_creation_input_tokens = self._safe_non_negative_int(
                 payload.get("claude_cache_creation_5_m_tokens")
-            ) + self._safe_non_negative_int(payload.get("claude_cache_creation_1_h_tokens"))
+                or nested_usage.get("claude_cache_creation_5_m_tokens")
+            ) + self._safe_non_negative_int(
+                payload.get("claude_cache_creation_1_h_tokens")
+                or nested_usage.get("claude_cache_creation_1_h_tokens")
+            )
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
             "cached_tokens": self._safe_first_positive_int(
                 payload.get("cached_tokens"),
+                nested_usage.get("cached_tokens"),
                 prompt_details.get("cached_tokens"),
                 input_details.get("cached_tokens"),
             ),
             "cache_read_input_tokens": self._safe_first_positive_int(
                 payload.get("cache_read_input_tokens"),
+                nested_usage.get("cache_read_input_tokens"),
+                prompt_details.get("cache_read_input_tokens"),
                 input_details.get("cache_read_input_tokens"),
                 input_details.get("cache_read"),
                 input_details.get("cache_read_tokens"),
@@ -1289,6 +1314,7 @@ class TaskServiceQueriesMixin:
             "cache_creation_input_tokens": cache_creation_input_tokens,
             "reasoning_tokens": self._safe_first_positive_int(
                 payload.get("reasoning_tokens"),
+                nested_usage.get("reasoning_tokens"),
                 completion_details.get("reasoning_tokens"),
                 output_details.get("reasoning_tokens"),
             ),

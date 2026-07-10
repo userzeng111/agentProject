@@ -33,10 +33,8 @@ class MasterAgent(BaseAgent):
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
-        default_model: str = "MiniMax-M2.7-highspeed",
     ) -> None:
         super().__init__(gateway_client=gateway_client)
-        self.default_model = default_model
 
     def analyze_task(
         self,
@@ -57,7 +55,9 @@ class MasterAgent(BaseAgent):
         Returns:
             AgentBlueprint 列表
         """
-        use_model = model or self.default_model
+        use_model = str(model or "").strip()
+        if not use_model:
+            raise ValueError("动态分析缺少显式模型，调用已拒绝。")
         context = context or {}
 
         # 构建上下文摘要

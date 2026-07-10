@@ -5,6 +5,7 @@ from pathlib import Path
 from app.context.manager import ContextManager
 from app.domain.models import ChapterPlan, StoryPlan
 from app.graph.main_graph import build_graph
+from tests.fakes import FakeVerifiedGatewayModelCatalog
 
 
 class FakeEngine:
@@ -19,20 +20,6 @@ class FakeEngine:
             character_notes=["人物"],
             chapter_plan=[ChapterPlan(number=1, title="第一章", goal="建立冲突")],
         )
-
-
-class FakeModelCatalog:
-    def get_model_profile(self, model_id):
-        return {
-            "id": model_id or "gpt-5.4",
-            "provider": "openai_compatible",
-            "capabilities": {
-                "context_window": {
-                    "max_input_tokens": 256000,
-                    "max_output_tokens": 16000,
-                }
-            },
-        }
 
 
 class GraphCheckpointPersistenceTests(unittest.TestCase):
@@ -59,7 +46,7 @@ class GraphCheckpointPersistenceTests(unittest.TestCase):
             first_graph = build_graph(
                 FakeEngine(),
                 context_manager=ContextManager(),
-                model_catalog=FakeModelCatalog(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 checkpoint_db_path=checkpoint_db_path,
             )
 
@@ -70,7 +57,7 @@ class GraphCheckpointPersistenceTests(unittest.TestCase):
             second_graph = build_graph(
                 FakeEngine(),
                 context_manager=ContextManager(),
-                model_catalog=FakeModelCatalog(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 checkpoint_db_path=checkpoint_db_path,
             )
             restored_values = second_graph.get_state(config).values

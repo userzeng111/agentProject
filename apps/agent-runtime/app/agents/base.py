@@ -270,9 +270,12 @@ class BaseAgent:
 
     # 常见供应商错误关键词，匹配时直接给出友好提示而非 JSON 解析失败
     _PROVIDER_ERROR_PATTERNS: list[str] = [
-        "白鹿的回答出现问题",
         "请重试",
         "模型暂时不可用",
+        "模型供应商返回了错误消息",
+        "模型输出被上游内容安全策略过滤",
+        "content_filter",
+        "refusal",
         "temporarily unavailable",
         "please try again later",
     ]

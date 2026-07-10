@@ -46,25 +46,20 @@ class TaskOrchestrator:
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
-        default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 4,
     ) -> None:
         self._gateway_client = gateway_client
-        self._default_model = default_model
         self._max_workers = max_workers
 
         # 初始化子系统
         self._master = MasterAgent(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._factory = AgentFactory(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._planner = PlannerAgent(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._registry = AgentRegistry()
 
@@ -88,7 +83,9 @@ class TaskOrchestrator:
             OrchestrationResult 编排汇总结果
         """
         started_at = datetime.now(timezone.utc)
-        use_model = model or self._default_model
+        use_model = str(model or "").strip()
+        if not use_model:
+            raise ValueError("动态编排缺少显式模型，调用已拒绝。")
         task_context = task_context or {}
 
         logger.info("动态编排开始 — 任务类型: %s", task_type)

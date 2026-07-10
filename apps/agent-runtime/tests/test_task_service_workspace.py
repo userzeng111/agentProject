@@ -4,10 +4,10 @@ from pathlib import Path
 
 from app.application.task_service import TaskService
 from app.domain.models import ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
-from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage import db_repository
 from app.storage.task_store import TaskLogStore
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FakeGatewayClient:
@@ -16,8 +16,16 @@ class FakeGatewayClient:
 
     def list_models(self):
         return [
-            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {
+                "id": "gpt-5.4",
+                "object": "model",
+                "owned_by": "openai",
+                "context_length": 272000,
+                "max_output_tokens": 16000,
+            },
             {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+            {"id": "auditor-x", "object": "model", "owned_by": "test"},
+            {"id": "synthesis-y", "object": "model", "owned_by": "test"},
         ]
 
     def complete_json(self, messages, model=None, **kwargs):
@@ -66,7 +74,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(
                 store=store,
                 engine=engine,
@@ -108,7 +116,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(
                 store=store,
                 engine=engine,
@@ -157,7 +165,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class MissingRagService:
                 def is_ready(self) -> bool:
@@ -193,7 +201,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -242,7 +250,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -298,7 +306,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -333,7 +341,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -381,7 +389,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -440,7 +448,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -495,7 +503,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class ReadyRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -565,7 +573,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class ReadyRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -628,7 +636,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class ReadyRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -720,7 +728,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class ReadyRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -783,7 +791,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class MissingRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -829,7 +837,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class BrokenReadyRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -871,7 +879,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
 
             class BrokenReadinessErrorRagService:
                 config = type("Config", (), {"enabled": True})()
@@ -904,7 +912,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertIn("rag status missing", workspace.rag_status["last_error"])
             self.assertIn("读取 RAG 工作区未就绪原因失败", "\n".join(logs.output))
 
-    def test_workspace_exposes_default_and_last_action_model_fields(self) -> None:
+    def test_workspace_exposes_creative_and_last_action_model_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
@@ -913,7 +921,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             service._start_background = lambda *args, **kwargs: None
 
@@ -929,10 +937,12 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             workspace = service.get_workspace(task.id)
 
             self.assertEqual(workspace.meta.model_id, "gpt-5.4")
-            self.assertEqual(workspace.meta.default_model_id, "gpt-5.4")
+            self.assertEqual(workspace.meta.creative_model_id, "gpt-5.4")
+            self.assertNotIn("default_model_id", workspace.meta.model_dump())
             self.assertEqual(workspace.meta.last_action_model_id, "glm-5.1")
             self.assertEqual(workspace.meta.last_action_kind, "run")
-            self.assertEqual(workspace.request_preview["default_model_id"], "gpt-5.4")
+            self.assertEqual(workspace.request_preview["creative_model_id"], "gpt-5.4")
+            self.assertNotIn("default_model_id", workspace.request_preview)
             self.assertEqual(workspace.request_preview["last_action_model_id"], "glm-5.1")
             self.assertEqual(workspace.request_preview["last_action_kind"], "run")
 
@@ -945,7 +955,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -979,7 +989,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -1031,7 +1041,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -1077,7 +1087,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             waiting_manual = service.create_task(
@@ -1138,7 +1148,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = FakeEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -1181,8 +1191,51 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(restart_option.preview)
             assert restart_option.preview is not None
             self.assertEqual(restart_option.preview.target_stage, "planning")
+            self.assertEqual(restart_option.preview.creative_model_id, task.model_id)
+            self.assertNotIn("default_model_id", restart_option.preview.model_dump())
             self.assertTrue(restart_option.preview.will_resume_generation)
             self.assertEqual(store.get(task.id).status, TaskStatus.WAITING_MANUAL_ACTION)
+
+    def test_historical_missing_or_offline_model_does_not_block_workspace_read_but_still_blocks_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+
+            for saved_model_id in ("retired-text-model", ""):
+                with self.subTest(saved_model_id=saved_model_id):
+                    task = service.create_task(
+                        TaskCreateRequest(
+                            mode=TaskMode.SHORT_STORY,
+                            prompt="历史模型不可用时仍应可查看工作台",
+                            model_id="gpt-5.4",
+                        )
+                    )
+                    historical_task = store.get(task.id)
+                    historical_task.model_id = saved_model_id
+                    historical_task.status = TaskStatus.WAITING_MANUAL_ACTION
+                    historical_task.current_stage = TaskStatus.WAITING_MANUAL_ACTION.value
+                    store.save(historical_task)
+
+                    workspace = service.get_workspace(task.id)
+
+                    self.assertEqual(workspace.meta.model_id, saved_model_id)
+                    self.assertEqual(workspace.meta.creative_model_id, saved_model_id)
+                    self.assertEqual(workspace.request_preview["creative_model_id"], saved_model_id)
+                    restart_option = next(item for item in workspace.recovery_options if item.action == "restart_from_input")
+                    self.assertTrue(restart_option.available)
+                    assert restart_option.preview is not None
+                    self.assertEqual(restart_option.preview.creative_model_id, saved_model_id)
+                    self.assertIn("gpt-5.4", restart_option.preview.allowed_model_ids)
+
+            with self.assertRaisesRegex(ValueError, "不在当前供应商模型目录|没有已选模型"):
+                service.recover_task(task.id, force=True)
 
     def test_second_equivalent_task_hits_context_and_response_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1196,7 +1249,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FakeGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             payload = TaskCreateRequest(
@@ -1230,7 +1283,7 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FakeGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             payload = TaskCreateRequest(

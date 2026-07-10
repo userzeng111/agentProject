@@ -107,11 +107,6 @@ class TaskServiceCoreMixin:
         db_path = Path(configured_db_path) if configured_db_path else Path(self.store.root_dir) / "data.db"
         init_db(str(db_path), settings=self.engine.settings)
 
-        # 启动时同步运行时默认模型到 StoryEngine
-        runtime_default = self.model_catalog._effective_default_model()
-        if self.model_catalog._runtime_default_model and hasattr(self.engine, "set_runtime_default_model"):
-            self.engine.set_runtime_default_model(runtime_default)
-
     @property
     def graph(self):
         """向后兼容：旧代码与测试通过 graph 属性访问工作流引擎。"""
@@ -156,7 +151,9 @@ class TaskServiceCoreMixin:
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
         push_request_flow("service.create_task")
-        requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
+        requested_model = (payload.model_id or "").strip()
+        if not requested_model:
+            raise ValueError("请显式选择当前供应商返回的模型后再创建任务。")
         self.model_catalog.ensure_novel_generation_model_supported(requested_model)
         review_model_id = (payload.review_model_id or "").strip()
         if payload.auto_review_model_mode is AutoReviewModelMode.FIXED and review_model_id:
@@ -171,18 +168,11 @@ class TaskServiceCoreMixin:
         return self._sync_supervisor_plan(task.id)
 
     def _resolve_task_model_id(self, task: TaskRecord) -> str:
-        candidate = (task.model_id or "").strip() or self.model_catalog._effective_default_model()
-        try:
-            self.model_catalog.ensure_novel_generation_model_supported(candidate)
-            return candidate
-        except ValueError:
-            # 任务指定的模型不再可用时，兜底到全局默认模型
-            fallback = self.model_catalog._effective_default_model()
-            logger.warning(
-                "任务模型 %s 不再支持，降级使用默认模型 %s",
-                candidate, fallback,
-            )
-            return fallback
+        candidate = (task.model_id or "").strip()
+        if not candidate:
+            raise ValueError("任务没有已选模型，请在本次动作中显式选择当前供应商返回的模型。")
+        self.model_catalog.ensure_novel_generation_model_supported(candidate)
+        return candidate
 
     def _resolve_action_model_id(self, task: TaskRecord, model_id: str | None) -> str:
         requested_model = (model_id or "").strip()
@@ -191,8 +181,15 @@ class TaskServiceCoreMixin:
             return requested_model
         return self._resolve_task_model_id(task)
 
-    def _resolve_auto_review_policy(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, Any]:
-        policy_dict = dict(task.auto_review_policy or self.auto_review_policy or {})
+    def _resolve_auto_review_policy(
+        self,
+        task: TaskRecord,
+        action_model_id: str | None = None,
+        *,
+        validate_models: bool = True,
+        policy_source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        policy_dict = dict(policy_source) if policy_source is not None else dict(task.auto_review_policy or self.auto_review_policy or {})
         if task.auto_review_model_mode is not None:
             policy_dict["auto_review_model_mode"] = task.auto_review_model_mode.value
         if task.review_model_id:
@@ -213,12 +210,24 @@ class TaskServiceCoreMixin:
                 policy_dict["auditor_model"] = resolved_model_id
             if not str(policy_dict.get("synthesis_model") or "").strip():
                 policy_dict["synthesis_model"] = str(policy_dict.get("auditor_model") or resolved_model_id)
-        AutoReviewPolicy.model_validate(policy_dict)
+        policy = AutoReviewPolicy.model_validate(policy_dict)
+        if validate_models and policy.auto_review_model_mode is AutoReviewModelMode.FIXED:
+            checked_model_ids: set[str] = set()
+            for configured_model_id in (policy.auditor_model, policy.synthesis_model):
+                candidate = configured_model_id.strip()
+                if candidate and candidate not in checked_model_ids:
+                    self.model_catalog.ensure_novel_generation_model_supported(candidate)
+                    checked_model_ids.add(candidate)
         return policy_dict
 
     def _auto_review_model_metadata(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, str]:
-        creative_model_id = self._resolve_action_model_id(task, action_model_id)
-        policy = AutoReviewPolicy.model_validate(self._resolve_auto_review_policy(task, action_model_id))
+        creative_model_id = (action_model_id or task.model_id or "").strip()
+        policy_dict = dict(task.auto_review_policy or self.auto_review_policy or {})
+        if task.auto_review_model_mode is not None:
+            policy_dict["auto_review_model_mode"] = task.auto_review_model_mode.value
+        if task.review_model_id:
+            policy_dict["review_model_id"] = task.review_model_id
+        policy = AutoReviewPolicy.model_validate(policy_dict)
         if policy.auto_review_model_mode is AutoReviewModelMode.FOLLOW_CREATIVE:
             return {
                 "auto_review_model_mode": AutoReviewModelMode.FOLLOW_CREATIVE.value,
@@ -226,7 +235,12 @@ class TaskServiceCoreMixin:
             }
         return {
             "auto_review_model_mode": AutoReviewModelMode.FIXED.value,
-            "review_model_id": policy.auditor_model or policy.synthesis_model or "",
+            "review_model_id": (
+                str(policy_dict.get("review_model_id") or "").strip()
+                or policy.auditor_model
+                or policy.synthesis_model
+                or creative_model_id
+            ),
         }
 
     def _with_model_id(self, payload: dict[str, Any], model_id: str) -> dict[str, Any]:
@@ -562,7 +576,11 @@ class TaskServiceCoreMixin:
         reference_text = "\n\n".join(source.content for source in task.sources)
         resolved_auto_review = self._resolve_task_auto_review(task)
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
-        auto_review_policy = self._resolve_auto_review_policy(task, action_model_id)
+        auto_review_policy = self._resolve_auto_review_policy(
+            task,
+            action_model_id,
+            validate_models=resolved_auto_review,
+        )
         return {
             "task_id": task.id,
             "input_payload": {

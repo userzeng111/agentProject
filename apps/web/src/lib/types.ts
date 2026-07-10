@@ -50,7 +50,7 @@ export interface RecoveryPreview {
   target_batch_no?: number | null;
   reuse_existing_draft?: boolean;
   will_resume_generation?: boolean;
-  default_model_id?: string;
+  creative_model_id?: string;
   last_action_model_id?: string;
   allowed_model_ids: string[];
   fallback_actions?: RecoveryMode[];
@@ -211,7 +211,6 @@ export interface ModelRefreshState {
 export interface ModelListResponse {
   data: ModelOption[];
   meta?: {
-    default_model?: string;
     capability_schema_version?: string;
     cache_ttl_seconds?: number;
     cache_age_seconds?: number;
@@ -359,7 +358,6 @@ export interface TaskRecord {
   error_message: string | null;
   model_id?: string;
   creative_model_id?: string;
-  default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   auto_review_model_mode?: AutoReviewModelMode;
@@ -376,7 +374,7 @@ export interface TaskCardSummary {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
-  default_model_id?: string;
+  creative_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   status: TaskStatus;
@@ -397,7 +395,6 @@ export interface DashboardResponse {
   failed_tasks: TaskCardSummary[];
   completed_tasks?: TaskCardSummary[];
   model_summary?: {
-    default_model: string;
     supported_models: string[];
   };
   system_summary?: {
@@ -419,7 +416,6 @@ export interface WorkspaceMeta {
   chapter_word_min?: number;
   model_id?: string;
   creative_model_id?: string;
-  default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   auto_review_model_mode?: AutoReviewModelMode;
@@ -486,7 +482,6 @@ export interface WorkspaceResponse extends RecoveryContractFields {
     target_chapter_count?: number;
     model_id?: string;
     creative_model_id?: string;
-    default_model_id?: string;
     last_action_model_id?: string;
     last_action_kind?: string;
     auto_review_model_mode?: AutoReviewModelMode;
@@ -754,7 +749,7 @@ export interface ArchiveDetailResponse {
     creative_mode?: CreativeMode;
     novel_size?: NovelSize;
     model_id?: string;
-    default_model_id?: string;
+    creative_model_id?: string;
     last_action_model_id?: string;
     last_action_kind?: string;
     model_capabilities?: ModelCapabilities;

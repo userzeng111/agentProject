@@ -352,9 +352,11 @@ class DynamicOrchestrationRequest(BaseModel):
     task_type: str = Field(..., description="任务类型")
     task_description: str = Field(..., description="任务描述")
     task_context: dict[str, Any] = Field(default_factory=dict, description="任务上下文变量")
-    model: str | None = Field(default=None, description="使用的模型")
+    model: str | None = Field(default=None, description="本次请求显式选择的模型")
     max_workers: int = Field(default=4, ge=1, le=16, description="最大并行 Agent 数")
 ```
+
+`model` 的类型为可空是为了兼容请求解析，但运行时不接受空值。客户端必须先读取 `/api/models`，从当前供应商返回的目录中选择 `data[].id` 后再调用动态编排；缺失时返回 `400`，错误文案为：`请显式选择当前供应商返回的模型后再执行动态编排。`。
 
 ### 6.3 自动校验示例
 
@@ -636,7 +638,7 @@ classDiagram
 
 ### 10.1 为什么需要配置管理
 
-一个应用有很多可调参数：LLM 的 API 地址、默认模型、超时时间、审核开关等。把这些硬编码在代码里很不方便，需要集中管理。
+一个应用有很多可调参数：LLM 的 API 地址、超时时间、审核开关等。把这些硬编码在代码里很不方便，需要集中管理。模型 ID 不再作为全局运行时配置，而是由任务、聊天、恢复和动态编排请求显式提供。
 
 > **生活类比**：配置管理就像餐厅的"运营手册"——营业时间、菜单价格、服务标准都写在手册里，而不是让厨师自己决定。
 
@@ -650,7 +652,8 @@ class Settings(BaseSettings):
     app_name: str = "小说 Agent Runtime"
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(default="https://api.lclaitech.com/v1", validation_alias="LLM_BASE_URL")
-    default_chat_model: str = Field(default="glm-5.1", validation_alias="DEFAULT_CHAT_MODEL")
+    # 遗留兼容字段，不参与运行时模型选择
+    default_chat_model: str = Field(default="", validation_alias="DEFAULT_CHAT_MODEL")
     openai_api_key: str | None = Field(default=None, validation_alias="LLM_API_KEY")
     auto_review: bool = Field(default=False, validation_alias="AUTO_REVIEW")
 
@@ -676,7 +679,8 @@ Pydantic Settings 会自动按以下优先级加载配置：
 ```bash
 # .env 文件示例
 LLM_BASE_URL=https://api.example.com/v1
-DEFAULT_CHAT_MODEL=glm-5.1
+# 遗留兼容字段；运行时不作为默认模型，保持为空
+DEFAULT_CHAT_MODEL=
 LLM_API_KEY=sk-xxx
 AUTO_REVIEW=true
 ```
@@ -744,9 +748,12 @@ sequenceDiagram
     participant Factory as AgentFactory
     participant Planner as PlannerAgent
     participant Orchestrator as TaskOrchestrator
+    participant Gateway as 当前供应商模型目录
     participant LLM as LLM 服务
 
-    Client->>API: POST /orchestrate
+    Client->>API: POST /orchestrate {model}
+    API->>Gateway: ensure_model_available(model, refresh=true)
+    Gateway-->>API: 当前供应商目录校验通过
     API->>Master: analyze_task(task_type, description)
     Master->>LLM: 请求生成 Agent 蓝图
     LLM-->>Master: AgentBlueprint[]
@@ -799,10 +806,12 @@ Content-Type: application/json
     "genre": "科幻",
     "target_words": 50000
   },
-  "model": "MiniMax-M2.7-highspeed",
+  "model": "<来自 /api/models 的当前供应商模型 ID>",
   "max_workers": 4
 }
 ```
+
+`/api/v2/dynamic/orchestrate` 与 `/api/v2/dynamic/orchestrate/compare` 都会在执行前刷新并校验该模型仍存在于当前供应商目录；动态编排不使用全局或默认模型。
 
 响应：
 ```json
@@ -836,9 +845,16 @@ Content-Type: application/json
 
 ```http
 POST /api/v2/dynamic/orchestrate/compare
+Content-Type: application/json
+
+{
+  "task_type": "outline_review",
+  "task_description": "审核小说大纲的结构完整性",
+  "model": "<来自 /api/models 的当前供应商模型 ID>"
+}
 ```
 
-同时运行动态编排和展示旧架构信息，用于结果一致性验证。
+同时运行动态编排和展示旧架构信息，用于结果一致性验证。该接口与常规编排接口一样要求显式 `model`，为空时返回 `400`：`请显式选择当前供应商返回的模型后再执行动态编排。`。
 
 ### 11.5 与现有系统的集成
 
@@ -944,7 +960,7 @@ engine = StoryEngine(settings)
 `StoryEngine` 是整个系统的 LLM 调用网关。它接收 `settings` 参数，从中读取：
 - `LLM_BASE_URL`：模型服务商的 API 地址
 - `LLM_API_KEY`：API 密钥
-- `DEFAULT_CHAT_MODEL`：默认使用的模型 ID
+- `DEFAULT_CHAT_MODEL`：遗留兼容输入，不参与运行时模型选择
 
 `StoryEngine` 内部维护一个 `gateway_client`（HTTP 异步客户端），负责与 LLM 服务商通信。
 
@@ -961,9 +977,9 @@ model_catalog = ModelCatalogService(
 `ModelCatalogService` 负责：
 1. **模型列表管理**：从 LLM 服务商拉取可用模型列表，支持本地缓存
 2. **模型协议解析**：判断模型使用 OpenAI 协议还是 Anthropic 协议
-3. **默认模型切换**：运行时动态切换默认模型
+3. **小说任务兼容性管理**：仅允许当前供应商目录中已验证的模型进入小说任务流
 
-它依赖 `engine.gateway_client` 来发起 HTTP 请求获取模型列表，而不是自己创建客户端——这就是依赖注入的好处。
+它依赖 `engine.gateway_client` 读取当前供应商 `/models`，本地注册表仅补充元数据，不会补出供应商目录之外的候选模型。`PATCH /api/settings/default-model` 已废弃，固定返回 `410` 和 `{"detail":"全局默认模型已移除，请在任务、聊天或恢复动作中显式选择模型。"}`。
 
 #### 1.5 创建 RAG 服务（RagService）
 
@@ -1032,11 +1048,10 @@ task_service = TaskService(
 chat_service = ChatService(
     gateway_client=engine.gateway_client,
     rag_service=rag_service,
-    default_model_resolver=lambda: engine.resolve_model(None),
 )
 ```
 
-`ChatService` 处理独立聊天请求。`default_model_resolver` 是一个 lambda 函数，在需要时动态解析默认模型。使用 lambda 而不是直接传字符串，是为了支持运行时模型切换。
+`ChatService` 处理独立聊天请求。每个聊天请求都必须在 `model` 字段中显式传入当前供应商目录中的模型 ID；缺失时返回 `400`：`未指定模型，请显式选择当前供应商返回的模型。`。
 
 #### 1.10 挂载路由
 
@@ -1056,7 +1071,6 @@ app.include_router(
 
 _dynamic_router = build_dynamic_router(
     gateway_client=engine.gateway_client if engine else None,
-    default_model=engine.resolve_model(None) if engine else "",
 )
 app.include_router(_dynamic_router, prefix="/api/v2")  # v2 路由前缀
 ```
@@ -1150,7 +1164,7 @@ class TaskCreateRequest(TaskInput):
 ```
 
 `TaskCreateRequest` 继承自 `TaskInput`，增加了与任务创建相关的字段：
-- `model_id`：指定使用的 LLM 模型，支持别名 `"model"`（前端可能用 `"model"` 而不是 `"model_id"`）
+- `model_id`：指定使用的 LLM 模型，支持别名 `"model"` 和历史入站字段 `"default_model_id"`；响应与持久化新数据只输出 `model_id`。服务层要求该值非空、属于当前供应商 `/models`，且小说任务必须兼容性已验证
 - `auto_review`：是否开启自动审核
 - `auto_review_model_mode`：审核模型模式（跟随创作模型 / 固定模型）
 - `review_model_id`：固定审核模型的 ID
@@ -1168,7 +1182,7 @@ Content-Type: application/json
 {
     "prompt": "写一个关于人工智能的科幻小说",
     "genre": "科幻",
-    "model": "glm-5.1"
+    "model": "<来自 /api/models 的已验证模型 ID>"
 }
 ```
 
@@ -1180,6 +1194,8 @@ FastAPI 的处理流程如下：
 4. **类型校验**：检查每个字段的类型是否符合声明（如 `prompt` 必须是字符串）
 5. **模型校验器执行**：`_ensure_task_mode_fields()` 自动推导 `mode`、`creative_mode` 等缺失字段
 6. **创建 Python 对象**：返回一个 `TaskCreateRequest` 实例，可以直接在代码中使用
+
+Pydantic 完成结构校验后，`TaskService.create_task()` 还会执行运行时模型校验。未传 `model_id` 返回 `400`：`请显式选择当前供应商返回的模型后再创建任务。`；所选模型不在当前供应商目录中时返回 `400`：`模型 <模型 ID> 不在当前供应商模型目录中，请刷新模型列表后重新选择。`；未完成小说任务兼容性验证时也会拒绝创建。
 
 如果校验失败，FastAPI 会自动返回 422 错误，并附带详细的错误信息：
 
@@ -1363,7 +1379,6 @@ classDiagram
         +get_result(task_id)
         +build_sse_snapshot(task_id)
         +list_models(force_refresh)
-        +update_default_model(model_id)
     }
 
     class TaskServiceRunnerMixin {
@@ -1552,7 +1567,6 @@ app.include_router(
 # v2 路由（动态 Agent 编排）
 _dynamic_router = build_dynamic_router(
     gateway_client=engine.gateway_client if engine else None,
-    default_model=engine.resolve_model(None) if engine else "",
 )
 app.include_router(_dynamic_router, prefix="/api/v2")
 ```
@@ -1566,8 +1580,8 @@ app.include_router(_dynamic_router, prefix="/api/v2")
 #### 5.2 动态路由的 endpoint 设计
 
 ```python
-# app/api/dynamic_routes.py 第 51-61 行
-def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRouter:
+# app/api/dynamic_routes.py
+def build_dynamic_router(gateway_client=None) -> APIRouter:
     router = APIRouter(prefix="/dynamic", tags=["动态 Agent 编排"])
 
     @router.get("/health")
@@ -1594,11 +1608,19 @@ async def orchestrate(request: DynamicOrchestrationRequest) -> DynamicOrchestrat
             status_code=503,
             detail="模型网关未配置，请检查 .env 中的 LLM_BASE_URL 与 LLM_API_KEY。",
         )
+    model_id = str(request.model or "").strip()
+    if not model_id:
+        raise HTTPException(status_code=400, detail="请显式选择当前供应商返回的模型后再执行动态编排。")
+    validator = getattr(gateway_client, "ensure_model_available", None)
+    if callable(validator):
+        try:
+            validator(model_id, force_refresh=True)
+        except GatewayClientError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         orchestrator = TaskOrchestrator(
             gateway_client=gateway_client,
-            default_model=default_model,
             max_workers=request.max_workers,
         )
 
@@ -1608,13 +1630,14 @@ async def orchestrate(request: DynamicOrchestrationRequest) -> DynamicOrchestrat
             task_type=request.task_type,
             task_description=request.task_description,
             task_context=request.task_context,
-            model=request.model,
+            model=model_id,
         )
         # ... 构建响应
 ```
 
 关键设计点：
 - `response_model=DynamicOrchestrationResponse`：FastAPI 会自动校验返回数据结构
+- `model_id`：必须由调用方显式提供，并在每次执行前通过当前供应商模型目录校验
 - `asyncio.to_thread(...)`：将同步的 `orchestrator.execute()` 放到后台线程执行，不阻塞事件循环
 - `TaskOrchestrator` 在请求处理时才创建，而不是全局单例——每个请求有独立的编排器实例
 

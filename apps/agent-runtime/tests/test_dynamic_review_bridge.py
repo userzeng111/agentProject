@@ -140,7 +140,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                 )
 
         gateway = FakeGateway()
-        factory = AgentFactory(gateway_client=gateway, default_model="test-model")
+        factory = AgentFactory(gateway_client=gateway)
         agent = factory.create(
             AgentBlueprint(
                 agent_name="章节质量审核员",
@@ -164,6 +164,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                 "current_chapters_text": "第1章正文",
                 "sub_agents_json": "[{\"score\": 90}]",
             },
+            model="test-model",
         )
 
         self.assertIsNone(result.error)
@@ -193,7 +194,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                     finish_reason="stop",
                 )
 
-        factory = AgentFactory(gateway_client=FakeGateway(), default_model="test-model")
+        factory = AgentFactory(gateway_client=FakeGateway())
         agent = factory.create(
             AgentBlueprint(
                 agent_name="悬疑氛围评估师",
@@ -206,7 +207,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
             )
         )
 
-        result = factory.execute_agent(agent, {"current_chapters_text": "第1章正文"})
+        result = factory.execute_agent(agent, {"current_chapters_text": "第1章正文"}, model="test-model")
 
         self.assertIsNone(result.error)
         self.assertEqual(result.score, 91)
@@ -230,7 +231,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                     finish_reason="stop",
                 )
 
-        factory = AgentFactory(gateway_client=FakeGateway(), default_model="test-model")
+        factory = AgentFactory(gateway_client=FakeGateway())
         agent = factory.create(
             AgentBlueprint(
                 agent_name="结构完整性分析师",
@@ -243,7 +244,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
             )
         )
 
-        result = factory.execute_agent(agent, {"chapter_plan": "第1章到第8章"})
+        result = factory.execute_agent(agent, {"chapter_plan": "第1章到第8章"}, model="test-model")
 
         self.assertIsNone(result.error)
         self.assertEqual(result.score, 86)

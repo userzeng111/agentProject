@@ -141,9 +141,9 @@ Top-p 和 Temperature 通常**配合使用**：Temperature 控制"整体随机�
 如果每次调用都硬编码模型名称和参数，代码会变得非常混乱。`ModelCatalogService` 就是系统的"模型档案室"，它负责：
 
 1. **记录每个模型的能力画像**（上下文窗口、是否支持流式、是否支持 JSON 模式等）
-2. **聚合网关模型列表和本地注册表**
-3. **支持运行时动态切换默认模型**
-4. **校验模型是否支持小说生成任务**
+2. **以当前供应商 `/models` 返回的模型构建可选目录**
+3. **用本地注册表补充能力画像，不把本地条目当作运行时候选模型**
+4. **校验模型是否已完成小说任务兼容性验证**
 
 ### 2.2 模型能力画像：每个模型的"身份证"
 
@@ -201,56 +201,69 @@ Top-p 和 Temperature 通常**配合使用**：Temperature 控制"整体随机�
 
 ```mermaid
 flowchart TD
-    A[网关 /models 接口] --> B{模型是否在本地注册表?}
-    B -->|是| C[标记 source=gateway+registry]
-    B -->|否| D[标记 source=gateway]
-    E[本地注册表中的模型] --> F{模型是否在网关返回中?}
-    F -->|否| G[标记 source=registry]
-    C --> H[合并模型列表]
-    D --> H
-    G --> H
-    H --> I[默认模型置顶]
-    I --> J[返回完整模型目录]
+    A[当前供应商 /models 接口] --> B[网关返回当前可用模型]
+    B --> C[合并本地能力画像]
+    C --> D[标记 source=gateway]
+    D --> E[叠加兼容性验证报告]
+    E --> F[返回 /api/models 目录]
 ```
 
 这个设计的精妙之处在于：
 
-- **网关返回了新模型但本地没配置**：仍然显示，但标记为 `unverified`（未验证），不允许用于小说任务
-- **本地注册了但网关暂时不可用**：仍然显示，让用户知道"这个模型理论上可用"
-- **两者都有**：合并信息，以本地能力画像补充网关缺失的字段
+- **网关返回了新模型但本地没配置**：仍然显示，但初始标记为 `unverified`，不能用于小说任务
+- **本地注册了但当前供应商未返回**：不会出现在可选目录中，也不能被选择
+- **两者都有**：仅用本地能力画像补充网关模型的展示和协议元数据
 
-### 2.4 运行时动态切换
+### 2.4 显式模型选择与小说任务验证
 
-系统支持通过 API 动态切换默认模型：
+运行时没有全局或默认模型。客户端先读取 `/api/models`，并从当前供应商返回的 `data[].id` 中选择模型：聊天请求每次携带 `model`；小说任务创建时携带 `model_id`，后续运行、审核恢复和恢复动作可显式覆盖该值，未传时只复用该任务创建时已选的模型，不会回退到全局配置。动态编排请求也必须携带 `model`。
 
-```python
-# PATCH /settings/default-model
-{"model_id": "glm-5.1"}
+小说任务还要求所选模型的 `metadata.source` 包含 `gateway`，且 `metadata.compatibility` 为 `verified`、`capabilities.features.novel_task_supported` 为 `true`。未验证模型可用于聊天，但必须先通过模型验证接口完成验证。
+
+```http
+GET /api/models?refresh=true
+
+HTTP/1.1 200 OK
+{
+  "data": [
+    {
+      "id": "<当前供应商模型 ID>",
+      "metadata": {"source": "gateway", "compatibility": "verified"},
+      "capabilities": {"features": {"novel_task_supported": true}}
+    }
+  ]
+}
 ```
 
-切换后，系统会：
+```http
+POST /api/model-validation
+Content-Type: application/json
 
-1. 校验模型 ID 是否在可用列表中
-2. 校验模型是否已接入网关（不能选只有本地画像的模型）
-3. 校验模型是否支持小说任务流
-4. 持久化到 `tasklog/settings.json`
-5. 清除模型列表缓存，下次请求重新聚合
+{"model_id": "<当前供应商模型 ID>"}
+```
+
+`PATCH /api/settings/default-model` 已废弃，始终返回 `410 Gone`：
+
+```json
+{"detail":"全局默认模型已移除，请在任务、聊天或恢复动作中显式选择模型。"}
+```
 
 ```mermaid
 sequenceDiagram
     participant Client as 前端/客户端
-    participant API as /settings/default-model
+    participant API as FastAPI API
     participant Catalog as ModelCatalogService
-    participant Disk as tasklog/settings.json
+    participant Gateway as 当前供应商
 
-    Client->>API: PATCH {"model_id": "glm-5.1"}
-    API->>Catalog: update_default_model("glm-5.1")
-    Catalog->>Catalog: 校验 ID 合法性
-    Catalog->>Catalog: 校验网关接入状态
-    Catalog->>Catalog: 校验小说任务兼容性
-    Catalog->>Disk: 写入默认模型配置
-    Catalog-->>API: 返回更新后的模型摘要
+    Client->>API: GET /api/models?refresh=true
+    API->>Catalog: list_models_payload(true)
+    Catalog->>Gateway: GET /models
+    Gateway-->>Catalog: 当前模型列表
+    Catalog-->>API: data[] + 兼容性状态
     API-->>Client: 200 OK
+    Client->>API: POST /api/tasks {model_id}
+    API->>Catalog: ensure_novel_generation_model_supported(model_id)
+    Catalog-->>API: 已验证模型 / 校验错误
 ```
 
 ---
@@ -748,21 +761,23 @@ _OUTLINE_RETRY_JSON_PROMPT = (
 
 ```python
 def build_story_plan(self, spec, reference_text, ...):
-    # 1. 解析模型：优先用调用方指定的，其次运行时默认，最后配置文件默认
+    # 1. 解析调用方显式指定的模型
     resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
 ```
 
-`resolve_model()` 的逻辑非常简单，像"三选一"的开关：
+`resolve_model()` 不再执行默认值回退；缺少模型时立即拒绝请求：
 
 ```python
 def resolve_model(self, model: str | None) -> str:
-    candidate = (model or "").strip()          # 先取调用方指定的
-    return candidate or self._runtime_default_model or self.settings.default_chat_model
+    candidate = (model or "").strip()
+    if not candidate:
+        raise ValueError("请显式选择当前供应商返回的模型后再执行任务。")
+    return candidate
 ```
 
-- 如果用户在前端手动选了模型，就用用户选的；
-- 如果管理员通过 API 动态切换了默认模型，就用切换后的；
-- 否则回退到 `.env` 里配置的 `DEFAULT_CHAT_MODEL`。
+- 调用链必须提供 `model`、`model_id` 或 `spec` 中的同名字段；
+- 小说任务在进入 `StoryEngine` 前由 `TaskService` 校验模型仍在当前供应商目录中且兼容性已验证；
+- 聊天和动态编排分别在各自 API 层校验模型仍在当前供应商目录中。
 
 #### 第二步：Prompt 组装
 
@@ -876,30 +891,35 @@ conversation_history = self._append_assistant_message(request_messages, payload)
 
 ### 9.2 `ModelCatalogService` 的模型解析逻辑
 
-`ModelCatalogService` 是系统的"模型档案室"，核心职责是把网关返回的原始模型列表和本地注册表合并成一份完整目录。
+`ModelCatalogService` 是系统的"模型档案室"，核心职责是把当前供应商返回的原始模型列表补充为带能力画像和兼容性状态的目录。本地注册表只补充元数据，不能让不在当前供应商目录中的模型成为候选项。
 
-#### 9.2.1 别名映射与能力检查
+#### 9.2.1 能力画像与来源标记
 
-本地注册表 `_PROFILE_REGISTRY` 是一个字典，键是模型 ID（如 `"K2.6"`、`"glm-5.1"`），值是模型的"能力画像"。当网关返回的模型 ID 和注册表中的键匹配时，系统会把两者合并：
+本地注册表 `_PROFILE_REGISTRY` 是一个字典，键是模型 ID，值是模型的能力画像。只有当前供应商 `/models` 已返回该 ID 时，系统才会使用这份画像补充展示和协议元数据：
 
 ```python
 def _build_model_item(self, raw: dict[str, Any], source: str) -> dict[str, Any]:
     model_id = str(raw.get("id") or "").strip()
-    profile = deepcopy(self.registry.get(model_id, {}))   # 从注册表取画像
-    capabilities = profile.get("capabilities") or self._unknown_capabilities()
+    profile = deepcopy(self.registry.get(model_id, {}))
+    capabilities = profile.get("capabilities") or self._unknown_capabilities(model_id)
     provider = profile.get("provider") or self.settings.llm_provider
     display_name = profile.get("display_name") or model_id
-    compatibility = "verified" if source in {"gateway+registry", "registry"} else "unverified"
-    protocol = profile.get("protocol") or "openai"
-    ...
+    compatibility = "unverified"
+    protocol = profile.get("protocol") or self.settings.default_protocol
+    item = {
+        "id": model_id,
+        "capabilities": capabilities,
+        "metadata": {"source": source, "compatibility": compatibility, "protocol": protocol},
+    }
+    return self._apply_compatibility_override(item, source)
 ```
 
 这里有几个关键概念：
 
 | 字段 | 含义 |
 |-----|------|
-| `source` | 模型的来源：`gateway`（仅网关有）、`registry`（仅本地有）、`gateway+registry`（两者都有） |
-| `compatibility` | 兼容性状态：`verified`（已验证，可用于小说任务）、`unverified`（未验证，仅聊天可用） |
+| `source` | 目录项始终为 `gateway`，表示该模型来自当前供应商 `/models` |
+| `compatibility` | 初始为 `unverified`；只有验证报告为 `verified` 时才可用于小说任务 |
 | `protocol` | 协议类型：`openai` 或 `anthropic`，决定用哪个适配器发请求 |
 
 #### 9.2.2 模型列表聚合
@@ -915,90 +935,73 @@ def _merge_models(self, raw_models: list[dict[str, Any]]) -> list[dict[str, Any]
         if not model_id or model_id in seen:
             continue
         seen.add(model_id)
-        source = "gateway+registry" if model_id in self.registry else "gateway"
-        items.append(self._build_model_item(raw, source=source))
-
-    # 2. 再补充注册表中有但网关未返回的模型
-    for model_id, profile in self.registry.items():
-        if model_id in seen:
-            continue
-        seen.add(model_id)
-        items.append(self._build_model_item({"id": model_id}, source="registry"))
-
-    # 3. 默认模型置顶
-    effective_default = self._effective_default_model().strip()
-    default_idx = next((i for i, item in enumerate(items) if item["id"] == effective_default), -1)
-    if default_idx > 0:
-        items.insert(0, items.pop(default_idx))
+        items.append(self._build_model_item(raw, source="gateway"))
 
     return items
 ```
 
-这个合并逻辑保证了三种情况都能优雅处理：
+这个聚合逻辑有明确的运行时边界：
 
-- **网关有新模型，本地没配置**：显示为 `unverified`，不允许用于小说任务；
-- **本地有配置，网关暂时不可用**：仍然显示，让用户知道"这个模型理论上可用"；
-- **两者都有**：合并信息，以本地能力画像补充网关缺失的字段。
+- **网关有新模型，本地没配置**：显示为 `unverified`，可聊天但不能用于小说任务；
+- **本地有配置，当前供应商未返回**：不会显示，也不能通过任务、聊天或动态编排接口选择；
+- **供应商目录读取失败**：返回空目录，不使用本地注册表兜底；
+- **验证完成后**：兼容性报告会覆盖目录项的状态，前端刷新 `/api/models` 即可看到结果。
 
 #### 9.2.3 小说任务兼容性校验
 
 ```python
 def ensure_novel_generation_model_supported(self, model_id: str | None) -> dict[str, Any]:
-    profile = self.get_model_profile(model_id)
+    candidate = (model_id or "").strip()
+    if not candidate:
+        raise ValueError("请显式选择当前供应商返回的模型后再创建或执行任务。")
+    profile = self.get_model_profile(candidate, force_refresh=True)
+    source = str((profile.get("metadata") or {}).get("source") or "")
+    if "gateway" not in source:
+        raise ValueError(f"模型 {candidate} 不在当前供应商模型目录中，请刷新模型列表后重新选择。")
     compatibility = str((profile.get("metadata") or {}).get("compatibility") or "").strip()
     supported = bool(((profile.get("capabilities") or {}).get("features") or {}).get("novel_task_supported"))
     if compatibility == "verified" and supported:
         return profile
-    raise ValueError(f"模型 ... 未完成兼容性验证，暂不支持小说任务流。")
+    raise ValueError(
+        f"模型 {profile.get('id') or candidate} 未完成兼容性验证，暂不支持小说任务流。"
+        "请在 AI 对话页完成当前在线模型的兼容性验证后重试。"
+    )
 ```
 
-只有 `compatibility == "verified"` 且 `novel_task_supported == True` 的模型，才能被用于小说生成任务。这个检查在 `update_default_model()` 和任务创建时都会执行。
+只有 `compatibility == "verified"` 且 `novel_task_supported == True` 的当前供应商模型，才能被用于小说生成任务。这个检查在任务创建，以及运行、继续创作、审核恢复和故障恢复等任务动作解析模型时都会执行。
 
 ---
 
-### 9.3 多模型调度：`resolve_model()` 的实际代码
+### 9.3 显式模型解析：`resolve_model()` 的实际代码
 
-`resolve_model()` 是系统中最常用的模型选择逻辑，但它本身非常简单——真正的"调度"发生在调用链的上游。
+`resolve_model()` 只接受调用链传入的模型 ID，不读取全局或配置文件默认值。
 
 #### 9.3.1 StoryEngine 层面的模型选择
 
 ```python
 def resolve_model(self, model: str | None) -> str:
     candidate = (model or "").strip()
-    return candidate or self._runtime_default_model or self.settings.default_chat_model
+    if not candidate:
+        raise ValueError("请显式选择当前供应商返回的模型后再执行任务。")
+    return candidate
 ```
 
-这个方法的优先级是：
+调用链只接受显式模型：
 
-1. 调用方显式传入的 `model` 参数（如用户在前端选了某个模型）
-2. 运行时通过 API 动态切换的 `_runtime_default_model`
-3. 配置文件（`.env`）中的 `default_chat_model`
+1. 小说任务创建使用 `model_id`（也兼容别名 `model`）；
+2. 运行、审核恢复和故障恢复可传新的 `model_id`，不传时仅复用任务创建时已保存的模型；
+3. 聊天和动态编排请求分别必须携带 `model`。
 
-#### 9.3.2 运行时动态切换
+#### 9.3.2 废弃的默认模型接口
 
-管理员可以通过 API 动态切换默认模型：
+`PATCH /api/settings/default-model` 不再更新任何运行时配置，也不会持久化模型选择。调用该接口固定得到：
 
-```python
-# PATCH /settings/default-model
-{"model_id": "glm-5.1"}
+```http
+HTTP/1.1 410 Gone
+Content-Type: application/json
+
+{"detail":"全局默认模型已移除，请在任务、聊天或恢复动作中显式选择模型。"}
 ```
-
-后端处理：
-
-```python
-def update_default_model(self, model_id: str) -> dict[str, Any]:
-    valid_ids = {item["id"] for item in self.list_models()}
-    if model_id not in valid_ids:
-        raise ValueError(f"模型 ID 不在可用模型列表中：{model_id}")
-    self.ensure_runtime_default_model_supported(model_id)   # 检查是否接入网关
-    self.ensure_novel_generation_model_supported(model_id)  # 检查是否支持小说任务
-    self._runtime_default_model = model_id
-    self._save_runtime_settings()                           # 持久化到 tasklog/settings.json
-    self._cached_payload = None                             # 清除缓存，下次重新聚合
-    return {"default_model": self._effective_default_model(), ...}
-```
-
-切换后，所有没有显式指定模型的请求都会自动使用新默认模型，无需重启服务。
 
 ---
 
