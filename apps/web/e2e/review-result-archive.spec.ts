@@ -1,0 +1,397 @@
+import { expect, test, type Page } from "@playwright/test";
+import {
+  makeArchiveDetail,
+  makeArchiveList,
+  makeWorkspace,
+  mockCommonApiRoutes,
+  mockTaskWorkspace,
+} from "./helpers/fixtures";
+
+function makeReview(reviewType = "outline") {
+  const normalizedReviewType =
+    reviewType === "chapter" ? "chapter_pair_review" : reviewType === "verification" ? "verification_review" : "outline_review";
+  return {
+    meta: {
+      task_id: "task_review_fixture",
+      title: "审核测试任务",
+      status:
+        reviewType === "chapter"
+          ? "waiting_chapter_review"
+          : reviewType === "verification"
+            ? "waiting_verification_review"
+            : "waiting_outline_review",
+      summary: "审核摘要",
+      creative_model_id: "gpt-5.4",
+      review_model_id: "gpt-5.4",
+    },
+    review_type: normalizedReviewType,
+    review_version: "v1",
+    revision_count: 0,
+    summary: "审核测试摘要",
+    risk_flags: [],
+    outline_markdown: "# 测试大纲\n\n大纲摘要",
+    story_plan: {
+      working_title: "测试大纲",
+      logline: "大纲摘要",
+      world_notes: ["测试世界观"],
+      character_notes: ["测试角色"],
+      planned_chapter_count: 1,
+    },
+    outline_batch: {
+      phase: "master",
+      batch_index: 0,
+      batch_size: 20,
+      completed_count: 0,
+      total_count: 1,
+      current_batch_plans: [],
+    },
+    chapter_pair: [{ number: 1, title: "第一章", summary: "章节摘要", content: "内容占位" }],
+    verification_report: {
+      overall_score: 90,
+      summary: "验证摘要",
+      issues: [{ severity: "warning", message: "测试问题" }],
+    },
+    auto_review_trace: [],
+    review_history: [],
+    allowed_actions: [],
+    recovery_options: [],
+    recommended_action: "",
+  };
+}
+
+async function mockProjectPage(page: Page, workspace: ReturnType<typeof makeWorkspace>) {
+  await mockCommonApiRoutes(page);
+  await mockTaskWorkspace(page, workspace);
+}
+
+test.describe("审核、结果、归档页面", () => {
+  test("审核页缺少 id 时显示错误兜底", async ({ page }) => {
+    await page.goto("/review", { waitUntil: "commit" });
+    await page.waitForFunction(() => window.location.pathname === "/");
+  });
+
+  test("审核页大纲分支展示审核操作", async ({ page }, testInfo) => {
+    const workspace = makeWorkspace("waiting_outline_review", { task_id: "task_review_fixture" });
+    await mockProjectPage(page, workspace);
+    await page.route("**/api/tasks/task_review_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("outline") });
+    });
+    await page.goto("/p/task_review_fixture/?view=review", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    const stageNav = page.getByTestId("stage-nav");
+    await expect(stageNav).toBeVisible();
+    await expect(stageNav.locator('[data-stage-state="current"]')).toContainText("审核");
+    const reviewMain = page.getByTestId("review-main");
+    const reviewAside = page.getByTestId("review-aside");
+    await expect(page.getByTestId("review-split-layout")).toBeVisible();
+    await expect(reviewMain).toBeVisible();
+    await expect(reviewAside).toBeVisible();
+    if (testInfo.project.name === "chromium") {
+      const mainBox = await reviewMain.boundingBox();
+      const asideBox = await reviewAside.boundingBox();
+      expect(mainBox).not.toBeNull();
+      expect(asideBox).not.toBeNull();
+      expect(asideBox!.x).toBeGreaterThan(mainBox!.x + mainBox!.width * 0.5);
+    }
+    await expect(page.getByRole("heading", { name: "大纲审核", exact: true })).toBeVisible();
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+  });
+
+  test("审核 Agent 行保持单一按钮语义并支持键盘展开", async ({ page }) => {
+    const workspace = makeWorkspace("waiting_outline_review", { task_id: "task_review_agent_fixture" });
+    await mockProjectPage(page, workspace);
+    await page.route("**/api/tasks/task_review_agent_fixture/review", async (route) => {
+      await route.fulfill({
+        json: {
+          ...makeReview("outline"),
+          meta: {
+            task_id: "task_review_agent_fixture",
+            title: "审核 Agent 追踪测试",
+            status: "waiting_outline_review",
+            summary: "审核摘要",
+            creative_model_id: "gpt-5.4",
+            review_model_id: "gpt-5.4",
+          },
+          auto_review_trace: [
+            {
+              agent_id: "structure_agent",
+              agent_name: "结构审稿 Agent",
+              execution_kind: "subagent",
+              status: "completed",
+              score: 92,
+              reasoning: "结构审稿详情",
+              issues: [],
+              warnings: [],
+            },
+          ],
+        },
+      });
+    });
+
+    await page.goto("/p/task_review_agent_fixture/?view=review", { waitUntil: "commit" });
+    const agentRow = page.getByRole("button", { name: /结构审稿 Agent/ });
+    await expect(agentRow).toHaveAttribute("aria-expanded", "false");
+    await expect(agentRow.locator("button")).toHaveCount(0);
+
+    await agentRow.focus();
+    await page.keyboard.press("Enter");
+    await expect(agentRow).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#agent-content-0")).toContainText("结构审稿详情");
+  });
+
+  test("审核页章节与验证分支展示对应审核材料", async ({ page }) => {
+    const chapterWorkspace = makeWorkspace("waiting_chapter_review", { task_id: "task_review_chapter_fixture" });
+    await mockProjectPage(page, chapterWorkspace);
+    await page.route("**/api/tasks/task_review_chapter_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("chapter") });
+    });
+    await page.goto("/p/task_review_chapter_fixture/?view=review", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("审核");
+    await expect(page.getByText("章节摘要")).toBeVisible();
+    let reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+
+    const verificationWorkspace = makeWorkspace("waiting_verification_review", { task_id: "task_review_verification_fixture" });
+    await mockProjectPage(page, verificationWorkspace);
+    await page.route("**/api/tasks/task_review_verification_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("verification") });
+    });
+    await page.goto("/p/task_review_verification_fixture/?view=review", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("验证");
+    await expect(page.getByText("验证摘要")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "发现的问题" })).toBeVisible();
+    await expect(page.getByText("warning")).toBeVisible();
+    reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByRole("heading", { name: "审核操作" })).toBeVisible();
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+  });
+
+  test("审核页移动端不产生横向滚动且保留决策区", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const workspace = makeWorkspace("waiting_outline_review", { task_id: "task_review_fixture" });
+    await mockProjectPage(page, workspace);
+    await page.route("**/api/tasks/task_review_fixture/review", async (route) => {
+      await route.fulfill({ json: makeReview("outline") });
+    });
+
+    await page.goto("/p/task_review_fixture/?view=review", { waitUntil: "commit" });
+    await expect(page.getByTestId("review-split-layout")).toBeVisible();
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+    const reviewAside = page.getByTestId("review-aside");
+    await expect(reviewAside.getByLabel("审核意见")).toBeVisible();
+    await expect(reviewAside.getByRole("button", { name: /通过/ })).toBeVisible();
+  });
+
+  test("结果页缺少 id 时显示错误兜底", async ({ page }) => {
+    await page.goto("/result", { waitUntil: "commit" });
+    await page.waitForFunction(() => window.location.pathname === "/");
+  });
+
+  test("结果页展示摘要、正文区、按章阅读器和章节索引", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => {
+      window.localStorage.setItem("theme-mode", "dark");
+    });
+    const codeFence = ["", "```ts", "const chapterSignal = 'dark-code';", "```"].join("\n");
+    const workspace = makeWorkspace("completed", { task_id: "task_result_fixture" });
+    await mockProjectPage(page, workspace);
+    await page.route("**/api/tasks/task_result_fixture/result", async (route) => {
+      await route.fulfill({
+        json: {
+          meta: {
+            task_id: "task_result_fixture",
+            title: "结果测试任务",
+            status: "completed",
+            summary: "结果摘要",
+          },
+          result_summary: "结果摘要",
+          result_markdown: `# 结果正文\n\n正文占位。${codeFence}`,
+          result_md_ref: "",
+          chapter_index: [
+            { number: 1, title: "第一章", summary: "章节摘要", content: `第一章正文占位${codeFence}` },
+            { number: 2, title: "第二章", summary: "章节摘要", content: `第二章正文占位${codeFence}` },
+          ],
+          artifact_index: [],
+          history_index: [],
+        },
+      });
+    });
+    await page.goto("/p/task_result_fixture/?view=result", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("结果");
+    await expect(page.getByRole("heading", { name: "生成结果" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "结果摘要" })).toBeVisible();
+    const reader = page.getByTestId("novel-reader");
+    await expect(reader).toBeVisible();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("第一章正文占位");
+    const readerCodeBlock = reader.getByTestId("novel-reader-content").locator("pre").last();
+    await expect(readerCodeBlock).toBeVisible();
+    await expect
+      .poll(async () =>
+        readerCodeBlock.evaluate((element) => {
+          const color = getComputedStyle(element).backgroundColor;
+          const match = color.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([.\d]+))?\)/i);
+          if (!match) {
+            return false;
+          }
+          const [, r, g, b, a] = match;
+          const alpha = a === undefined ? 1 : Number(a);
+          const luminance = 0.2126 * Number(r) + 0.7152 * Number(g) + 0.0722 * Number(b);
+          return alpha > 0.1 && luminance < 96;
+        }),
+      )
+      .toBe(true);
+    await expect
+      .poll(async () => page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth))
+      .toBe(false);
+    await reader.getByRole("button", { name: "下一章" }).first().click();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("第二章正文占位");
+    await expect(page.getByRole("button", { name: "复制全文" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
+    await page.getByRole("button", { name: "复制全文" }).click();
+    await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();
+  });
+
+  test("结果页确认归档后跳转到归档详情", async ({ page }) => {
+    const workspace = makeWorkspace("completed", {
+      task_id: "task_result_archive_fixture",
+    });
+    await mockProjectPage(page, workspace);
+    let archiveRequests = 0;
+    await page.route("**/api/tasks/task_result_archive_fixture/result", async (route) => {
+      await route.fulfill({
+        json: {
+          meta: {
+            task_id: "task_result_archive_fixture",
+            title: "待确认归档任务",
+            status: "completed",
+            summary: "结果摘要",
+            storage_state: "runs",
+          },
+          result_summary: "结果摘要",
+          result_markdown: "# 待确认归档任务\n\n正文占位。",
+          result_md_ref: "",
+          chapter_index: [{ number: 1, title: "第一章", summary: "章节摘要", content: "第一章正文占位" }],
+          artifact_index: [],
+          history_index: [],
+        },
+      });
+    });
+    await page.route("**/api/tasks/task_result_archive_fixture/archive", async (route) => {
+      archiveRequests += 1;
+      expect(route.request().method()).toBe("POST");
+      workspace.meta.storage_state = "archive";
+      await route.fulfill({
+        json: {
+          task_id: "task_result_archive_fixture",
+          id: "task_result_archive_fixture",
+          status: "completed",
+          storage_state: "archive",
+        },
+      });
+    });
+    await page.route("**/api/archive/task_result_archive_fixture", async (route) => {
+      const detail = makeArchiveDetail();
+      await route.fulfill({
+        json: {
+          ...detail,
+          meta: {
+            ...detail.meta,
+            task_id: "task_result_archive_fixture",
+            id: "task_result_archive_fixture",
+            title: "待确认归档任务",
+          },
+        },
+      });
+    });
+
+    await page.goto("/p/task_result_archive_fixture/?view=result", { waitUntil: "commit" });
+    await expect(page.getByRole("button", { name: "确认归档" })).toBeVisible();
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain("确认已检查生成结果并归档");
+      await dialog.accept();
+    });
+    await page.getByRole("button", { name: "确认归档" }).click();
+
+    await expect.poll(() => archiveRequests, { message: "确认归档应请求归档接口" }).toBe(1);
+    await expect(page).toHaveURL(/\/p\/task_result_archive_fixture\/\?view=archive/);
+    await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
+  });
+
+  test("归档列表和详情 Tab 可渲染", async ({ page }) => {
+    const workspace = makeWorkspace("completed", {
+      task_id: "task_archive_fixture",
+      meta: { storage_state: "archive" },
+    });
+    await mockProjectPage(page, workspace);
+    await page.route("**/api/archive**", async (route) => {
+      if (route.request().url().includes("/api/archive/task_archive_fixture")) {
+        await route.fulfill({ json: makeArchiveDetail() });
+        return;
+      }
+      await route.fulfill({ json: makeArchiveList() });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    const archiveCard = page.getByTestId("archive-card");
+    await expect(archiveCard).toBeVisible();
+    await expect(archiveCard).toContainText("归档测试任务");
+    await expect(archiveCard).toContainText(/章节[:：]?\s*2|2\s*章/);
+    await expect(archiveCard).toContainText(/字数[:：]?\s*1,?200|1,?200\s*字/);
+    await expect(archiveCard).toContainText("全新原创 · 短篇");
+    await expect(archiveCard).toContainText("gpt-5.4-archive-model-with-a-very-long-unbroken-identifier-20260630");
+    await expect(archiveCard.getByRole("link", { name: "查看归档详情" })).toHaveAttribute(
+      "href",
+      "/p/task_archive_fixture/?view=archive",
+    );
+    await page.goto("/p/task_archive_fixture/?view=archive", { waitUntil: "commit" });
+    await expect(page.getByTestId("project-shell")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: /大纲|阅读|原始/ }).first()).toBeVisible();
+
+    await page.goto("/p/task_archive_fixture/?view=archive&tab=read", { waitUntil: "commit" });
+    const reader = page.getByTestId("novel-reader");
+    await expect(reader).toBeVisible();
+    await expect(reader.getByTestId("novel-reader-content")).toContainText("章节内容占位");
+    await reader.getByRole("button", { name: "下一章" }).first().click();
+    await expect(reader.getByRole("heading", { name: /第二章/ })).toBeVisible();
+
+    await page.getByRole("tab", { name: "原始信息" }).click();
+    await expect(page).toHaveURL(/tab=meta/);
+    await expect(page.getByRole("button", { name: "复制全文" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
+    await page.getByRole("button", { name: "复制全文" }).click();
+    await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
+  });
+
+  test("归档列表移动端不产生横向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("**/api/archive**", async (route) => {
+      await route.fulfill({ json: makeArchiveList() });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    await expect(page.getByTestId("archive-card")).toBeVisible();
+    const hasHorizontalOverflow = await page.evaluate(
+      () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    );
+    expect(hasHorizontalOverflow).toBe(false);
+  });
+
+  test("归档列表空态可渲染", async ({ page }) => {
+    await page.route("**/api/archive**", async (route) => {
+      await route.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10 } });
+    });
+
+    await page.goto("/archive", { waitUntil: "commit" });
+    await expect(page.getByText(/暂无归档|还没有/)).toBeVisible();
+  });
+});

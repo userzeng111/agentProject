@@ -12,12 +12,23 @@ from app.observability.context import request_id_var, task_id_var
 # 日志目录 - 在 apps/agent-runtime/logs/ 下
 LOG_DIR = Path(__file__).parent.parent / "logs"
 
-# 日志格式
-LOG_FORMAT = "[%(levelname)s] %(asctime)s %(name)s %(filename)s:%(lineno)d - %(message)s"
-DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-
 # 是否已初始化
 _initialized = False
+
+# 日志文件前缀 → 对应的 logger 名称列表
+_LOG_FILE_MAP: dict[str, list[str]] = {
+    "app": [
+        "app",
+        "backend",
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "__main__",
+    ],
+    "gateway": [
+        "backend.gateway",
+    ],
+}
 
 
 class _StructuredFormatter(logging.Formatter):
@@ -49,6 +60,23 @@ class _StructuredFormatter(logging.Formatter):
         return message
 
 
+class _NamespaceFilter(logging.Filter):
+    """只放行指定 logger 名称空间下的日志记录，可排除子名称空间。"""
+
+    def __init__(self, namespace_prefixes: list[str], exclude_prefixes: list[str] | None = None) -> None:
+        super().__init__()
+        self._prefixes = namespace_prefixes
+        self._excludes = exclude_prefixes or []
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 先检查排除列表
+        for excl in self._excludes:
+            if record.name == excl or record.name.startswith(excl + "."):
+                return False
+        # 再检查包含列表
+        return any(record.name == prefix or record.name.startswith(prefix + ".") for prefix in self._prefixes)
+
+
 def _ensure_log_dir():
     """确保日志目录存在"""
     if not LOG_DIR.exists():
@@ -64,17 +92,17 @@ def _create_console_handler() -> logging.StreamHandler:
 
 
 def _rotate_log_filename(name: str) -> str:
-    """将轮转日志命名为 app-源日期-轮转日期.log。"""
+    """将轮转日志命名为 前缀-源日期-轮转日期.log。"""
     if ".log." not in name:
         return name
     return f"{name.replace('.log.', '-')}.log"
 
 
-def _create_file_handler() -> TimedRotatingFileHandler:
-    """创建文件处理器 (DEBUG 级别，按天轮转，保留7天)"""
+def _create_file_handler(log_prefix: str, namespace_prefixes: list[str], exclude_prefixes: list[str] | None = None) -> TimedRotatingFileHandler:
+    """创建指定日志文件处理器 (DEBUG 级别，按天轮转，保留7天)。"""
     _ensure_log_dir()
     today = datetime.now().strftime("%Y-%m-%d")
-    log_file = LOG_DIR / f"app-{today}.log"
+    log_file = LOG_DIR / f"{log_prefix}-{today}.log"
     handler = TimedRotatingFileHandler(
         filename=str(log_file),
         when="midnight",
@@ -84,8 +112,8 @@ def _create_file_handler() -> TimedRotatingFileHandler:
     )
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(_StructuredFormatter())
-    # 自定义文件命名格式: app-YYYY-MM-DD.log
     handler.namer = _rotate_log_filename
+    handler.addFilter(_NamespaceFilter(namespace_prefixes, exclude_prefixes))
     return handler
 
 
@@ -104,16 +132,26 @@ def init_logging():
     # 清除现有处理器
     root_logger.handlers.clear()
 
-    # 添加处理器
+    # 控制台处理器（所有日志均输出到控制台）
     root_logger.addHandler(_create_console_handler())
-    root_logger.addHandler(_create_file_handler())
+
+    # ═══ 按名称空间分流到不同文件 ═══
+    # app-{date}.log：业务逻辑、系统日志（排除网关日志避免重复）
+    app_loggers = _LOG_FILE_MAP.get("app", ["backend"])
+    root_logger.addHandler(
+        _create_file_handler("app", app_loggers, exclude_prefixes=["backend.gateway"])
+    )
+
+    # gateway-{date}.log：LLM 网关调用日志
+    gateway_loggers = _LOG_FILE_MAP.get("gateway", ["backend.gateway"])
+    gateway_handler = _create_file_handler("gateway", gateway_loggers)
+    root_logger.addHandler(gateway_handler)
 
     # 配置 uvicorn 日志器
     for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         logger = logging.getLogger(logger_name)
         logger.handlers.clear()
         logger.addHandler(_create_console_handler())
-        logger.addHandler(_create_file_handler())
         logger.setLevel(logging.INFO)
 
     _initialized = True
@@ -137,7 +175,3 @@ def get_logger(name: str) -> logging.Logger:
 
     logger = logging.getLogger(name)
     return logger
-
-
-# 便捷的模块级日志器
-logger = get_logger("backend.app")

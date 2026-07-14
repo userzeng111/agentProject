@@ -210,8 +210,8 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="本地 LLM 反向代理与耗时采样脚本")
     parser.add_argument(
         "--host",
-        default=os.getenv("LLM_TIMING_PROXY_HOST", "127.0.0.1"),
-        help="监听地址，默认读取 LLM_TIMING_PROXY_HOST 或 127.0.0.1",
+        default=os.getenv("LLM_TIMING_PROXY_HOST", "localhost"),
+        help="监听地址，默认读取 LLM_TIMING_PROXY_HOST 或 localhost",
     )
     parser.add_argument(
         "--port",

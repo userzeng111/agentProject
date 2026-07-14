@@ -18,12 +18,6 @@ def get_runtime_settings() -> dict[str, Any]:
         return _read_runtime_settings_unlocked()
 
 
-def save_runtime_settings(settings: dict[str, Any]) -> None:
-    """保存运行时设置到 JSON 文件。"""
-    with _RUNTIME_SETTINGS_LOCK:
-        _write_runtime_settings_unlocked(settings)
-
-
 def _read_runtime_settings_unlocked() -> dict[str, Any]:
     if not _RUNTIME_SETTINGS_PATH.exists():
         return {}

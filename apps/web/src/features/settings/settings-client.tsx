@@ -27,6 +27,9 @@ import {
   TableHead,
   TableRow,
   Typography,
+  useMediaQuery,
+  useTheme,
+  alpha,
 } from "@mui/material";
 import {
   Computer as ComputerIcon,
@@ -70,6 +73,8 @@ export default function SettingsClient() {
   const [savingModelId, setSavingModelId] = useState<string | null>(null);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const theme = useTheme();
+  const isDesktop = useMediaQuery(theme.breakpoints.up("md"));
 
   const loadStatus = async () => {
     try {
@@ -165,12 +170,12 @@ export default function SettingsClient() {
           </Typography>
         </Stack>
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" role="alert">{error}</Alert> : null}
 
         <Card>
           <CardContent>
             {loading ? (
-              <Stack direction="row" spacing={1.5} alignItems="center">
+              <Stack direction="row" spacing={1.5} alignItems="center" role="status" aria-live="polite">
                 <CircularProgress size={20} />
                 <Typography>正在读取当前数据库状态...</Typography>
               </Stack>
@@ -211,13 +216,13 @@ export default function SettingsClient() {
                 </Stack>
 
                 <Box
-                  sx={{
+                  sx={(theme) => ({
                     p: 2,
                     borderRadius: 3,
-                    backgroundColor: "rgba(29, 42, 39, 0.04)",
+                    backgroundColor: alpha(theme.palette.text.primary, 0.04),
                     border: "1px solid",
                     borderColor: "divider",
-                  }}
+                  })}
                 >
                   <Stack spacing={2}>
                     <Typography variant="subtitle1">全量重建索引</Typography>
@@ -286,17 +291,18 @@ export default function SettingsClient() {
               </Typography>
 
               {modelsLoading ? (
-                <Stack direction="row" spacing={1.5} alignItems="center">
+                <Stack direction="row" spacing={1.5} alignItems="center" role="status" aria-live="polite">
                   <CircularProgress size={20} />
                   <Typography>正在读取模型列表...</Typography>
                 </Stack>
               ) : modelsError ? (
-                <Alert severity="error">{modelsError}</Alert>
+                <Alert severity="error" role="alert">{modelsError}</Alert>
               ) : models.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   暂无可用模型
                 </Typography>
-              ) : (
+              ) : isDesktop ? (
+                /* 桌面端：表格 */
                 <TableContainer component={Paper} variant="outlined">
                   <Table size="small">
                     <TableHead>
@@ -346,6 +352,51 @@ export default function SettingsClient() {
                     </TableBody>
                   </Table>
                 </TableContainer>
+              ) : (
+                /* 移动端：键值卡片列表 */
+                <Stack spacing={1.5}>
+                  {models.map((model) => {
+                    const currentProtocol = protocolMap[model.id] || model.metadata?.protocol || "未配置";
+                    return (
+                      <Card key={model.id} variant="outlined" sx={{ borderRadius: 2 }}>
+                        <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
+                          <Stack spacing={1.5}>
+                            <Stack direction="row" justifyContent="space-between" alignItems="center">
+                              <Typography variant="subtitle2" sx={{ fontWeight: 600, overflowWrap: "anywhere", flex: 1 }}>
+                                {model.display_name || model.id}
+                              </Typography>
+                              <Chip
+                                size="small"
+                                label={currentProtocol}
+                                color={currentProtocol === "openai" ? "primary" : currentProtocol === "anthropic" ? "secondary" : "default"}
+                              />
+                            </Stack>
+                            <Typography variant="caption" color="text.secondary" sx={{ fontFamily: "monospace", overflowWrap: "anywhere" }}>
+                              {model.id}
+                            </Typography>
+                            <FormControl size="small" fullWidth disabled={savingModelId === model.id}>
+                              <InputLabel id={`protocol-label-mobile-${model.id}`}>修改协议</InputLabel>
+                              <Select
+                                labelId={`protocol-label-mobile-${model.id}`}
+                                value={currentProtocol === "未配置" ? "" : currentProtocol}
+                                label="修改协议"
+                                onChange={(e) => handleProtocolChange(model.id, e.target.value)}
+                                endAdornment={
+                                  savingModelId === model.id ? (
+                                    <CircularProgress size={16} sx={{ mr: 1 }} />
+                                  ) : null
+                                }
+                              >
+                                <MenuItem value="openai">OpenAI</MenuItem>
+                                <MenuItem value="anthropic">Anthropic</MenuItem>
+                              </Select>
+                            </FormControl>
+                          </Stack>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </Stack>
               )}
             </Stack>
           </CardContent>

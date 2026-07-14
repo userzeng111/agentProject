@@ -6,7 +6,21 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Protocol, runtime_checkable
+
+from app.observability import get_logger
+
+logger = get_logger(__name__)
+
+
+@runtime_checkable
+class CacheStore(Protocol):
+    """缓存存储统一接口协议。"""
+
+    def get(self, key: str) -> Any | None: ...
+    def set(self, key: str, value: Any) -> None: ...
+    def clear(self) -> None: ...
+    def cleanup(self) -> None: ...
 
 
 @dataclass
@@ -60,10 +74,17 @@ class FileBackedCacheStore:
         path = self._path_for_key(key)
         if not path.exists():
             return None
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("读取磁盘缓存失败: path=%s error=%s", path, exc)
+            return None
         expires_at = float(payload.get("expires_at") or 0.0)
         if expires_at <= self.time_func():
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("清理过期磁盘缓存失败: path=%s error=%s", path, exc)
             return None
         return copy.deepcopy(payload.get("value"))
 
@@ -75,21 +96,34 @@ class FileBackedCacheStore:
             "expires_at": self.time_func() + self.ttl_seconds,
             "value": serialized,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        try:
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            logger.warning("写入磁盘缓存失败: path=%s error=%s", path, exc)
 
     def clear(self) -> None:
         for item in self.root_dir.glob("*.json"):
-            item.unlink(missing_ok=True)
+            try:
+                item.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("清理磁盘缓存失败: path=%s error=%s", item, exc)
 
     def cleanup(self) -> None:
         for item in self.root_dir.glob("*.json"):
             try:
                 payload = json.loads(item.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                item.unlink(missing_ok=True)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("读取磁盘缓存失败，尝试删除: path=%s error=%s", item, exc)
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError as unlink_exc:
+                    logger.warning("删除损坏磁盘缓存失败: path=%s error=%s", item, unlink_exc)
                 continue
             if float(payload.get("expires_at") or 0.0) <= self.time_func():
-                item.unlink(missing_ok=True)
+                try:
+                    item.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("清理过期磁盘缓存失败: path=%s error=%s", item, exc)
 
     def _path_for_key(self, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
@@ -102,30 +136,45 @@ class FileBackedCacheStore:
 
 
 class LayeredCacheStore:
-    def __init__(self, stores: list[Any]) -> None:
+    def __init__(self, stores: list[CacheStore]) -> None:
         self.stores = stores
 
     def get(self, key: str) -> Any | None:
         cached_value: Any | None = None
         for index, store in enumerate(self.stores):
-            cached_value = store.get(key)
+            try:
+                cached_value = store.get(key)
+            except Exception as exc:
+                logger.warning("缓存层读取失败: layer=%d key=%s error=%s", index, key, exc)
+                continue
             if cached_value is None:
                 continue
+            logger.debug("缓存命中: layer=%d key=%s", index, key)
             for warm_store in self.stores[:index]:
-                warm_store.set(key, cached_value)
+                try:
+                    warm_store.set(key, cached_value)
+                except Exception as exc:
+                    logger.warning("缓存回填失败: layer=%d key=%s error=%s", index, key, exc)
             return cached_value
         return None
 
     def set(self, key: str, value: Any) -> None:
-        for store in self.stores:
-            store.set(key, value)
+        for index, store in enumerate(self.stores):
+            try:
+                store.set(key, value)
+            except Exception as exc:
+                logger.warning("缓存写入失败: layer=%d key=%s error=%s", index, key, exc)
 
     def clear(self) -> None:
         for store in self.stores:
-            if hasattr(store, "clear"):
+            try:
                 store.clear()
+            except Exception as exc:
+                logger.warning("缓存清空失败: store=%s error=%s", type(store).__name__, exc)
 
     def cleanup(self) -> None:
         for store in self.stores:
-            if hasattr(store, "cleanup"):
+            try:
                 store.cleanup()
+            except Exception as exc:
+                logger.warning("缓存清理失败: store=%s error=%s", type(store).__name__, exc)

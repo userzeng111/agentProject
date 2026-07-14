@@ -12,6 +12,8 @@ from app.domain.models import (
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
 
+from tests.fakes import build_verified_gateway_model_catalog
+
 
 class FakeGatewayClient:
     def list_models(self):
@@ -27,10 +29,6 @@ class FakeEngine:
         self.gateway_client = FakeGatewayClient()
         self.progress_callback = None
 
-    def set_runtime_default_model(self, model_id: str) -> None:
-        self.settings.default_chat_model = model_id
-
-
 class TaskErrorTransparencyTests(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -40,16 +38,21 @@ class TaskErrorTransparencyTests(unittest.TestCase):
         settings = Settings(
             _env_file=None,
             tasklog_root=str(self.tasklog_root),
-            default_chat_model="test-model",
         )
         store = TaskLogStore(str(self.tasklog_root))
         engine = FakeEngine(settings)
-        self.service = TaskService(store=store, engine=engine, auto_review=False)
+        self.service = TaskService(
+            store=store,
+            engine=engine,
+            model_catalog=build_verified_gateway_model_catalog(settings, engine.gateway_client),
+            auto_review=False,
+        )
 
     def test_mark_failed_unless_stable_records_event_when_stable(self):
         """任务处于稳定状态时，_mark_failed_unless_stable 应写入 task.error_recorded 事件。"""
         request = TaskCreateRequest(
             prompt="测试错误透传",
+            model_id="test-model",
             genre="科幻",
             style="细腻",
             creative_mode=CreativeMode.ORIGINAL,
@@ -81,6 +84,7 @@ class TaskErrorTransparencyTests(unittest.TestCase):
         """_to_summary 应提取 task.error_recorded 事件中的 detail 作为 last_error_detail。"""
         request = TaskCreateRequest(
             prompt="测试 last_error_detail",
+            model_id="test-model",
             genre="科幻",
             style="细腻",
             creative_mode=CreativeMode.ORIGINAL,
@@ -104,6 +108,7 @@ class TaskErrorTransparencyTests(unittest.TestCase):
         """没有 task.error_recorded 时，last_error_detail 应回退到 task.error_message。"""
         request = TaskCreateRequest(
             prompt="测试回退",
+            model_id="test-model",
             genre="科幻",
             style="细腻",
             creative_mode=CreativeMode.ORIGINAL,

@@ -119,3 +119,22 @@ backups/
 **/.env.*
 !.env.example
 !**/.env.example
+.agents/
+
+# Test output artifacts
+output/
+
+# 日志文件（显式排除已跟踪的日志文件）
+server.log
+frontend.log
+*.log.*
+
+# Playwright 测试报告和结果
+apps/web/playwright-report/
+apps/web/test-results/
+
+# Next.js 构建产物（后端目录下不应出现）
+apps/agent-runtime/.next/
+
+# Git worktrees
+.worktrees/

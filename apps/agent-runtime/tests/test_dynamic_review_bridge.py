@@ -7,6 +7,7 @@ from app.agents.dynamic.bridge import DynamicReviewBridge
 from app.agents.dynamic.master import MasterAgent
 from app.agents.dynamic.orchestrator import TaskOrchestrator
 from app.agents.dynamic.models import AgentBlueprint, OrchestrationResult, TaskExecutionResult
+from app.agents.dynamic.prompts import MASTER_BLUEPRINT_PROMPT
 from app.domain.models import AutoReviewPolicy
 from app.llm.gateway_client import StreamChunk
 
@@ -139,7 +140,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                 )
 
         gateway = FakeGateway()
-        factory = AgentFactory(gateway_client=gateway, default_model="test-model")
+        factory = AgentFactory(gateway_client=gateway)
         agent = factory.create(
             AgentBlueprint(
                 agent_name="章节质量审核员",
@@ -163,6 +164,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                 "current_chapters_text": "第1章正文",
                 "sub_agents_json": "[{\"score\": 90}]",
             },
+            model="test-model",
         )
 
         self.assertIsNone(result.error)
@@ -192,7 +194,7 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
                     finish_reason="stop",
                 )
 
-        factory = AgentFactory(gateway_client=FakeGateway(), default_model="test-model")
+        factory = AgentFactory(gateway_client=FakeGateway())
         agent = factory.create(
             AgentBlueprint(
                 agent_name="悬疑氛围评估师",
@@ -205,14 +207,65 @@ class AgentFactoryPromptRenderingTests(unittest.TestCase):
             )
         )
 
-        result = factory.execute_agent(agent, {"current_chapters_text": "第1章正文"})
+        result = factory.execute_agent(agent, {"current_chapters_text": "第1章正文"}, model="test-model")
 
         self.assertIsNone(result.error)
         self.assertEqual(result.score, 91)
         self.assertEqual(result.highlights, ["氛围稳定"])
 
+    def test_execute_agent_accepts_chinese_score_field(self) -> None:
+        class FakeGateway:
+            def _strip_markdown_fences(self, raw):
+                return raw
+
+            def _extract_first_json_value(self, raw):
+                return json.loads(raw)
+
+            def complete_stream_sync(self, messages, model, **kwargs):
+                yield StreamChunk(
+                    content=(
+                        '{"评分": 86, "问题": [], "警告": [], '
+                        '"亮点": ["章节计划完整"], "理由": "结构完整，逻辑清晰"}'
+                    ),
+                    model=model,
+                    finish_reason="stop",
+                )
+
+        factory = AgentFactory(gateway_client=FakeGateway())
+        agent = factory.create(
+            AgentBlueprint(
+                agent_name="结构完整性分析师",
+                role="structure",
+                dimension="结构完整性",
+                weight=1.0,
+                system_prompt="你是结构完整性分析师",
+                user_prompt_template="请审核：{chapter_plan}",
+                output_format="json",
+            )
+        )
+
+        result = factory.execute_agent(agent, {"chapter_plan": "第1章到第8章"}, model="test-model")
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.score, 86)
+        self.assertEqual(result.highlights, ["章节计划完整"])
+        self.assertEqual(result.reasoning, "结构完整，逻辑清晰")
+
 
 class MasterAgentBlueprintTests(unittest.TestCase):
+    def test_master_blueprint_prompt_exposes_outline_review_content_variables(self) -> None:
+        for variable in (
+            "{{working_title}}",
+            "{{logline}}",
+            "{{world_notes}}",
+            "{{character_notes}}",
+            "{{chapter_plan}}",
+        ):
+            self.assertIn(variable, MASTER_BLUEPRINT_PROMPT)
+
+        self.assertIn("outline_review", MASTER_BLUEPRINT_PROMPT)
+        self.assertIn("大纲", MASTER_BLUEPRINT_PROMPT)
+
     def test_parse_blueprints_deduplicates_overlapping_agents_and_keeps_single_synthesis(self) -> None:
         master = MasterAgent(gateway_client=None)
         response = {

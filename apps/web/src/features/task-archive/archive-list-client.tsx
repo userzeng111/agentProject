@@ -8,6 +8,7 @@ import {
   Button,
   Card,
   CardContent,
+  Chip,
   Container,
   Pagination,
   Stack,
@@ -15,10 +16,23 @@ import {
 } from "@mui/material";
 import { getArchiveList } from "@/lib/api";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { archiveDetailHref } from "@/lib/task-routes";
+import { projectViewHref } from "@/lib/task-routes";
 import { ArchiveTaskSummary } from "@/lib/types";
 
 const PAGE_SIZE = 10;
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return "未记录";
+  try {
+    return new Date(value).toLocaleString("zh-CN");
+  } catch {
+    return value;
+  }
+}
+
+function formatNumber(value?: number | null): string {
+  return Number(value ?? 0).toLocaleString("zh-CN");
+}
 
 export default function ArchiveListClient() {
   const [items, setItems] = useState<ArchiveTaskSummary[]>([]);
@@ -54,105 +68,136 @@ export default function ArchiveListClient() {
 
   return (
     <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-    <Stack spacing={3} className="page-fade-in">
-      {/* 标题 */}
-      <Stack
-        direction={{ xs: "column", md: "row" }}
-        spacing={2}
-        justifyContent="space-between"
-        alignItems={{ xs: "flex-start", md: "center" }}
-      >
-        <Stack spacing={1}>
-          <Stack direction="row" spacing={1.5} alignItems="baseline">
-            <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-              归档任务
-            </Typography>
-            {total > 0 && (
-              <Typography variant="body2" color="text.secondary">
-                共 {total} 条
+      <Stack spacing={3} className="page-fade-in" sx={{ minWidth: 0 }}>
+        {/* 标题 */}
+        <Stack
+          direction={{ xs: "column", md: "row" }}
+          spacing={2}
+          justifyContent="space-between"
+          alignItems={{ xs: "flex-start", md: "center" }}
+          sx={{ minWidth: 0 }}
+        >
+          <Stack spacing={1} sx={{ minWidth: 0 }}>
+            <Stack direction="row" spacing={1.5} alignItems="baseline" flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+              <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)", overflowWrap: "anywhere" }}>
+                归档任务
               </Typography>
-            )}
+              {total > 0 && (
+                <Typography variant="body2" color="text.secondary">
+                  共 {total} 条
+                </Typography>
+              )}
+            </Stack>
+            <Typography color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+              用户确认归档后的作品会进入这里，可快速浏览正文、章节、模型和事件尾流。
+            </Typography>
           </Stack>
-          <Typography color="text.secondary">
-            已完成任务会自动归档到这里，可查看正文、章节和事件尾流。
-          </Typography>
+          <Button component={Link} href="/" variant="outlined" size="small" sx={{ flexShrink: 0 }}>
+            返回首页
+          </Button>
         </Stack>
-        <Button component={Link} href="/" variant="outlined" size="small">
-          返回首页
-        </Button>
-      </Stack>
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" role="alert">{error}</Alert> : null}
 
-      {loading ? (
-        <Stack spacing={2}>
-          {[1, 2, 3].map((i) => (
-            <Card key={i}>
-              <CardContent>
-                <Stack spacing={1.5}>
-                  <Box sx={{ height: 24, width: "40%", bgcolor: "action.hover", borderRadius: 1 }} />
-                  <Box sx={{ height: 16, width: "80%", bgcolor: "action.hover", borderRadius: 1 }} />
-                  <Box sx={{ height: 14, width: "60%", bgcolor: "action.hover", borderRadius: 1 }} />
-                </Stack>
-              </CardContent>
-            </Card>
-          ))}
-        </Stack>
-      ) : items.length ? (
-        <>
-          <Stack spacing={2}>
-            {items.map((item) => (
-              <Card key={item.task_id} variant="outlined" sx={{ borderRadius: 3 }}>
+        {loading ? (
+          <Stack spacing={2} role="status" aria-live="polite">
+            {[1, 2, 3].map((i) => (
+              <Card key={i}>
                 <CardContent>
                   <Stack spacing={1.5}>
-                    <Typography variant="h6">{item.title}</Typography>
-                    <Typography color="text.secondary">{item.summary}</Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      类型：
-                      {formatTaskTypeLabel({
-                        creativeMode: item.creative_mode,
-                        novelSize: item.novel_size,
-                        mode: item.mode,
-                      })}
-                      {" · "}任务默认模型：{item.default_model_id || item.model_id || "默认模型"}
-                      {item.last_action_model_id ? ` · 最近一次动作模型：${item.last_action_model_id}` : ""}
-                      {" · "}更新时间：
-                      {new Date(item.updated_at).toLocaleString()}
-                    </Typography>
-                    <Button
-                      component={Link}
-                      href={archiveDetailHref(item.task_id)}
-                      variant="text"
-                      sx={{ alignSelf: "flex-start", px: 0 }}
-                    >
-                      查看归档详情
-                    </Button>
+                    <Box sx={{ height: 24, width: "40%", bgcolor: "action.hover", borderRadius: 1 }} />
+                    <Box sx={{ height: 16, width: "80%", bgcolor: "action.hover", borderRadius: 1 }} />
+                    <Box sx={{ height: 14, width: "60%", bgcolor: "action.hover", borderRadius: 1 }} />
                   </Stack>
                 </CardContent>
               </Card>
             ))}
           </Stack>
+        ) : items.length ? (
+          <>
+            <Stack spacing={2}>
+              {items.map((item) => {
+                const taskTypeLabel = formatTaskTypeLabel({
+                  creativeMode: item.creative_mode,
+                  novelSize: item.novel_size,
+                  mode: item.mode,
+                });
+                const taskCreativeModel = item.creative_model_id || item.model_id || "未设置";
+                return (
+                  <Card key={item.task_id} data-testid="archive-card" variant="outlined" sx={{ borderRadius: 2, minWidth: 0 }}>
+                    <CardContent>
+                      <Stack spacing={2} sx={{ minWidth: 0 }}>
+                        <Stack
+                          direction={{ xs: "column", sm: "row" }}
+                          spacing={1.5}
+                          justifyContent="space-between"
+                          alignItems={{ xs: "flex-start", sm: "flex-start" }}
+                          sx={{ minWidth: 0 }}
+                        >
+                          <Stack spacing={0.75} sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography variant="h6" sx={{ overflowWrap: "anywhere" }}>
+                              {item.title}
+                            </Typography>
+                            <Typography color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                              {item.summary || "暂无归档摘要。"}
+                            </Typography>
+                          </Stack>
+                          <Button
+                            component={Link}
+                            href={projectViewHref(item.task_id, "archive")}
+                            variant="outlined"
+                            size="small"
+                            sx={{ flexShrink: 0 }}
+                          >
+                            查看归档详情
+                          </Button>
+                        </Stack>
 
-          {totalPages > 1 && (
-            <Box sx={{ display: "flex", justifyContent: "center" }}>
-              <Pagination
-                count={totalPages}
-                page={page}
-                onChange={handlePageChange}
-                shape="rounded"
-                size="large"
-              />
-            </Box>
-          )}
-        </>
-      ) : (
-        <Card>
-          <CardContent>
-            <Typography color="text.secondary">当前还没有可浏览的归档任务。</Typography>
-          </CardContent>
-        </Card>
-      )}
-    </Stack>
+                        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ minWidth: 0 }}>
+                          <Chip size="small" label={`章节：${formatNumber(item.chapter_count)}`} />
+                          <Chip size="small" label={`字数：${formatNumber(item.word_count)}`} />
+                          <Chip size="small" label={taskTypeLabel} variant="outlined" />
+                        </Stack>
+
+                        <Stack spacing={0.5} sx={{ minWidth: 0 }}>
+                          <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                            任务创作模型：{taskCreativeModel}
+                          </Typography>
+                          {item.last_action_model_id ? (
+                            <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                              最近一次动作模型：{item.last_action_model_id}
+                            </Typography>
+                          ) : null}
+                          <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+                            更新时间：{formatDateTime(item.updated_at)}
+                          </Typography>
+                        </Stack>
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </Stack>
+
+            {totalPages > 1 && (
+              <Box sx={{ display: "flex", justifyContent: "center", minWidth: 0 }}>
+                <Pagination count={totalPages} page={page} onChange={handlePageChange} shape="rounded" size="large" />
+              </Box>
+            )}
+          </>
+        ) : (
+          <Card>
+            <CardContent>
+              <Stack spacing={1.5}>
+                <Typography color="text.secondary">当前还没有可浏览的归档任务。</Typography>
+                <Button component={Link} href="/" variant="outlined" size="small" sx={{ alignSelf: "flex-start" }}>
+                  返回首页
+                </Button>
+              </Stack>
+            </CardContent>
+          </Card>
+        )}
+      </Stack>
     </Container>
   );
 }

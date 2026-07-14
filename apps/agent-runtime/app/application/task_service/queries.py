@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from app.observability import get_logger
+import logging
 from typing import Any
 
 
@@ -21,16 +21,19 @@ from app.domain.models import (
     TaskSummary,
     WorkspaceResponse,
 )
+from app.storage import db_repository
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
+LLM_TOKEN_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cached_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+    "reasoning_tokens",
+)
 
 
 class TaskServiceQueriesMixin:
@@ -43,13 +46,6 @@ class TaskServiceQueriesMixin:
 
     def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
         return self.model_catalog.list_models_payload(force_refresh=force_refresh)
-
-    def update_default_model(self, model_id: str) -> dict[str, Any]:
-        """更新默认模型，同时持久化到配置文件并更新运行时状态。"""
-        result = self.model_catalog.update_default_model(model_id)
-        # 同步到 StoryEngine，使其立即生效
-        self.engine.set_runtime_default_model(model_id)
-        return result
 
     def get_dashboard(self) -> DashboardResponse:
         tasks = sorted(self.store._tasks.values(), key=lambda item: item.updated_at, reverse=True)
@@ -154,6 +150,9 @@ class TaskServiceQueriesMixin:
             story_plan=story_plan_payload,
         )
 
+    def archive_completed_task(self, task_id: str) -> TaskRecord:
+        return self.store.archive_completed_task(task_id)
+
     def get_workspace(self, task_id: str) -> WorkspaceResponse:
         task = self.store.get(task_id)
         task, reconciliation = self._reconcile_task_for_read(task)
@@ -170,6 +169,17 @@ class TaskServiceQueriesMixin:
         recent_events = chapter_events + recent_other_events
         recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         outline_batch = task.pending_review.outline_batch if task.pending_review else None
+        outline_phase = outline_batch.phase if outline_batch else ""
+        outline_completed_count = outline_batch.completed_count if outline_batch else 0
+        outline_total_count = outline_batch.total_count if outline_batch else 0
+        if outline_batch is None:
+            outline_summary = db_repository.get_chapter_plan_batch_workspace_summary(task.id)
+            if outline_summary is not None:
+                outline_phase = str(outline_summary["phase"])
+                outline_completed_count = int(outline_summary["approved_count"])
+                outline_total_count = int(outline_summary["total_count"])
+        context_status = self._load_context_status(task.id)
+        response_cache_status = self._load_response_cache_status(task)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
@@ -177,16 +187,19 @@ class TaskServiceQueriesMixin:
             available_tabs=self._workspace_tabs(task),
             **recovery_contract,
             request_preview=self._request_preview(task),
-            context_status=self._load_context_status(task.id),
-            response_cache_status=self._load_response_cache_status(task),
+            context_status=context_status,
+            response_cache_status=response_cache_status,
+            pending_review_summary=self._build_pending_review_summary(task),
+            rag_status=self._build_rag_status(task, context_status),
             llm_report=self._build_llm_report(task),
             novel_progress=self._novel_progress(task),
             sources=task.sources,
             supervisor_plan=task.supervisor_plan,
             agent_runs=task.agent_runs,
-            outline_phase=outline_batch.phase if outline_batch else "",
-            outline_completed_count=outline_batch.completed_count if outline_batch else 0,
-            outline_total_count=outline_batch.total_count if outline_batch else 0,
+            auto_review_trace=task.auto_review_trace or [],
+            outline_phase=outline_phase,
+            outline_completed_count=outline_completed_count,
+            outline_total_count=outline_total_count,
         )
 
     def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:
@@ -379,8 +392,9 @@ class TaskServiceQueriesMixin:
     def _to_summary(self, task: TaskRecord) -> TaskSummary:
         title = task.story_plan.working_title if task.story_plan else (task.input.title_hint or task.input.prompt[:24] or task.id)
         summary = task.events[-1].message if task.events else ""
-        model_id = task.model_id or self.engine.settings.default_chat_model
+        model_id = (task.model_id or "").strip()
         review_model_meta = self._auto_review_model_metadata(task)
+        chapter_count, word_count = self._archive_metrics(task)
         last_error_detail = task.error_message
         for event in reversed(task.events):
             if event.event_type == "task.error_recorded":
@@ -397,7 +411,6 @@ class TaskServiceQueriesMixin:
             chapter_word_min=task.chapter_word_min,
             model_id=model_id,
             creative_model_id=model_id,
-            default_model_id=model_id,
             last_action_model_id=task.last_action_model_id,
             last_action_kind=task.last_action_kind,
             auto_review_model_mode=review_model_meta["auto_review_model_mode"],
@@ -407,6 +420,8 @@ class TaskServiceQueriesMixin:
             current_stage=task.current_stage,
             current_unit=task.current_unit,
             progress=task.progress,
+            chapter_count=chapter_count,
+            word_count=word_count,
             updated_at=task.updated_at,
             summary=summary,
             error_message=task.error_message,
@@ -420,12 +435,34 @@ class TaskServiceQueriesMixin:
             },
         )
 
+    def _archive_metrics(self, task: TaskRecord) -> tuple[int | None, int | None]:
+        if task.draft_result is not None:
+            chapters = task.draft_result.chapters
+            return len(chapters), sum(self._count_text_words(chapter.content) for chapter in chapters)
+        if task.story_plan is not None:
+            return len(task.story_plan.chapter_plan), None
+        return None, None
+
+    @staticmethod
+    def _count_text_words(text: str | None) -> int:
+        if not text:
+            return 0
+        chinese_chars = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+        english_words = 0
+        in_word = False
+        for char in text:
+            if char.isascii() and char.isalpha():
+                if not in_word:
+                    english_words += 1
+                    in_word = True
+            else:
+                in_word = False
+        return chinese_chars + english_words
+
     def _model_summary(self) -> dict[str, Any]:
         models = self.model_catalog.list_models()
         supported_models = [item["id"] for item in models if isinstance(item, dict) and item.get("id")]
-        default_model = self.model_catalog._effective_default_model()
         return {
-            "default_model": default_model,
             "supported_models": supported_models,
         }
 
@@ -649,13 +686,12 @@ class TaskServiceQueriesMixin:
         ]
 
     def _request_preview(self, task: TaskRecord) -> dict[str, Any]:
-        model_id = task.model_id or self.engine.settings.default_chat_model
+        model_id = (task.model_id or "").strip()
         review_model_meta = self._auto_review_model_metadata(task)
         return {
             "prompt": task.input.prompt,
             "model_id": model_id,
             "creative_model_id": model_id,
-            "default_model_id": model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "auto_review_model_mode": review_model_meta["auto_review_model_mode"],
@@ -816,9 +852,246 @@ class TaskServiceQueriesMixin:
             status["exchange_label"] = payload.get("exchange_label")
         return status
 
+    def _build_pending_review_summary(self, task: TaskRecord) -> dict[str, Any]:
+        stage = task.current_stage or task.status.value
+        review = task.pending_review
+        if review is None:
+            return self._empty_pending_review_summary(stage)
+
+        review_type = review.type or ""
+        expected_status_by_review_type = {
+            "outline_review": TaskStatus.WAITING_OUTLINE_REVIEW,
+            "chapter_pair_review": TaskStatus.WAITING_CHAPTER_REVIEW,
+            "verification_review": TaskStatus.WAITING_VERIFICATION_REVIEW,
+        }
+        if task.status is not expected_status_by_review_type.get(review_type):
+            return self._empty_pending_review_summary(stage)
+
+        outline_batch = review.outline_batch
+        summary: dict[str, Any] = {
+            "present": True,
+            "review_type": review_type,
+            "stage": stage,
+            "batch_index": None,
+            "revision_count": review.revision_count,
+            "outline_phase": outline_batch.phase if outline_batch else "",
+            "summary": self._short_debug_summary(review.summary),
+        }
+
+        if review_type == "chapter_pair_review":
+            summary["batch_index"] = review.batch_index
+            summary["revision_count"] = review.chapter_pair_revision_count
+            summary["summary"] = self._chapter_pair_review_summary(review.batch_index, review.completed_count)
+            return summary
+
+        if review_type == "verification_review":
+            summary["revision_count"] = review.verification_revision_count
+            return summary
+
+        if review_type == "outline_review" and outline_batch is not None:
+            summary["outline_phase"] = outline_batch.phase
+            summary["batch_index"] = outline_batch.batch_index
+            if outline_batch.phase == "chapter_batches":
+                summary["summary"] = self._outline_batch_review_summary(outline_batch)
+        return summary
+
+    @staticmethod
+    def _empty_pending_review_summary(stage: str) -> dict[str, Any]:
+        return {
+            "present": False,
+            "review_type": "",
+            "stage": stage,
+            "batch_index": None,
+            "revision_count": 0,
+            "outline_phase": "",
+            "summary": "当前没有待审核内容。",
+        }
+
+    def _build_rag_status(self, task: TaskRecord, context_status: dict[str, Any]) -> dict[str, Any]:
+        rag_service = self.rag_service
+        enabled = rag_service is not None
+        ready = False
+        last_error = ""
+
+        if rag_service is not None:
+            config = getattr(rag_service, "config", None)
+            if hasattr(config, "enabled"):
+                enabled = bool(getattr(config, "enabled"))
+            try:
+                ready = bool(rag_service.is_ready())
+            except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                logger.warning("读取 RAG 工作区就绪状态失败: %s", exc)
+                ready = False
+                last_error = str(exc)
+            if not ready and not last_error:
+                try:
+                    last_error = str(rag_service.readiness_error() or "")
+                except Exception as exc:  # pragma: no cover - 具体异常类型由外部 RAG 实现决定
+                    logger.warning("读取 RAG 工作区未就绪原因失败: %s", exc)
+                    last_error = str(exc)
+
+        last_query_stage = ""
+        injected = False
+        injection_evidence = ""
+
+        event_evidence = self._rag_event_evidence(task)
+        if event_evidence:
+            injected = True
+            injection_evidence = "event"
+            last_query_stage = event_evidence.get("stage", "")
+
+        if not injected:
+            snapshot_evidence = self._rag_context_snapshot_evidence(task.id)
+            if snapshot_evidence:
+                injected = True
+                injection_evidence = "context_snapshot"
+                last_query_stage = snapshot_evidence.get("stage", "")
+
+        if not last_query_stage:
+            last_query_stage = self._rag_last_stage_from_events(task)
+
+        if not enabled:
+            summary = "RAG 未启用。"
+        elif ready:
+            summary = "RAG 已启用且索引可用。"
+        else:
+            summary = "RAG 已启用但尚未就绪。"
+
+        return {
+            "enabled": enabled,
+            "ready": ready if enabled else False,
+            "source": "workspace",
+            "summary": summary,
+            "last_query_stage": last_query_stage,
+            "last_error": last_error,
+            "injected": injected,
+            "injection_evidence": injection_evidence,
+        }
+
+    @staticmethod
+    def _short_debug_summary(value: str | None, max_chars: int = 80) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars]}..."
+
+    @staticmethod
+    def _chapter_pair_review_summary(batch_index: int | None, completed_count: int | None) -> str:
+        if batch_index is not None:
+            display_batch = int(batch_index) + 1
+            return f"等待第 {display_batch} 批章节审核。"
+        if completed_count is not None:
+            return f"等待已完成 {completed_count} 章后的章节审核。"
+        return "等待章节审核。"
+
+    @staticmethod
+    def _outline_batch_review_summary(outline_batch: Any) -> str:
+        current_plans = outline_batch.current_batch_plans or []
+        if current_plans:
+            first = current_plans[0].number
+            last = current_plans[-1].number
+            return f"等待第 {first}-{last} 章章节计划审核。"
+        if outline_batch.total_count:
+            return f"等待章节计划批次审核，已确认 {outline_batch.completed_count}/{outline_batch.total_count} 章。"
+        return "等待章节计划批次审核。"
+
+    def _rag_event_evidence(self, task: TaskRecord) -> dict[str, str]:
+        for event in reversed(task.events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            if self._event_has_rag_injection_evidence(event.event_type, payload):
+                return {"stage": event.stage or ""}
+        return {}
+
+    @staticmethod
+    def _event_has_rag_injection_evidence(event_type: str, payload: dict[str, Any]) -> bool:
+        if TaskServiceQueriesMixin._rag_event_type_blocks_injection(event_type):
+            return False
+        evidence_keys = (
+            "rag_injected",
+            "rag_context_injected",
+            "rag_augmented",
+        )
+        if any(bool(payload.get(key)) for key in evidence_keys):
+            return True
+        count_keys = ("rag_hit_count", "rag_context_count", "selected_context_count")
+        for key in count_keys:
+            value = payload.get(key)
+            if isinstance(value, int) and value > 0:
+                return True
+        for key in ("selected_contexts", "selected_hits", "hits"):
+            value = payload.get(key)
+            if isinstance(value, list) and len(value) > 0:
+                return True
+        return False
+
+    @staticmethod
+    def _rag_event_type_blocks_injection(event_type: str) -> bool:
+        normalized = event_type.strip().lower()
+        blocked_prefixes = (
+            "rag.search_failed",
+            "rag.search_skipped",
+            *TaskServiceQueriesMixin._rag_stage_denied_event_type_prefixes(),
+        )
+        return any(normalized.startswith(prefix) for prefix in blocked_prefixes)
+
+    @staticmethod
+    def _rag_stage_denied_event_type_prefixes() -> tuple[str, ...]:
+        return (
+            "rag.status",
+            "rag.rebuild",
+            "rag_rebuild",
+        )
+
+    @staticmethod
+    def _rag_event_type_blocks_stage(event_type: str) -> bool:
+        normalized = event_type.strip().lower()
+        return any(
+            normalized.startswith(prefix)
+            for prefix in TaskServiceQueriesMixin._rag_stage_denied_event_type_prefixes()
+        )
+
+    def _rag_context_snapshot_evidence(self, task_id: str) -> dict[str, str]:
+        for relative_path in ("context/drafting/draft-context.json", "context/planning/outline-context.json"):
+            try:
+                snapshot = self.store.read_json(task_id, relative_path)
+            except FileNotFoundError:
+                continue
+            compressed_references = snapshot.get("compressed_references")
+            if self._compressed_references_have_rag_source(compressed_references):
+                return {"stage": str(snapshot.get("stage") or "")}
+        return {}
+
+    @staticmethod
+    def _compressed_references_have_rag_source(compressed_references: Any) -> bool:
+        if not isinstance(compressed_references, list):
+            return False
+        for item in compressed_references:
+            if not isinstance(item, dict):
+                continue
+            for key in ("source_id", "id", "source"):
+                value = item.get(key)
+                if isinstance(value, str) and value.strip().startswith("rag-"):
+                    return True
+        return False
+
+    @staticmethod
+    def _rag_last_stage_from_events(task: TaskRecord) -> str:
+        for event in reversed(task.events):
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            event_type = event.event_type.lower()
+            if TaskServiceQueriesMixin._rag_event_type_blocks_stage(event_type):
+                continue
+            has_rag_payload_key = any(
+                str(key).lower().startswith("rag_")
+                or str(key).lower() in {"selected_contexts", "selected_hits", "hits"}
+                for key in payload.keys()
+            )
+            if event_type.startswith("rag.") or event_type.startswith("rag_") or has_rag_payload_key:
+                return event.stage or ""
+        return ""
+
     def _build_llm_report(self, task: TaskRecord) -> dict[str, Any]:
-        token_fields = ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens")
-        usage_total = {field: 0 for field in token_fields}
+        usage_total = {field: 0 for field in LLM_TOKEN_FIELDS}
         by_model: dict[str, dict[str, Any]] = {}
         by_stage: dict[str, dict[str, Any]] = {}
         timing_by_stage: dict[str, dict[str, Any]] = {}
@@ -829,6 +1102,9 @@ class TaskServiceQueriesMixin:
         usage_count = 0
         exchange_count = 0
         cache_hit_count = 0
+        runtime_response_cache_hit_count = 0
+        provider_prompt_cache_hit_count = 0
+        parse_failed_request_count = 0
         timing_count = 0
 
         for event in task.events:
@@ -837,7 +1113,14 @@ class TaskServiceQueriesMixin:
                 usage = self._normalize_usage_tokens(payload)
                 model = str(payload.get("model") or task.model_id or "unknown")
                 stage = event.stage or "unknown"
-                for field in token_fields:
+                provider_prompt_cache_hit = (
+                    usage["cached_tokens"] > 0
+                    or usage["cache_read_input_tokens"] > 0
+                    or usage["cache_creation_input_tokens"] > 0
+                )
+                if provider_prompt_cache_hit:
+                    provider_prompt_cache_hit_count += 1
+                for field in LLM_TOKEN_FIELDS:
                     usage_total[field] += usage[field]
                 self._add_llm_usage_bucket(by_model, model, usage)
                 self._add_llm_usage_bucket(by_stage, stage, usage)
@@ -847,12 +1130,14 @@ class TaskServiceQueriesMixin:
                     "unit_id": event.unit_id or "",
                     "model": model,
                     "finish_reason": payload.get("finish_reason"),
+                    "provider_prompt_cache_hit": provider_prompt_cache_hit,
                     **usage,
                 }
             elif event.event_type in {"context.history.updated", "cache.hit"}:
                 exchange_count += 1
                 cache_hit = event.event_type == "cache.hit" or bool(payload.get("cache_hit"))
                 if cache_hit:
+                    runtime_response_cache_hit_count += 1
                     cache_hit_count += 1
                 latest_exchange = {
                     "stage": event.stage,
@@ -916,16 +1201,37 @@ class TaskServiceQueriesMixin:
                             slowest_step = detail
                         if first_token_ms > 0 and (slowest_first_token is None or first_token_ms > slowest_first_token["first_token_ms"]):
                             slowest_first_token = detail
+            elif event.event_type == "model.response.parse_failed":
+                parse_failed_request_count += 1
 
-        if usage_count == 0 and exchange_count == 0 and timing_count == 0:
+        if usage_count == 0 and exchange_count == 0 and timing_count == 0 and parse_failed_request_count == 0:
             return {}
+        request_count = max(
+            usage_count,
+            timing_count,
+            max(exchange_count - runtime_response_cache_hit_count, 0),
+        ) + parse_failed_request_count
+        usage_missing_count = max(request_count - usage_count, 0)
+        if request_count <= 0:
+            usage_status = "unknown"
+        elif usage_count == 0:
+            usage_status = "missing"
+        elif usage_missing_count > 0:
+            usage_status = "partial"
+        else:
+            usage_status = "complete"
         return {
             "usage_total": usage_total,
             "usage_count": usage_count,
+            "usage_missing_count": usage_missing_count,
+            "usage_status": usage_status,
+            "request_count": request_count,
             "by_model": by_model,
             "by_stage": by_stage,
             "exchange_count": exchange_count,
             "cache_hit_count": cache_hit_count,
+            "runtime_response_cache_hit_count": runtime_response_cache_hit_count,
+            "provider_prompt_cache_hit_count": provider_prompt_cache_hit_count,
             "timing_count": timing_count,
             "timing_by_stage": timing_by_stage,
             "slowest_step": slowest_step or {},
@@ -935,17 +1241,83 @@ class TaskServiceQueriesMixin:
         }
 
     def _normalize_usage_tokens(self, payload: dict[str, Any]) -> dict[str, int]:
-        input_tokens = self._safe_non_negative_int(payload.get("input_tokens"), payload.get("prompt_tokens"))
-        output_tokens = self._safe_non_negative_int(payload.get("output_tokens"), payload.get("completion_tokens"))
-        total_tokens = self._safe_non_negative_int(payload.get("total_tokens"))
+        nested_usage = self._safe_dict(payload.get("usage"))
+        prompt_details = self._safe_dict(
+            payload.get("prompt_tokens_details"),
+            nested_usage.get("prompt_tokens_details"),
+        )
+        completion_details = self._safe_dict(
+            payload.get("completion_tokens_details"),
+            nested_usage.get("completion_tokens_details"),
+        )
+        input_details = self._safe_dict(
+            payload.get("input_tokens_details"),
+            payload.get("input_token_details"),
+            nested_usage.get("input_tokens_details"),
+            nested_usage.get("input_token_details"),
+        )
+        output_details = self._safe_dict(
+            payload.get("output_tokens_details"),
+            payload.get("output_token_details"),
+            nested_usage.get("output_tokens_details"),
+            nested_usage.get("output_token_details"),
+        )
+        input_tokens = self._safe_first_positive_int(
+            payload.get("input_tokens"),
+            payload.get("prompt_tokens"),
+            nested_usage.get("input_tokens"),
+            nested_usage.get("prompt_tokens"),
+        )
+        output_tokens = self._safe_first_positive_int(
+            payload.get("output_tokens"),
+            payload.get("completion_tokens"),
+            nested_usage.get("output_tokens"),
+            nested_usage.get("completion_tokens"),
+        )
+        total_tokens = self._safe_first_positive_int(payload.get("total_tokens"), nested_usage.get("total_tokens"))
         if total_tokens == 0:
             total_tokens = input_tokens + output_tokens
+        cache_creation_input_tokens = self._safe_first_positive_int(
+            payload.get("cache_creation_input_tokens"),
+            nested_usage.get("cache_creation_input_tokens"),
+            prompt_details.get("cache_creation_input_tokens"),
+            input_details.get("cache_creation_input_tokens"),
+            input_details.get("cache_creation"),
+            input_details.get("cache_creation_tokens"),
+        )
+        if cache_creation_input_tokens == 0:
+            cache_creation_input_tokens = self._safe_non_negative_int(
+                payload.get("claude_cache_creation_5_m_tokens")
+                or nested_usage.get("claude_cache_creation_5_m_tokens")
+            ) + self._safe_non_negative_int(
+                payload.get("claude_cache_creation_1_h_tokens")
+                or nested_usage.get("claude_cache_creation_1_h_tokens")
+            )
         return {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
-            "cached_tokens": self._safe_non_negative_int(payload.get("cached_tokens")),
-            "cache_read_input_tokens": self._safe_non_negative_int(payload.get("cache_read_input_tokens")),
+            "cached_tokens": self._safe_first_positive_int(
+                payload.get("cached_tokens"),
+                nested_usage.get("cached_tokens"),
+                prompt_details.get("cached_tokens"),
+                input_details.get("cached_tokens"),
+            ),
+            "cache_read_input_tokens": self._safe_first_positive_int(
+                payload.get("cache_read_input_tokens"),
+                nested_usage.get("cache_read_input_tokens"),
+                prompt_details.get("cache_read_input_tokens"),
+                input_details.get("cache_read_input_tokens"),
+                input_details.get("cache_read"),
+                input_details.get("cache_read_tokens"),
+            ),
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "reasoning_tokens": self._safe_first_positive_int(
+                payload.get("reasoning_tokens"),
+                nested_usage.get("reasoning_tokens"),
+                completion_details.get("reasoning_tokens"),
+                output_details.get("reasoning_tokens"),
+            ),
         }
 
     def _add_llm_usage_bucket(
@@ -957,17 +1329,20 @@ class TaskServiceQueriesMixin:
         bucket = buckets.setdefault(
             key,
             {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cached_tokens": 0,
-                "cache_read_input_tokens": 0,
+                **{field: 0 for field in LLM_TOKEN_FIELDS},
                 "usage_count": 0,
             },
         )
-        for field in ("input_tokens", "output_tokens", "total_tokens", "cached_tokens", "cache_read_input_tokens"):
+        for field in LLM_TOKEN_FIELDS:
             bucket[field] += usage[field]
         bucket["usage_count"] += 1
+
+    @staticmethod
+    def _safe_dict(*values: Any) -> dict[str, Any]:
+        for value in values:
+            if isinstance(value, dict):
+                return value
+        return {}
 
     @staticmethod
     def _safe_non_negative_float(*values: Any) -> float:
@@ -993,29 +1368,21 @@ class TaskServiceQueriesMixin:
             return max(parsed, 0)
         return 0
 
-    def _load_message_history(
-        self,
-        task_id: str,
-        stage: str,
-        filename: str,
-    ) -> list[dict[str, str]]:
-        try:
-            payload = self.store.read_json(task_id, f"context/{stage}/{filename}.json")
-        except FileNotFoundError:
-            return []
-        messages = payload.get("messages")
-        if not isinstance(messages, list):
-            return []
-        normalized: list[dict[str, str]] = []
-        for item in messages:
-            if not isinstance(item, dict):
+    @staticmethod
+    def _safe_first_positive_int(*values: Any) -> int:
+        fallback = 0
+        for value in values:
+            if value is None or isinstance(value, bool):
                 continue
-            role = str(item.get("role") or "user").strip() or "user"
-            content = str(item.get("content") or "").strip()
-            if not content:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
                 continue
-            normalized.append({"role": role, "content": content})
-        return normalized
+            parsed = max(parsed, 0)
+            if parsed > 0:
+                return parsed
+            fallback = max(fallback, parsed)
+        return fallback
 
     def _context_status_from_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         budget = snapshot.get("budget") if isinstance(snapshot.get("budget"), dict) else {}

@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import TaskResultClient from "@/features/task-result/task-result-client";
+import LegacyResultPage from "./legacy-result-page";
 
 export default function ResultPage() {
   return (
     <Suspense fallback={null}>
-      <TaskResultClient />
+      <LegacyResultPage />
     </Suspense>
   );
 }

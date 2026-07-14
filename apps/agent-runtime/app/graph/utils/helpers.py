@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from app.context.models import ModelContextProfile, ReferenceMaterial
-from app.llm.model_capabilities_config import resolve_context_window
 from app.llm.model_catalog import ModelCatalogService
 
 from app.graph.state import WorkflowState
@@ -13,30 +12,27 @@ def _resolve_model_profile(
     model_catalog: ModelCatalogService | None,
     model_id: str | None,
 ) -> ModelContextProfile:
-    fallback_model_id = (model_id or "").strip() or "gpt-5.4"
+    requested_model_id = (model_id or "").strip()
+    if not requested_model_id:
+        raise ValueError("工作流缺少显式模型，无法构建上下文预算。")
     if model_catalog is None:
-        context_window = resolve_context_window(fallback_model_id)
-        max_input_tokens = int(context_window["max_input_tokens"])
-        max_output_tokens = int(context_window["max_output_tokens"])
-        return ModelContextProfile(
-            model_id=fallback_model_id,
-            provider="openai_compatible",
-            max_input_tokens=max_input_tokens,
-            max_output_tokens=max_output_tokens,
-            reserved_output_tokens=min(max_output_tokens, max_input_tokens),
-        )
-    profile = model_catalog.get_model_profile(fallback_model_id)
+        raise ValueError("模型目录服务未配置，无法验证当前供应商模型。")
+    profile = model_catalog.get_model_profile(requested_model_id)
+    source = str((profile.get("metadata") or {}).get("source") or "")
+    if "gateway" not in source:
+        raise ValueError(f"模型 {requested_model_id} 不在当前供应商模型目录中。")
     capabilities = profile.get("capabilities") if isinstance(profile.get("capabilities"), dict) else {}
     context_window = capabilities.get("context_window") if isinstance(capabilities.get("context_window"), dict) else {}
+    max_input_tokens = int(context_window.get("max_input_tokens") or 0)
+    max_output_tokens = int(context_window.get("max_output_tokens") or 0)
+    if max_input_tokens <= 0 or max_output_tokens <= 0:
+        raise ValueError(f"模型 {requested_model_id} 未提供可用上下文窗口。")
     return ModelContextProfile(
-        model_id=str(profile.get("id") or fallback_model_id),
+        model_id=str(profile.get("id") or requested_model_id),
         provider=str(profile.get("provider") or "openai_compatible"),
-        max_input_tokens=int(context_window["max_input_tokens"]),
-        max_output_tokens=int(context_window["max_output_tokens"]),
-        reserved_output_tokens=min(
-            int(context_window["max_output_tokens"]),
-            int(context_window["max_input_tokens"]),
-        ),
+        max_input_tokens=max_input_tokens,
+        max_output_tokens=max_output_tokens,
+        reserved_output_tokens=min(max_output_tokens, max_input_tokens),
         supports_runtime_cache=bool(
             (capabilities.get("cache") or {}).get("runtime_context_cache", True)
             if isinstance(capabilities.get("cache"), dict)

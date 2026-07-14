@@ -20,7 +20,11 @@ from app.llm.auto_reviewer import AutoReviewManager
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
 
-from tests.fakes import FakeGatewayClient, FakeStoryEngine
+from tests.fakes import (
+    FakeGatewayClient,
+    FakeStoryEngine,
+    build_verified_gateway_model_catalog,
+)
 
 
 class E2EFakeEngine(FakeStoryEngine):
@@ -28,17 +32,14 @@ class E2EFakeEngine(FakeStoryEngine):
         super().__init__()
         self.settings = settings or Settings(
             OPENAI_API_KEY="test-key",
-            DEFAULT_CHAT_MODEL="gpt-5.4",
             tasklog_root="/tmp",
         )
         self.gateway_client = FakeGatewayClient()
         self.gateway_client.list_models = lambda: [
             {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "auditor-x", "object": "model", "owned_by": "test"},
+            {"id": "synthesis-y", "object": "model", "owned_by": "test"},
         ]
-
-    def set_runtime_default_model(self, model_id: str) -> None:
-        self.settings.default_chat_model = model_id
-
 
 class TestE2EEnhancedValidation(unittest.TestCase):
     def _make_service(self, tmp_dir: str, engine: E2EFakeEngine, auto_review: bool = True) -> TaskService:
@@ -46,6 +47,10 @@ class TestE2EEnhancedValidation(unittest.TestCase):
         return TaskService(
             store=store,
             engine=engine,
+            model_catalog=build_verified_gateway_model_catalog(
+                engine.settings,
+                engine.gateway_client,
+            ),
             auto_review=auto_review,
             auto_review_policy={
                 "auditor_model": "auditor-x",
@@ -64,7 +69,6 @@ class TestE2EEnhancedValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             engine = E2EFakeEngine(settings=settings)
@@ -110,7 +114,6 @@ class TestE2EEnhancedValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             engine = E2EFakeEngine(settings=settings)
@@ -139,7 +142,6 @@ class TestE2EEnhancedValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             engine = E2EFakeEngine(settings=settings)
@@ -181,7 +183,6 @@ class TestE2EEnhancedValidation(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 OPENAI_API_KEY="test-key",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             engine = E2EFakeEngine(settings=settings)

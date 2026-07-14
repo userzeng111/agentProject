@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -13,6 +13,7 @@ import {
   Chip,
   Collapse,
   Container,
+  alpha,
   Divider,
   IconButton,
   List,
@@ -45,10 +46,14 @@ import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import { derivePrimaryRecoveryAction, filterRecoveryModels, resolveRecoveryPreview } from "@/features/task-recovery/recovery-state.mjs";
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
-import { resultHref, workspaceHref } from "@/lib/task-routes";
+import { projectViewHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse, VerificationIssue } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
+import { ProjectShell } from "@/components/project-shell";
+import { StageNav } from "@/components/stage-nav";
 import { getCurrentTraceRound, inferExecutionKind, splitTraceRounds, summarizeTraceRound } from "./trace-rounds.mjs";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
+import { normalizeTaskActionErrorMessage } from "@/features/task-run/task-action-state.mjs";
 
 const OUTLINE_STEPS = [
   { label: "创建", icon: <EditIcon fontSize="small" /> },
@@ -81,68 +86,22 @@ const VERIFY_STEPS = [
   { label: "结果", icon: <MenuBookIcon fontSize="small" /> },
 ];
 
-function StepIndicator({ steps, activeStep }: { steps: typeof OUTLINE_STEPS; activeStep: number }) {
+function ValidationErrorAlert({ message, modelId }: { message: string; modelId: string }) {
+  const href = getValidationLinkFromError(message, modelId);
   return (
-    <Card className="glass-card">
-      <CardContent sx={{ py: 2 }}>
-        <Stack direction="row" justifyContent="center" spacing={0} sx={{ width: "100%" }}>
-          {steps.map((step, index) => {
-            const isDone = index < activeStep;
-            const isActive = index === activeStep;
-            return (
-              <Box
-                key={step.label}
-                sx={{
-                  display: "flex",
-                  alignItems: "center",
-                  flex: index < steps.length - 1 ? 1 : 0,
-                  justifyContent: "center",
-                }}
-              >
-                <Stack spacing={0.5} alignItems="center" sx={{ minWidth: 64 }}>
-                  <Box
-                    sx={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: "50%",
-                      display: "grid",
-                      placeItems: "center",
-                      backgroundColor: isDone ? "success.main" : isActive ? "primary.main" : "rgba(29,42,39,0.08)",
-                      color: "#fff",
-                      transition: "all 0.3s",
-                    }}
-                  >
-                    {isDone ? <CheckCircleIcon fontSize="small" /> : step.icon}
-                  </Box>
-                  <Typography
-                    variant="caption"
-                    sx={{
-                      fontWeight: isActive ? 600 : 400,
-                      color: isActive ? "primary.main" : isDone ? "success.main" : "text.secondary",
-                    }}
-                  >
-                    {step.label}
-                  </Typography>
-                </Stack>
-                {index < steps.length - 1 && (
-                  <Box
-                    sx={{
-                      flex: 1,
-                      height: 2,
-                      mx: 1,
-                      mt: -2,
-                      backgroundColor: isDone ? "success.main" : "rgba(29,42,39,0.08)",
-                      transition: "all 0.3s",
-                      borderRadius: 1,
-                    }}
-                  />
-                )}
-              </Box>
-            );
-          })}
-        </Stack>
-      </CardContent>
-    </Card>
+    <Alert
+      severity="error"
+      role="alert"
+      action={
+        href ? (
+          <Button component={Link} href={href} color="inherit" size="small">
+            去 AI 对话验证
+          </Button>
+        ) : undefined
+      }
+    >
+      {message}
+    </Alert>
   );
 }
 
@@ -157,13 +116,13 @@ function formatActionKindLabel(kind?: string) {
 }
 
 function resolveReviewTaskModelId(review?: ReviewResponse | null) {
-  return review?.meta.creative_model_id || review?.meta.default_model_id || review?.meta.model_id || "";
+  return review?.meta.creative_model_id || review?.meta.model_id || "";
 }
 
 function formatReviewModelLabel(review: ReviewResponse) {
   if (review.meta.auto_review_model_mode === "follow_creative") {
     const creativeModelId = resolveReviewTaskModelId(review);
-    return `跟随创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
+    return `跟随任务创作模型${creativeModelId ? `（${creativeModelId}）` : ""}`;
   }
   return review.meta.review_model_id || "未设置";
 }
@@ -335,10 +294,12 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
               size="small"
               variant="outlined"
             />
-            <Tooltip title={expanded ? "收起详情" : "展开详情"}>
+            <Tooltip title={expanded === "all" ? "收起详情" : "展开详情"}>
               <IconButton
+                aria-label={expanded === "all" ? "收起详情" : "展开详情"}
+                aria-expanded={expanded === "all"}
                 size="small"
-                onClick={() => setExpanded(expanded ? null : "all")}
+                onClick={() => setExpanded(expanded === "all" ? null : "all")}
               >
                 <ExpandMoreIcon
                   sx={{
@@ -371,6 +332,10 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
             <Box key={agent.agent_id || `${agent.role || "agent"}-${index}`} sx={{ mb: 1 }}>
               {/* Agent 行 */}
               <Box
+                component="button"
+                type="button"
+                aria-expanded={isExpanded}
+                aria-controls={`agent-content-${index}`}
                 sx={{
                   display: "flex",
                   alignItems: "center",
@@ -380,7 +345,17 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                   borderRadius: 1,
                   bgcolor: "background.default",
                   cursor: "pointer",
+                  border: 0,
+                  width: "100%",
+                  font: "inherit",
+                  textAlign: "left",
+                  color: "inherit",
                   "&:hover": { bgcolor: "action.hover" },
+                  "&:focus-visible": {
+                    outline: "2px solid",
+                    outlineColor: "primary.main",
+                    outlineOffset: 2,
+                  },
                 }}
                 onClick={() => setExpanded(isExpanded ? null : `agent-${index}`)}
               >
@@ -420,7 +395,11 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                     variant="outlined"
                   />
                 )}
-                <IconButton size="small">
+                <Box
+                  component="span"
+                  aria-hidden="true"
+                  sx={{ display: "inline-flex", alignItems: "center", justifyContent: "center", p: 0.5 }}
+                >
                   <ExpandMoreIcon
                     sx={{
                       fontSize: 18,
@@ -428,12 +407,12 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                       transition: "0.2s",
                     }}
                   />
-                </IconButton>
+                </Box>
               </Box>
 
               {/* 展开详情 */}
               <Collapse in={isExpanded}>
-                <Box sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
+                <Box id={`agent-content-${index}`} sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
                   {/* 维度标签 */}
                   <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
                     {hasStructuredExecution && (
@@ -591,7 +570,7 @@ function ReviewActionModelSelector({
   modelRefresh,
   actionModelId,
   setActionModelId,
-  defaultModelId,
+  taskCreativeModelId,
   lastActionModelId,
   lastActionKind,
   reviewModelLabel,
@@ -601,7 +580,7 @@ function ReviewActionModelSelector({
   modelRefresh: ModelRefreshState;
   actionModelId: string;
   setActionModelId: (value: string) => void;
-  defaultModelId?: string;
+  taskCreativeModelId?: string;
   lastActionModelId?: string;
   lastActionKind?: string;
   reviewModelLabel?: string;
@@ -611,17 +590,17 @@ function ReviewActionModelSelector({
 
   return (
     <Box
-      sx={{
+      sx={(theme) => ({
         p: 2,
         borderRadius: 2,
         border: "1px solid",
         borderColor: "divider",
-        backgroundColor: "rgba(39, 100, 81, 0.03)",
-      }}
+        backgroundColor: alpha(theme.palette.primary.main, 0.03),
+      })}
     >
       <Stack spacing={1.5}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-          <Typography variant="subtitle2">审核后继续创作模型</Typography>
+          <Typography variant="subtitle2">审核后继续使用的任务创作模型</Typography>
           <Button size="small" variant="outlined" onClick={onRefreshModels}>
             刷新模型
           </Button>
@@ -634,7 +613,7 @@ function ReviewActionModelSelector({
           sx={{ maxWidth: 360 }}
         >
           <MenuItem value="">
-            <em>请选择审核后继续创作模型</em>
+            <em>请选择审核后继续使用的任务创作模型</em>
           </MenuItem>
           {models.length ? (
             models.map((model) => (
@@ -651,16 +630,16 @@ function ReviewActionModelSelector({
         {!models.length ? (
           <Alert severity="warning">当前没有可用于小说任务流的在线模型，请先刷新模型或检查网关配置。</Alert>
         ) : !resolvedModelId ? (
-          <Alert severity="warning">任务创作模型当前不在可用模型列表中，请先手动选择审核后继续创作模型。</Alert>
+          <Alert severity="warning">任务创作模型当前不在可用模型列表中，请先手动选择审核后继续使用的任务创作模型。</Alert>
         ) : null}
         <Typography variant="caption" color="text.secondary">
           {formatModelRefreshStatus(modelRefresh)}
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          默认沿用当前创作模型；点击通过或驳回后继续生成时可临时切换。自动审核模型由创建任务时的审核模型配置决定。
+          首次进入时可预填当前任务创作模型；模型失效后需手动重新选择。自动审核模型由创建任务时的审核模型配置决定。
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          创作模型：{defaultModelId || "未设置"}
+          任务创作模型：{taskCreativeModelId || "未设置"}
           {lastActionModelId
             ? ` · 最近一次创作动作模型：${lastActionModelId}${formatActionKindLabel(lastActionKind) ? `（${formatActionKindLabel(lastActionKind)}）` : ""}`
             : ""}
@@ -684,7 +663,7 @@ function MasterOutlineSection({ storyPlan, readOnly }: { storyPlan: { working_ti
               大纲总纲
             </Typography>
             {readOnly ? <Chip label="已锁定" size="small" color="success" icon={<CheckIcon fontSize="small" />} /> : null}
-            <IconButton onClick={() => setExpanded((v) => !v)} size="small">
+            <IconButton aria-label={expanded ? "收起大纲总纲" : "展开大纲总纲"} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} size="small">
               <ExpandMoreIcon sx={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
             </IconButton>
           </Stack>
@@ -837,6 +816,40 @@ function BatchRollbackControl({ confirmedCount, batchSize, taskId, onRollback }:
   );
 }
 
+function ReviewSplitLayout({ main, aside }: { main: ReactNode; aside: ReactNode }) {
+  return (
+    <Box
+      data-testid="review-split-layout"
+      sx={{
+        display: "grid",
+        gridTemplateColumns: {
+          xs: "minmax(0, 1fr)",
+          lg: "minmax(0, 1fr) minmax(340px, 400px)",
+        },
+        gap: { xs: 2, md: 3 },
+        alignItems: "start",
+        minWidth: 0,
+      }}
+    >
+      <Stack data-testid="review-main" spacing={2} sx={{ minWidth: 0 }}>
+        {main}
+      </Stack>
+      <Box data-testid="review-aside" sx={{ minWidth: 0 }}>
+        <Stack
+          spacing={2}
+          sx={{
+            minWidth: 0,
+            position: { xs: "static", lg: "sticky" },
+            top: { lg: 24 },
+          }}
+        >
+          {aside}
+        </Stack>
+      </Box>
+    </Box>
+  );
+}
+
 function OutlineReview({
   review,
   outlineMarkdown,
@@ -890,112 +903,110 @@ function OutlineReview({
   const isBatchPhase = phase === "chapter_batches";
 
   return (
-    <>
-      <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-        {isMasterPhase ? "大纲审核 · 总纲阶段" : `大纲审核 · 章节计划阶段（已确认 ${completedCount}/${totalCount} 章）`}
-      </Typography>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip label={review.meta.title || review.meta.task_id} size="small" />
-        <Chip label={`版本 ${review.review_version}`} size="small" variant="outlined" />
-        <Chip label={`审核第 ${revisionCount + 1} 轮`} size="small" variant="outlined" />
-        <Chip label={review.review_type} size="small" variant="outlined" />
-      </Stack>
-
-      {/* Agent 审核追踪面板 */}
-      <AgentTracePanel trace={review.auto_review_trace ?? []} />
-
-      {error ? <Alert severity="error">{error}</Alert> : null}
-
-      {/* 总纲区 */}
-      <MasterOutlineSection storyPlan={storyPlan} readOnly={isBatchPhase} />
-
-      {/* 章节计划区 */}
-      {isBatchPhase && (
+    <ReviewSplitLayout
+      main={
         <>
-          {/* 已确认批次 */}
-          {completedCount > 0 && outlineMarkdown ? (
-            <ConfirmedBatchesSection
-              chapters={[]}
-              batchSize={batchSize}
-            />
-          ) : null}
+          <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+            {isMasterPhase ? "大纲审核 · 总纲阶段" : `大纲审核 · 章节计划阶段（已确认 ${completedCount}/${totalCount} 章）`}
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip label={review.meta.title || review.meta.task_id} size="small" />
+            <Chip label={`版本 ${review.review_version}`} size="small" variant="outlined" />
+            <Chip label={`审核第 ${revisionCount + 1} 轮`} size="small" variant="outlined" />
+            <Chip label={review.review_type} size="small" variant="outlined" />
+          </Stack>
 
-          {/* 当前待审批次 */}
-          {currentBatchPlans.length > 0 ? (
-            <PendingBatchSection chapters={currentBatchPlans} />
-          ) : (
-            <Alert severity="info">正在生成下一批章节计划...</Alert>
+          <MasterOutlineSection storyPlan={storyPlan} readOnly={isBatchPhase} />
+
+          {isBatchPhase && (
+            <>
+              {completedCount > 0 && outlineMarkdown ? (
+                <ConfirmedBatchesSection
+                  chapters={[]}
+                  batchSize={batchSize}
+                />
+              ) : null}
+
+              {currentBatchPlans.length > 0 ? (
+                <PendingBatchSection chapters={currentBatchPlans} />
+              ) : (
+                <Alert severity="info">正在生成下一批章节计划...</Alert>
+              )}
+
+              <BatchRollbackControl
+                confirmedCount={completedCount}
+                batchSize={batchSize}
+                taskId={taskId}
+                onRollback={onReload}
+              />
+            </>
           )}
 
-          {/* 回滚控制 */}
-          <BatchRollbackControl
-            confirmedCount={completedCount}
-            batchSize={batchSize}
-            taskId={taskId}
-            onRollback={onReload}
-          />
+          {isMasterPhase && (
+            <Card>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Typography variant="h5">大纲内容</Typography>
+                  {outlineMarkdown ? (
+                    <MarkdownContent variant="outline">
+                      {outlineMarkdown}
+                    </MarkdownContent>
+                  ) : (
+                    <Alert severity="info">暂无大纲内容。</Alert>
+                  )}
+                </Stack>
+              </CardContent>
+            </Card>
+          )}
         </>
-      )}
-
-      {/* master 阶段：传统 Markdown 展示（向后兼容） */}
-      {isMasterPhase && (
-        <Card>
-          <CardContent>
-            <Stack spacing={2}>
-              <Typography variant="h5">大纲内容</Typography>
-              {outlineMarkdown ? (
-                <MarkdownContent variant="outline">
-                  {outlineMarkdown}
-                </MarkdownContent>
-              ) : (
-                <Alert severity="info">暂无大纲内容。</Alert>
-              )}
-            </Stack>
-          </CardContent>
-        </Card>
-      )}
-
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">审核操作</Typography>
-            <ReviewHistory history={review.review_history} />
-            <ReviewActionModelSelector
-              models={models}
-              modelRefresh={modelRefresh}
-              actionModelId={actionModelId}
-              setActionModelId={setActionModelId}
-              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
-              lastActionModelId={review.meta.last_action_model_id}
-              lastActionKind={review.meta.last_action_kind}
-              reviewModelLabel={formatReviewModelLabel(review)}
-              onRefreshModels={onRefreshModels}
-            />
-            <TextField
-              label="审核意见"
-              multiline
-              minRows={3}
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="例如：通过；或者要求收束得更克制一些。"
-            />
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
-                {isMasterPhase ? "通过并进入章节计划设计" : "通过本批"}
-              </Button>
-              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                {isMasterPhase ? "拒绝并进入大纲修订" : "驳回重算本批"}
-              </Button>
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
-              {isMasterPhase
-                ? "通过后将进入章节计划分步设计；拒绝后将进入大纲修订并回到工作台。"
-                : "通过后将生成下一批或进入正文编写；驳回后将重新生成本批章节计划。"}
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    </>
+      }
+      aside={
+        <>
+          <AgentTracePanel trace={review.auto_review_trace ?? []} />
+          {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">审核操作</Typography>
+                <ReviewHistory history={review.review_history} />
+                <ReviewActionModelSelector
+                  models={models}
+                  modelRefresh={modelRefresh}
+                  actionModelId={actionModelId}
+                  setActionModelId={setActionModelId}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
+                  lastActionModelId={review.meta.last_action_model_id}
+                  lastActionKind={review.meta.last_action_kind}
+                  reviewModelLabel={formatReviewModelLabel(review)}
+                  onRefreshModels={onRefreshModels}
+                />
+                <TextField
+                  label="审核意见"
+                  multiline
+                  minRows={3}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="例如：通过；或者要求收束得更克制一些。"
+                />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                    {isMasterPhase ? "通过并进入章节计划设计" : "通过本批"}
+                  </Button>
+                  <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                    {isMasterPhase ? "拒绝并进入大纲修订" : "驳回重算本批"}
+                  </Button>
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  {isMasterPhase
+                    ? "通过后将进入章节计划分步设计；拒绝后将进入大纲修订并回到工作台。"
+                    : "通过后将生成下一批或进入正文编写；驳回后将重新生成本批章节计划。"}
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        </>
+      }
+    />
   );
 }
 
@@ -1033,112 +1044,116 @@ function ChapterPairReview({
   const hasValidActionModel = models.some((item) => item.id === actionModelId);
 
   return (
-    <>
-      <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-        章节批次审核
-      </Typography>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip label={review.meta.title || review.meta.task_id} size="small" />
-        <Chip
-          label={batchEnd <= batchIndex + 1 ? `第 ${batchIndex + 1} 章` : `第 ${batchIndex + 1}-${batchEnd} 章`}
-          size="small"
-          color="primary"
-        />
-        <Chip label={`${completed}/${total} 章`} size="small" variant="outlined" />
-        {revisionCount > 0 && (
-          <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
-        )}
-      </Stack>
-
-      {/* Agent 审核追踪面板 */}
-      <AgentTracePanel trace={review.auto_review_trace ?? []} />
-
-      {error ? <Alert severity="error">{error}</Alert> : null}
-
-      <Card>
-        <CardContent>
-          <Stack spacing={1}>
-            <Typography variant="h5">进度</Typography>
-            <LinearProgress
-              variant="determinate"
-              value={total > 0 ? (completed / total) * 100 : 0}
-              sx={{ height: 8, borderRadius: 4 }}
+    <ReviewSplitLayout
+      main={
+        <>
+          <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+            章节批次审核
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip label={review.meta.title || review.meta.task_id} size="small" />
+            <Chip
+              label={batchEnd <= batchIndex + 1 ? `第 ${batchIndex + 1} 章` : `第 ${batchIndex + 1}-${batchEnd} 章`}
+              size="small"
+              color="primary"
             />
-            <Typography variant="body2" color="text.secondary">
-              已完成 {completed} / {total} 章，正在审核
-              {batchEnd <= batchIndex + 1 ? ` 第 ${batchIndex + 1} 章` : ` 第 ${batchIndex + 1}-${batchEnd} 章`}
-            </Typography>
+            <Chip label={`${completed}/${total} 章`} size="small" variant="outlined" />
+            {revisionCount > 0 && (
+              <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
+            )}
           </Stack>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">审核摘要</Typography>
-            <Typography>{review.summary || review.meta.summary || "请审核本批章节是否符合大纲要求。"}</Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-
-      {chapters.map((chapter) => (
-        <Card key={chapter.number}>
-          <CardContent>
-            <Stack spacing={2}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center">
-                <Typography variant="h5">
-                  第 {chapter.number} 章：{chapter.title}
+          <Card>
+            <CardContent>
+              <Stack spacing={1}>
+                <Typography variant="h5">进度</Typography>
+                <LinearProgress
+                  variant="determinate"
+                  value={total > 0 ? (completed / total) * 100 : 0}
+                  sx={{ height: 8, borderRadius: 4 }}
+                />
+                <Typography variant="body2" color="text.secondary">
+                  已完成 {completed} / {total} 章，正在审核
+                  {batchEnd <= batchIndex + 1 ? ` 第 ${batchIndex + 1} 章` : ` 第 ${batchIndex + 1}-${batchEnd} 章`}
                 </Typography>
-                <Chip label={chapter.summary} size="small" variant="outlined" />
               </Stack>
-              <Divider />
-              <MarkdownContent variant="outline">
-                {chapter.content}
-              </MarkdownContent>
-            </Stack>
-          </CardContent>
-        </Card>
-      ))}
+            </CardContent>
+          </Card>
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">审核操作</Typography>
-            <ReviewHistory history={review.review_history} />
-            <ReviewActionModelSelector
-              models={models}
-              modelRefresh={modelRefresh}
-              actionModelId={actionModelId}
-              setActionModelId={setActionModelId}
-              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
-              lastActionModelId={review.meta.last_action_model_id}
-              lastActionKind={review.meta.last_action_kind}
-              reviewModelLabel={formatReviewModelLabel(review)}
-              onRefreshModels={onRefreshModels}
-            />
-            <TextField
-              label="审核意见"
-              multiline
-              minRows={3}
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="例如：通过；或者第 3 段逻辑不够顺畅，请加强。"
-            />
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
-                通过并进入下一步
-              </Button>
-              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并返回工作台
-              </Button>
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
-              通过后系统会自动判断是返回工作台继续创作，还是进入全文验证；拒绝后将返回工作台等待你重新发起继续创作。
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    </>
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">审核摘要</Typography>
+                <Typography>{review.summary || review.meta.summary || "请审核本批章节是否符合大纲要求。"}</Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+
+          {chapters.map((chapter) => (
+            <Card key={chapter.number}>
+              <CardContent>
+                <Stack spacing={2}>
+                  <Stack direction="row" justifyContent="space-between" alignItems="center">
+                    <Typography variant="h5">
+                      第 {chapter.number} 章：{chapter.title}
+                    </Typography>
+                    <Chip label={chapter.summary} size="small" variant="outlined" />
+                  </Stack>
+                  <Divider />
+                  <MarkdownContent variant="outline">
+                    {chapter.content}
+                  </MarkdownContent>
+                </Stack>
+              </CardContent>
+            </Card>
+          ))}
+        </>
+      }
+      aside={
+        <>
+          <AgentTracePanel trace={review.auto_review_trace ?? []} />
+          {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">审核操作</Typography>
+                <ReviewHistory history={review.review_history} />
+                <ReviewActionModelSelector
+                  models={models}
+                  modelRefresh={modelRefresh}
+                  actionModelId={actionModelId}
+                  setActionModelId={setActionModelId}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
+                  lastActionModelId={review.meta.last_action_model_id}
+                  lastActionKind={review.meta.last_action_kind}
+                  reviewModelLabel={formatReviewModelLabel(review)}
+                  onRefreshModels={onRefreshModels}
+                />
+                <TextField
+                  label="审核意见"
+                  multiline
+                  minRows={3}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="例如：通过；或者第 3 段逻辑不够顺畅，请加强。"
+                />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                    通过并进入下一步
+                  </Button>
+                  <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                    拒绝并返回工作台
+                  </Button>
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  通过后系统会自动判断是返回工作台继续创作，还是进入全文验证；拒绝后将返回工作台等待你重新发起继续创作。
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        </>
+      }
+    />
   );
 }
 
@@ -1176,123 +1191,127 @@ function VerificationReview({
   const scoreColor = score >= 80 ? "success" : score >= 60 ? "warning" : "error";
 
   return (
-    <>
-      <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-        验证审核
-      </Typography>
-      <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-        <Chip label={review.meta.title || review.meta.task_id} size="small" />
-        <Chip label="全文验证" size="small" color="primary" />
-        {revisionCount > 0 && (
-          <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
-        )}
-      </Stack>
-
-      {/* Agent 审核追踪面板 */}
-      <AgentTracePanel trace={review.auto_review_trace ?? []} />
-
-      {error ? <Alert severity="error">{error}</Alert> : null}
-
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">验证摘要</Typography>
-            <Typography>{review.summary || review.meta.summary || "全文一致性验证已完成。"}</Typography>
-            <Box>
-              <Typography variant="h2" color={`${scoreColor}.main`}>
-                {score}
-              </Typography>
-              <Typography color="text.secondary">总分（0–100）</Typography>
-            </Box>
-          </Stack>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">发现的问题</Typography>
-            {issues.length === 0 ? (
-              <Alert severity="success">未发现问题，全文一致性良好。</Alert>
-            ) : (
-              <List dense>
-                {issues.map((issue, index) => (
-                  <ListItem key={index} disableGutters>
-                    <ListItemText
-                      primary={
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <Chip
-                            label={issue.severity}
-                            size="small"
-                            color={
-                              issue.severity === "critical"
-                                ? "error"
-                                : issue.severity === "warning"
-                                  ? "warning"
-                                  : "info"
-                            }
-                          />
-                          <Typography variant="body2">{issue.location}</Typography>
-                        </Stack>
-                      }
-                      secondary={
-                        <Stack spacing={0.5} sx={{ mt: 0.5 }}>
-                          <Typography variant="body2" color="text.secondary">
-                            {issue.description}
-                          </Typography>
-                          <Typography variant="caption" color="primary">
-                            建议：{issue.suggestion}
-                          </Typography>
-                        </Stack>
-                      }
-                    />
-                  </ListItem>
-                ))}
-              </List>
+    <ReviewSplitLayout
+      main={
+        <>
+          <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+            验证审核
+          </Typography>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Chip label={review.meta.title || review.meta.task_id} size="small" />
+            <Chip label="全文验证" size="small" color="primary" />
+            {revisionCount > 0 && (
+              <Chip label={`修订第 ${revisionCount + 1} 轮`} size="small" variant="outlined" color="warning" />
             )}
           </Stack>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Typography variant="h5">审核操作</Typography>
-            <ReviewHistory history={review.review_history} />
-            <ReviewActionModelSelector
-              models={models}
-              modelRefresh={modelRefresh}
-              actionModelId={actionModelId}
-              setActionModelId={setActionModelId}
-              defaultModelId={review.meta.creative_model_id || review.meta.default_model_id || review.meta.model_id}
-              lastActionModelId={review.meta.last_action_model_id}
-              lastActionKind={review.meta.last_action_kind}
-              reviewModelLabel={formatReviewModelLabel(review)}
-              onRefreshModels={onRefreshModels}
-            />
-            <TextField
-              label="审核意见"
-              multiline
-              minRows={3}
-              value={comment}
-              onChange={(e) => setComment(e.target.value)}
-              placeholder="例如：通过；或者人物前后不一致，请修复后再审。"
-            />
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
-                通过并完成任务
-              </Button>
-              <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
-                拒绝并进入验证修复
-              </Button>
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
-              通过后任务会进入收尾完成流程，并在完成后进入结果页；拒绝后将进入验证修复流程，并留在当前审核链路。
-            </Typography>
-          </Stack>
-        </CardContent>
-      </Card>
-    </>
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">验证摘要</Typography>
+                <Typography>{review.summary || review.meta.summary || "全文一致性验证已完成。"}</Typography>
+                <Box>
+                  <Typography variant="h2" color={`${scoreColor}.main`}>
+                    {score}
+                  </Typography>
+                  <Typography color="text.secondary">总分（0–100）</Typography>
+                </Box>
+              </Stack>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">发现的问题</Typography>
+                {issues.length === 0 ? (
+                  <Alert severity="success">未发现问题，全文一致性良好。</Alert>
+                ) : (
+                  <List dense>
+                    {issues.map((issue, index) => (
+                      <ListItem key={index} disableGutters>
+                        <ListItemText
+                          primary={
+                            <Stack direction="row" spacing={1} alignItems="center">
+                              <Chip
+                                label={issue.severity}
+                                size="small"
+                                color={
+                                  issue.severity === "critical"
+                                    ? "error"
+                                    : issue.severity === "warning"
+                                      ? "warning"
+                                      : "info"
+                                }
+                              />
+                              <Typography variant="body2">{issue.location}</Typography>
+                            </Stack>
+                          }
+                          secondary={
+                            <Stack spacing={0.5} sx={{ mt: 0.5 }}>
+                              <Typography variant="body2" color="text.secondary">
+                                {issue.description}
+                              </Typography>
+                              <Typography variant="caption" color="primary">
+                                建议：{issue.suggestion}
+                              </Typography>
+                            </Stack>
+                          }
+                        />
+                      </ListItem>
+                    ))}
+                  </List>
+                )}
+              </Stack>
+            </CardContent>
+          </Card>
+        </>
+      }
+      aside={
+        <>
+          <AgentTracePanel trace={review.auto_review_trace ?? []} />
+          {error ? <ValidationErrorAlert message={error} modelId={actionModelId} /> : null}
+          <Card>
+            <CardContent>
+              <Stack spacing={2}>
+                <Typography variant="h5">审核操作</Typography>
+                <ReviewHistory history={review.review_history} />
+                <ReviewActionModelSelector
+                  models={models}
+                  modelRefresh={modelRefresh}
+                  actionModelId={actionModelId}
+                  setActionModelId={setActionModelId}
+                  taskCreativeModelId={review.meta.creative_model_id || review.meta.model_id}
+                  lastActionModelId={review.meta.last_action_model_id}
+                  lastActionKind={review.meta.last_action_kind}
+                  reviewModelLabel={formatReviewModelLabel(review)}
+                  onRefreshModels={onRefreshModels}
+                />
+                <TextField
+                  label="审核意见"
+                  multiline
+                  minRows={3}
+                  value={comment}
+                  onChange={(e) => setComment(e.target.value)}
+                  placeholder="例如：通过；或者人物前后不一致，请修复后再审。"
+                />
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+                  <Button disabled={submitting || !hasValidActionModel} variant="contained" onClick={() => onDecision(true)}>
+                    通过并完成任务
+                  </Button>
+                  <Button disabled={submitting || !hasValidActionModel} variant="outlined" color="error" onClick={() => onDecision(false)}>
+                    拒绝并进入验证修复
+                  </Button>
+                </Stack>
+                <Typography variant="caption" color="text.secondary">
+                  通过后任务会进入收尾完成流程，并在完成后进入结果页；拒绝后将进入验证修复流程，并留在当前审核链路。
+                </Typography>
+              </Stack>
+            </CardContent>
+          </Card>
+        </>
+      }
+    />
   );
 }
 
@@ -1316,6 +1335,8 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const currentActionModelIdRef = useRef("");
   const currentTaskModelIdRef = useRef("");
   const currentModelOptionsRef = useRef<ModelOption[]>([]);
+  const actionModelInitializedRef = useRef(false);
+  const recoveryModelInitializedRef = useRef(false);
 
   const loadReview = useCallback(async () => {
     if (!resolvedTaskId) {
@@ -1410,21 +1431,32 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     setSelectedRecoveryAction("recover_to_stable");
     setRecoveryModelId("");
     setReviewInvalidated(false);
+    actionModelInitializedRef.current = false;
+    recoveryModelInitializedRef.current = false;
   }, [resolvedTaskId]);
 
   const resolvedActionModelId = models.some((item) => item.id === actionModelId) ? actionModelId : "";
   const primaryRecoveryAction = derivePrimaryRecoveryAction(review);
   const recoveryPreview = resolveRecoveryPreview(review, selectedRecoveryAction);
   const recoverySelectableModels = filterRecoveryModels(models, recoveryPreview?.allowed_model_ids);
-  const defaultRecoveryModelId =
-    recoveryPreview?.default_model_id ||
+  const recoveryTaskCreativeModelId =
+    recoveryPreview?.creative_model_id ||
     currentTaskModelId ||
     "";
 
   useEffect(() => {
-    if (actionModelId && models.some((item) => item.id === actionModelId)) {
+    if (actionModelId) {
+      if (models.some((item) => item.id === actionModelId)) {
+        return;
+      }
+      localStorage.removeItem("novel-agent:action-model-id");
+      setActionModelId("");
       return;
     }
+    if (actionModelInitializedRef.current || !models.length) {
+      return;
+    }
+    actionModelInitializedRef.current = true;
     const savedModelId = localStorage.getItem("novel-agent:action-model-id");
     if (savedModelId && models.some((item) => item.id === savedModelId)) {
       setActionModelId(savedModelId);
@@ -1440,6 +1472,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
   const hasValidActionModel = Boolean(resolvedActionModelId);
 
   function handleActionModelChange(nextModelId: string) {
+    actionModelInitializedRef.current = true;
     setActionModelId(nextModelId);
     if (nextModelId) {
       localStorage.setItem("novel-agent:action-model-id", nextModelId);
@@ -1453,15 +1486,23 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
     if (!recoveryDialogOpen) {
       return;
     }
-    if (recoveryModelId && recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+    if (recoveryModelId) {
+      if (recoverySelectableModels.some((item) => item.id === recoveryModelId)) {
+        return;
+      }
+      setRecoveryModelId("");
       return;
     }
-    if (defaultRecoveryModelId && recoverySelectableModels.some((item) => item.id === defaultRecoveryModelId)) {
-      setRecoveryModelId(defaultRecoveryModelId);
+    if (recoveryModelInitializedRef.current || !recoverySelectableModels.length) {
+      return;
+    }
+    recoveryModelInitializedRef.current = true;
+    if (recoveryTaskCreativeModelId && recoverySelectableModels.some((item) => item.id === recoveryTaskCreativeModelId)) {
+      setRecoveryModelId(recoveryTaskCreativeModelId);
       return;
     }
     setRecoveryModelId("");
-  }, [defaultRecoveryModelId, recoveryDialogOpen, recoveryModelId, recoverySelectableModels]);
+  }, [recoveryDialogOpen, recoveryModelId, recoverySelectableModels, recoveryTaskCreativeModelId]);
 
   function handleOpenRecoveryDialog() {
     const nextAction =
@@ -1493,7 +1534,12 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       await loadReview();
       router.refresh();
     } catch (recoverError) {
-      setError(recoverError instanceof Error ? recoverError.message : "执行恢复失败");
+      const rawMessage = recoverError instanceof Error ? recoverError.message : "执行恢复失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        router.push(workspaceHref(resolvedTaskId));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1501,7 +1547,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
 
   async function handleDecision(approved: boolean) {
     if (!hasValidActionModel) {
-      setError("任务默认模型当前不可用，请先手动选择本次执行模型。");
+      setError("任务创作模型当前不可用，请先手动选择本次执行模型。");
       return;
     }
     try {
@@ -1509,7 +1555,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       const nextTask = await resumeTask(resolvedTaskId, approved, comment, resolvedActionModelId || undefined);
       setError("");
       if (nextTask.status === "completed") {
-        router.push(resultHref(resolvedTaskId));
+        router.push(projectViewHref(resolvedTaskId, "result"));
       } else if (approved && nextTask.status === "ready_for_batch") {
         router.push(workspaceHref(resolvedTaskId));
       } else if (
@@ -1523,7 +1569,12 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
         router.push(workspaceHref(resolvedTaskId));
       }
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "提交审核失败");
+      const rawMessage = submitError instanceof Error ? submitError.message : "提交审核失败";
+      const message = normalizeTaskActionErrorMessage(rawMessage);
+      setError(message);
+      if (message !== rawMessage) {
+        router.push(workspaceHref(resolvedTaskId));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -1622,27 +1673,23 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           : "审核";
 
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-      <Stack spacing={3} className="page-fade-in">
-        {/* 面包屑 */}
-        <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-          <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              首页
-            </Typography>
-          </Link>
-          <Link href={workspaceHref(resolvedTaskId)} style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              工作台
-            </Typography>
-          </Link>
-          <Typography variant="body2">{breadcrumbLabel}</Typography>
-        </Breadcrumbs>
+    <ProjectShell
+      breadcrumbs={[
+        { label: "首页", href: "/" },
+        { label: "工作台", href: workspaceHref(resolvedTaskId) },
+        { label: breadcrumbLabel },
+      ]}
+      title={breadcrumbLabel}
+      metaItems={[
+        { label: review.meta.title || resolvedTaskId },
+        { label: review.meta.status, variant: "outlined" },
+        ...(currentTaskModelId ? [{ label: `任务创作模型 ${currentTaskModelId}`, variant: "outlined" as const }] : []),
+      ]}
+      stageNav={<StageNav stages={steps} activeStep={activeStep} />}
+      maxWidth="lg"
+    >
 
-        {/* 步骤指示器 */}
-        <StepIndicator steps={steps} activeStep={activeStep} />
-
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <ValidationErrorAlert message={error} modelId={currentTaskModelId} /> : null}
         {review.state_reconciled ? (
           <Alert severity="info">
             {review.reconciliation_summary || "当前审核状态已自动校正到最新稳定状态。"}
@@ -1728,17 +1775,19 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
           models={models}
           selectedAction={selectedRecoveryAction}
           selectedModelId={recoveryModelId}
-          defaultModelId={defaultRecoveryModelId}
+          taskCreativeModelId={recoveryTaskCreativeModelId}
           submitting={submitting}
           onActionChange={(action) => {
             setSelectedRecoveryAction(action);
             setRecoveryModelId("");
           }}
-          onModelChange={setRecoveryModelId}
+        onModelChange={(modelId) => {
+          recoveryModelInitializedRef.current = true;
+          setRecoveryModelId(modelId);
+        }}
           onCancel={() => setRecoveryDialogOpen(false)}
           onConfirm={() => void handleRecover()}
         />
-      </Stack>
-    </Container>
+    </ProjectShell>
   );
 }

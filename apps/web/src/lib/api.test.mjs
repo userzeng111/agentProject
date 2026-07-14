@@ -146,3 +146,76 @@ test("continue 请求可把 continue_request_id 透传到结构化日志上下�
     globalThis.fetch = originalFetch;
   }
 });
+
+test("非 2xx 响应抛出包含 HTTP 关联信息的 ApiRequestError", async () => {
+  const api = await loadApiModule();
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ detail: "任务不存在" }), {
+      status: 404,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Request-ID": "req-missing-1",
+      },
+    });
+
+  try {
+    await withMockedConsole(async () => {
+      await assert.rejects(
+        () => api.getWorkspace("task-missing"),
+        (error) => {
+          assert.ok(error instanceof api.ApiRequestError);
+          assert.equal(error.message, "任务不存在");
+          assert.equal(error.status, 404);
+          assert.equal(error.path, "/api/tasks/task-missing/workspace");
+          assert.equal(error.requestId, "req-missing-1");
+          assert.equal(error.detail, "任务不存在");
+          assert.equal(error.retryable, false);
+          return true;
+        },
+      );
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("网络错误重试耗尽后保留请求路径与可重试分类", async () => {
+  const api = await loadApiModule();
+  const originalFetch = globalThis.fetch;
+  let requestCount = 0;
+
+  globalThis.fetch = async () => {
+    requestCount += 1;
+    throw new TypeError("网络连接已中断");
+  };
+
+  try {
+    await withMockedConsole(async () => {
+      await assert.rejects(
+        () => api.getWorkspace("task-network-error"),
+        (error) => {
+          assert.ok(error instanceof api.ApiRequestError);
+          assert.equal(error.status, null);
+          assert.equal(error.path, "/api/tasks/task-network-error/workspace");
+          assert.equal(error.requestId, "");
+          assert.equal(error.detail, "网络连接已中断");
+          assert.equal(error.retryable, true);
+          return true;
+        },
+      );
+      assert.equal(requestCount, 2);
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("API 客户端不再暴露历史无调用导出", async () => {
+  const api = await loadApiModule();
+
+  assert.equal(Object.hasOwn(api, "getModels"), false);
+  assert.equal(Object.hasOwn(api, "getSupervisor"), false);
+  assert.equal(Object.hasOwn(api, "fetchJsonRef"), false);
+});

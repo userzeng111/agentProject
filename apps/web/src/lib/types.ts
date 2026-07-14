@@ -50,7 +50,7 @@ export interface RecoveryPreview {
   target_batch_no?: number | null;
   reuse_existing_draft?: boolean;
   will_resume_generation?: boolean;
-  default_model_id?: string;
+  creative_model_id?: string;
   last_action_model_id?: string;
   allowed_model_ids: string[];
   fallback_actions?: RecoveryMode[];
@@ -115,11 +115,64 @@ export interface ModelCapabilities {
   features?: string[] | Record<string, boolean>;
 }
 
+export type ModelValidationCheckStatus = "pending" | "running" | "passed" | "failed" | "skipped";
+export type ModelValidationReportStatus = "unverified" | "running" | "verified" | "failed";
+export type ModelValidationStatus = ModelValidationReportStatus | "cancelled";
+
+export interface ModelValidationCheck {
+  id: string;
+  label?: string;
+  status: ModelValidationCheckStatus;
+  summary?: string;
+  failure_reason?: string;
+  evidence?: Record<string, unknown>;
+}
+
+export interface ModelValidationReport {
+  model_id?: string;
+  status: ModelValidationReportStatus;
+  validated_at?: string;
+  validator_version?: string;
+  summary?: string;
+  failure_reason?: string;
+  last_error?: string;
+  checks?: ModelValidationCheck[];
+  evidence?: Record<string, unknown>;
+}
+
+export type ModelValidationEvent =
+  | { type: "validation.started"; data: { model_id?: string; run_id?: string; validator_version?: string; status?: "running" } }
+  | { type: "validation.check"; data: { model_id?: string; run_id?: string; check?: ModelValidationCheck } }
+  | {
+      type: "validation.chat_chunk";
+      data: {
+        model_id?: string;
+        run_id?: string;
+        content?: string;
+        reasoning_signal?: boolean;
+        reasoning_chars_delta?: number;
+        usage?: Record<string, number>;
+      };
+    }
+  | { type: "validation.done"; data: { model_id?: string; run_id?: string; status?: "verified"; report?: ModelValidationReport } }
+  | {
+      type: "validation.error";
+      data: {
+        model_id?: string;
+        run_id?: string;
+        status?: "failed";
+        message?: string;
+        check_id?: string;
+        report?: ModelValidationReport;
+      };
+    };
+
 export interface ModelMetadata {
   source?: string;
   compatibility?: string;
   profile_version?: string;
   protocol?: string;
+  validation?: ModelValidationReport;
 }
 
 export interface StyleProfile {
@@ -158,7 +211,6 @@ export interface ModelRefreshState {
 export interface ModelListResponse {
   data: ModelOption[];
   meta?: {
-    default_model?: string;
     capability_schema_version?: string;
     cache_ttl_seconds?: number;
     cache_age_seconds?: number;
@@ -201,6 +253,94 @@ export interface ResponseCacheStatus {
   model?: string;
 }
 
+export interface PendingReviewSummary {
+  present?: boolean;
+  review_type?: string;
+  stage?: string;
+  batch_index?: number | null;
+  revision_count?: number;
+  outline_phase?: string;
+  summary?: string;
+}
+
+export interface RagStatus {
+  enabled?: boolean;
+  ready?: boolean;
+  source?: string;
+  summary?: string;
+  last_query_stage?: string;
+  last_error?: string;
+  injected?: boolean;
+  injection_evidence?: string;
+}
+
+export interface LlmUsageSummary {
+  input_tokens?: number;
+  output_tokens?: number;
+  total_tokens?: number;
+  cached_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  reasoning_tokens?: number;
+  usage_count?: number;
+}
+
+export interface LlmTimingDetail {
+  stage?: string;
+  exchange_label?: string;
+  model?: string;
+  duration_ms?: number;
+  first_token_ms?: number;
+  attempt?: number;
+  finish_reason?: string | null;
+  content_chars?: number;
+  reasoning_chars?: number;
+  status?: string;
+  is_retry?: boolean;
+  is_repair?: boolean;
+}
+
+export interface LlmTimingBucket {
+  call_count?: number;
+  total_duration_ms?: number;
+  max_duration_ms?: number;
+  max_first_token_ms?: number;
+  retry_count?: number;
+  repair_count?: number;
+}
+
+export interface LlmExchangeSummary {
+  stage?: string;
+  event_type?: string;
+  unit_id?: string;
+  exchange_label?: string;
+  model?: string;
+  cache_hit?: boolean;
+  cache_key?: string;
+  history_count?: number;
+  parse_duration_ms?: number;
+}
+
+export interface LlmReport {
+  usage_total?: LlmUsageSummary;
+  usage_count?: number;
+  usage_missing_count?: number;
+  usage_status?: string;
+  request_count?: number;
+  by_model?: Record<string, LlmUsageSummary>;
+  by_stage?: Record<string, LlmUsageSummary>;
+  exchange_count?: number;
+  cache_hit_count?: number;
+  runtime_response_cache_hit_count?: number;
+  provider_prompt_cache_hit_count?: number;
+  timing_count?: number;
+  timing_by_stage?: Record<string, LlmTimingBucket>;
+  slowest_step?: LlmTimingDetail;
+  slowest_first_token?: LlmTimingDetail;
+  latest_exchange?: LlmExchangeSummary;
+  latest_usage?: LlmExchangeSummary & LlmUsageSummary;
+}
+
 export interface TaskRecord {
   id: string;
   mode: TaskMode;
@@ -212,12 +352,12 @@ export interface TaskRecord {
   chapter_word_min?: number;
   status: TaskStatus;
   current_stage: string;
+  current_unit?: string | null;
   progress: number;
   input: TaskInput;
   error_message: string | null;
   model_id?: string;
   creative_model_id?: string;
-  default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   auto_review_model_mode?: AutoReviewModelMode;
@@ -234,7 +374,7 @@ export interface TaskCardSummary {
   novel_size?: NovelSize;
   chapter_word_min?: number;
   model_id?: string;
-  default_model_id?: string;
+  creative_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   status: TaskStatus;
@@ -255,7 +395,6 @@ export interface DashboardResponse {
   failed_tasks: TaskCardSummary[];
   completed_tasks?: TaskCardSummary[];
   model_summary?: {
-    default_model: string;
     supported_models: string[];
   };
   system_summary?: {
@@ -277,7 +416,6 @@ export interface WorkspaceMeta {
   chapter_word_min?: number;
   model_id?: string;
   creative_model_id?: string;
-  default_model_id?: string;
   last_action_model_id?: string;
   last_action_kind?: string;
   auto_review_model_mode?: AutoReviewModelMode;
@@ -290,6 +428,7 @@ export interface WorkspaceMeta {
   updated_at?: string;
   summary?: string;
   error_message?: string | null;
+  storage_state?: string;
   auto_review?: boolean;
   last_error_detail?: string;
   context_status?: ContextStatus;
@@ -343,7 +482,6 @@ export interface WorkspaceResponse extends RecoveryContractFields {
     target_chapter_count?: number;
     model_id?: string;
     creative_model_id?: string;
-    default_model_id?: string;
     last_action_model_id?: string;
     last_action_kind?: string;
     auto_review_model_mode?: AutoReviewModelMode;
@@ -365,6 +503,9 @@ export interface WorkspaceResponse extends RecoveryContractFields {
   context_status?: ContextStatus;
   response_cache_status?: ResponseCacheStatus;
   context_snapshot?: ContextStatus;
+  pending_review_summary?: PendingReviewSummary;
+  rag_status?: RagStatus;
+  llm_report?: LlmReport;
   novel_progress?: {
     target_chapter_count?: number;
     chapter_count_min?: number;
@@ -379,6 +520,7 @@ export interface WorkspaceResponse extends RecoveryContractFields {
   sources?: SourceAsset[];
   supervisor_plan?: SupervisorPlanSnapshot | null;
   agent_runs?: AgentRunItem[];
+  auto_review_trace?: AgentTraceItem[];
   // 大纲批次分步状态
   outline_phase?: string;
   outline_completed_count?: number;
@@ -586,6 +728,8 @@ export interface ArchiveEntryRefs {
 export interface ArchiveTaskSummary extends TaskCardSummary {
   current_unit?: string | null;
   progress: number;
+  chapter_count?: number | null;
+  word_count?: number | null;
   storage_state: string;
   entry_refs?: ArchiveEntryRefs;
 }
@@ -598,43 +742,6 @@ export interface ArchiveIndexResponse {
   total_pages?: number;
 }
 
-export interface ArchiveMeta {
-  task_id: string;
-  title: string;
-  mode: TaskMode;
-  creative_mode?: CreativeMode;
-  novel_size?: NovelSize;
-  chapter_word_min?: number;
-  model_id?: string;
-  default_model_id?: string;
-  last_action_model_id?: string;
-  last_action_kind?: string;
-  status: TaskStatus;
-  current_stage: string;
-  current_unit?: string | null;
-  progress: number;
-  updated_at: string;
-  error_message?: string | null;
-  storage_state: string;
-}
-
-export interface ArchiveResultFile {
-  title: string;
-  summary: string;
-  body: string;
-  chapters: Array<{
-    number: number;
-    title: string;
-    summary: string;
-    content: string;
-  }>;
-}
-
-export interface ArchiveEventsFile {
-  task_id: string;
-  items: WorkspaceEvent[];
-}
-
 export interface ArchiveDetailResponse {
   meta: WorkspaceMeta;
   request_preview?: {
@@ -642,7 +749,7 @@ export interface ArchiveDetailResponse {
     creative_mode?: CreativeMode;
     novel_size?: NovelSize;
     model_id?: string;
-    default_model_id?: string;
+    creative_model_id?: string;
     last_action_model_id?: string;
     last_action_kind?: string;
     model_capabilities?: ModelCapabilities;

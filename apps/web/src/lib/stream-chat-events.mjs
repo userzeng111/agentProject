@@ -43,13 +43,12 @@ export function createChatSseParser({ onChunk, onError }) {
       return;
     }
 
-    if (data.content !== undefined || data.reasoning_content !== undefined) {
-      onChunk(data);
-    }
-    if (data.finish_reason) {
-      onChunk(data);
-    }
-    if (data.usage) {
+    if (
+      data.content !== undefined ||
+      data.reasoning_content !== undefined ||
+      data.finish_reason !== undefined ||
+      data.usage !== undefined
+    ) {
       onChunk(data);
     }
   };

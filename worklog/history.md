@@ -1,5 +1,165 @@
 # 历史问题索引
 
+- 标题：UI/UX 体验重塑后续阶段
+  路径：`worklog/archive/UI优化/20260629-02-UIUX体验重塑后续阶段.md`
+  摘要：完成项目内规范路由、核心视图、创建/聊天/设置、响应式与无障碍重构，并通过前端及接口回归验证。
+
+- 标题：前端评审回归修复
+  路径：`worklog/archive/项目审查/20260713-01-前端评审回归修复.md`
+  摘要：修复项目状态迁移、归档恢复、聊天流、路由错误态与可访问性共 9 项评审问题，lint、测试、构建与冒烟均通过。
+
+- 标题：默认模型硬编码与运行时模型目录统一
+  路径：`worklog/archive/LLM日志/20260710-01-默认模型硬编码与运行时目录统一.md`
+  摘要：盘点并移除运行时固定模型默认值，以供应商 API 模型目录作为唯一可选模型来源，后端 434+130 测试全通过。
+
+- 标题：LLM 摘要 token 仍为 0 与白鹿 usage 采集复核
+  路径：`worklog/archive/LLM日志/20260709-02-task-0472d31d26-token-usage-still-zero.md`
+  摘要：扩展嵌套 usage 解析与 llm_report 聚合修复，白鹿真实探针验证 token 非零，420+129 测试全通过。
+
+- 标题：task_68472f411a 章节文件已落盘但仍出现问题分析
+  路径：`worklog/archive/任务恢复/20260709-01-task-68472f411a-chapter-files-landed-but-still-problem.md`
+  摘要：恢复链路修复使 task_68472f411a 从 waiting_manual_action 恢复为 completed，8 章 draft_result 与 artifact 全部重建回填。
+
+- 标题：AI 对话与模型验证 UI 回归排查
+  路径：`worklog/archive/UI优化/20260710-01-AI对话与模型验证UI回归排查.md`
+  摘要：修复聊天模型无法选择、模型验证入口不可用及长模型菜单重叠穿模，并完成桌面和移动端回归验证。
+
+- 标题：LLM 摘要 token 用量解析与展示缺失
+  路径：`worklog/archive/LLM日志/20260709-01-llm-summary-token-usage-parse-and-display.md`
+  摘要：扩展 LLM usage 解析/聚合/展示为七类统计字段，支持白鹿真实接口嵌套 usage，全量测试 413+129 通过。
+
+- 标题：完成任务自动归档与 LLM 请求计数漏计问题
+  路径：`worklog/archive/任务流转/20260707-01-completed-auto-archive-and-llm-request-count.md`
+  摘要：完成 completed 待用户确认后显式归档，并将 LLM 请求数与用量事件数分离，已通过后端、前端与 E2E 验证。
+
+- 标题：task_7e86fe41b5 UI 流转停留原页面问题
+  路径：`worklog/archive/UI优化/20260707-01-task-7e86fe41b5-ui-flow-stuck.md`
+  摘要：完成异步任务动作反馈、等待人工处理事件流收束，以及 LLM JSON 解析失败分类与截断重试修复。
+
+- 标题：日志系统重构：耗时计算开关、移除刷屏日志、补充静态文本参数、调用链流转
+  路径：`worklog/archive/日志治理/20260706-01-日志系统重构.md`
+  摘要：完成性能日志开关、调用链流转、静态日志参数补充、刷屏日志削减与审查修复。
+
+- 标题：planning 阶段 outline JSON 解析失败（content_filter 空响应）
+  路径：`worklog/archive/LLM调用/20260701-01-planning-outline-parse-failed.md`
+  摘要：任务 task_d3032f3349 因模型输出被 content_filter 过滤为空导致 JSON 解析失败；已实现 content_filter 专用 repair 与中文双引号约束注入。
+
+- 标题：task_f64a6b18df Agent Trace unknown 与等待审核卡住排查
+  路径：`worklog/archive/agent架构/20260704-01-task-f64a6b18df-trace-unknown-waiting-review.md`
+  摘要：只读排查确认任务因 K2.7 403 配额错误卡在 waiting_manual_action；Agent Trace unknown 是前端对空 trace 的默认显示，非实际数据错误。
+
+- 标题：task_593ea0bac8 Agent Trace、LLM摘要缓存与上下文窗口观测问题
+  路径：`worklog/archive/LLM调用/20260702-01-task-593ea0bac8-trace-summary-cache-context.md`
+  摘要：完成 B 方案观测与当前失败链路修复，拆分 LLM 缓存口径、补充诊断日志并为章节修订空正文截断增加专用重试。
+
+- 标题：模型 API 配置后无模型
+  路径：`worklog/archive/配置诊断/20260629-01-模型API配置后无模型.md`
+  摘要：确认模型 API 配置正确，问题根因是后端进程未热加载最新 `.env`；重启 localhost 前后端后网关模型恢复可见。
+
+- 标题：模型兼容性验证功能规划
+  路径：`worklog/archive/模型兼容性/20260629-01-模型兼容性验证功能规划.md`
+  摘要：完成 AI 对话页模型兼容性验证面板、后端验证流、本地验证覆盖、失败引导和真实 K2.7 验证；K2.7 因缺少推理信号未被放行。
+
+- 标题：UI/UX 体验重塑阶段 1
+  路径：`worklog/archive/UI优化/20260626-01-UIUX体验重塑设计.md`
+  摘要：完成阶段 1 设计系统、深色模式基础、通用组件层、Root Layout 接入与 E2E 抽象层；完整体验重塑阶段 2-4 另行跟进。
+
+- 标题：将后端本地回环地址统一替换为 localhost
+  路径：`worklog/archive/agent-runtime/20260626-02-替换本地回环地址为localhost.md`
+  摘要：统一本地开发、测试、脚本和说明文档默认地址为 localhost，并修复 localhost 解析为回环 IP 时误触发限流的问题。
+
+- 标题：模型 API 配置位置确认
+  路径：`worklog/archive/agent-runtime/20260629-01-模型API配置位置确认.md`
+  摘要：已定位模型 API 的 `.env` 配置、Settings 字段、网关调用、模型目录与前端后端 API 基址位置，未修改实现代码。
+
+- 标题：context 缓存日志与异常降级收口
+  路径：`worklog/archive/agent-runtime/20260629-02-context缓存日志与异常降级.md`
+  摘要：完成 context 缓存读写、清理、多层缓存与旧 schema 命中时的异常降级和中文日志补充。
+
+- 标题：MVP项目审查与修复
+  路径：`worklog/archive/项目审查/20260625-001-MVP项目审查与修复.md`
+  摘要：全面审查项目，修复硬编码路径、内存泄漏、多中断 resume、E2E 选择器问题，清理死代码，更新 .gitignore，补充前端测试。前端 86/86、后端 334/334、E2E 88/88 全部通过。识别运行时死代码 85 项待清理。
+
+- 标题：网页自动化测试方案评估
+  路径：`worklog/archive/功能开发/20260624-01-网页自动化测试方案评估.md`
+  摘要：评估 Playwright 适配性并完成 skill 安装，E2E 测试套件已建立（9 个 spec 文件）。
+
+- 标题：用户视角功能完善方向梳理
+  路径：`worklog/archive/功能开发/20260422-07-用户视角功能完善方向梳理.md`
+  摘要：完成恢复链路显式化、模型切换安全化、审核 CTA 一致性、模型刷新契约统一三批改造，前端/后端测试全通过。
+
+- 标题：小说 Agent 框架设计
+  路径：`worklog/archive/agent架构/20260330-01-小说-agent-框架设计.md`
+  摘要：完成 LangChain + LangGraph 框架设计，最小闭环已搭建验证，后续演进为完整 AgentProject。
+
+- 标题：审核流程重构设计
+  路径：`worklog/archive/agent架构/20260402-01-审核流程重构设计.md`
+  摘要：大纲多轮审核、章节对锚点、全文验证设计方案已通过审核并已在 engine.py 中实现。
+
+- 标题：自动化多 Agent 审核方案设计
+  路径：`worklog/archive/agent架构/20260402-02-自动化多agent审核方案设计.md`
+  摘要：完成固定流水线多 Agent 审核方案设计，已在 auto_reviewer.py 中实现（27 处角色/并行/裁决引用）。
+
+- 标题：自动审核链路失败层级分析
+  路径：`worklog/archive/agent架构/20260403-02-自动审核链路失败层级分析.md`
+  摘要：原始任务日志已不存在无法完成分析，自动审核链路在后续迭代中已正常工作。
+
+- 标题：多 Agent 任务流与架构合理性评审
+  路径：`worklog/archive/agent架构/20260405-01-多agent任务流与架构合理性评审.md`
+  摘要：完成架构评审与 Supervisor 骨架实现（两阶段），后端测试 17 passed，前端 Supervisor 面板已接入。
+
+- 标题：多 Agent 语义表述与实现一致性评审
+  路径：`worklog/archive/agent架构/20260405-02-多agent语义表述与实现一致性评审.md`
+  摘要：完成只读评审，结论为系统是单工作流 Agent 系统，文档与前端实现基本一致。
+
+- 标题：静态页面性能回归排查
+  路径：`worklog/archive/agent架构/20260406-04-静态页面性能回归排查.md`
+  摘要：完成性能对比排查，无前端性能回归，体感变慢主因是 API 延迟与 Cloudflare 缓存策略。
+
+- 标题：真实端到端生成验证范围确认
+  路径：`worklog/archive/功能开发/20260624-03-真实端到端生成验证范围确认.md`
+  摘要：完成真实端到端生成链路验证，修复 workspace 待审核摘要残留与运行中重复恢复副作用，新增回归测试覆盖，真实任务 task_2d3b559642 完成并归档。
+
+- 标题：Playwright 自动化测试流程建设
+  路径：`worklog/archive/功能开发/20260624-02-Playwright自动化测试流程建设.md`
+  摘要：完成 Playwright 前后端 E2E 流程建设，覆盖主要页面/API/状态分支、真实浏览器任务生命周期、调试中心回归与移动端布局，并通过桌面/移动端、前后端测试、构建与 smoke 验证。
+
+- 标题：AgentProject 功能补充方向分析
+  路径：`worklog/archive/功能开发/20260623-01-AgentProject功能补充方向分析.md`
+  摘要：完成首批 Agent 运行调试中心，实现任务工作台只读调试 Tab、workspace 调试摘要字段、诊断纯函数与本地验证。
+
+- 标题：后端掉线与限流排查
+  路径：`worklog/archive/agent架构/20260617-01-后端掉线与限流排查.md`
+  摘要：修复限流中间件误伤 CORS 预检与健康检查导致前端误判后端掉线，豁免 OPTIONS 与 /api/health 并补齐回归测试。
+
+- 标题：全文验证驳回后修复阶段可见性复核
+  路径：`worklog/archive/agent架构/20260402-04-全文验证驳回后修复阶段可见性复核.md`
+  摘要：修复验证驳回后任务状态停留在 waiting_verification_review 而非显示修复进度的问题，审核历史新增 rejected/repairing 映射与重复提交门禁。
+
+- 标题：夜半回廊归档任务流异常复核
+  路径：`worklog/archive/agent架构/20260402-03-夜半回廊归档任务流异常复核.md`
+  摘要：修复 WorkflowState 缺失 total_chapters/completed_count 导致章节对循环提前结束、仅产出 2 章即归档的问题，并补齐回归测试。
+
+- 标题：缓存未命中与回答流回归复核
+  路径：`worklog/archive/agent架构/20260401-01-缓存未命中与回答流回归复核.md`
+  摘要：修复 drafting 阶段缓存未命中和跨阶段问答链重建问题，完成上下文缓存与响应缓存拆分，20 个回归测试全通。
+
+- 标题：UI/UX 界面优化重构
+  路径：`worklog/archive/UI优化/20260331-01-UI-UX界面优化重构.md`
+  摘要：完成 P0-P3 全批次 UI/UX 优化：Theme 扩展（色彩/按钮/阴影/圆角）、全局导航栏、步骤指示器、玻璃态效果、工作台 Tab 分区、加载/空/错误状态与过渡动画。
+
+- 标题：事件流断开重连排查
+  路径：`worklog/archive/agent架构/20260611-02-事件流断开重连排查.md`
+  摘要：修复前端将 SSE 终态正常关闭误判为断开重连的问题，新增终态状态机并通过前端测试、构建与 smoke。
+
+- 标题：task_8b243b5471 规划阶段卡住排查
+  路径：`worklog/archive/agent架构/20260611-01-task-8b243b5471规划卡住排查.md`
+  摘要：修复动态审核评分解析、章节计划批次幂等、自动批次推进、工作台兜底可见性与限流误伤聊天问题。
+
+- 标题：Agent 状态工作流可视化设计
+  路径：`worklog/archive/UI优化/20260610-01-Agent状态工作流可视化设计.md`
+  摘要：在任务工作台实现 React Flow 主流程图与 Agent 派发图，展示任务阶段、审核子 Agent 与当前状态。
+
 - 标题：下一轮性能优化规划
   路径：`worklog/archive/backend-performance/20260610-01-下一轮性能优化规划.md`
   摘要：完成 verification 截断重试修复与 drafting A1/A2 瘦身，真实样本确认 A1 有收益、A2 新增收益有限。

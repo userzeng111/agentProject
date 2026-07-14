@@ -268,10 +268,26 @@ class BaseAgent:
 
     # ── JSON 解析 ──────────────────────────────
 
+    # 常见供应商错误关键词，匹配时直接给出友好提示而非 JSON 解析失败
+    _PROVIDER_ERROR_PATTERNS: list[str] = [
+        "请重试",
+        "模型暂时不可用",
+        "模型供应商返回了错误消息",
+        "模型输出被上游内容安全策略过滤",
+        "content_filter",
+        "refusal",
+        "temporarily unavailable",
+        "please try again later",
+    ]
+
     def _strip_and_parse_json(self, raw: str) -> dict[str, Any]:
         """清理 Markdown 围栏并解析 JSON，失败时尝试提取或修复截断的 JSON。"""
         gc = self._require_gateway_client()
         cleaned = gc._strip_markdown_fences(raw)
+
+        # 先检查是否为供应商错误消息（非 JSON）
+        self._raise_if_provider_error(raw)
+
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
@@ -283,7 +299,23 @@ class BaseAgent:
             repaired = self._repair_truncated_json(cleaned)
             if repaired is not None:
                 return repaired
+            # 再次检查供应商错误（可能在清理后更明显）
+            self._raise_if_provider_error(raw)
             raise GatewayClientError(f"模型返回的 JSON 无法解析：{raw[:240]}")
+
+    @classmethod
+    def _is_provider_error(cls, raw: str) -> bool:
+        """检查响应内容是否为供应商返回的错误消息。"""
+        return any(pattern in raw for pattern in cls._PROVIDER_ERROR_PATTERNS)
+
+    @classmethod
+    def _raise_if_provider_error(cls, raw: str) -> None:
+        """检查响应内容是否为供应商返回的错误消息，若是则抛出明确提示。"""
+        for pattern in cls._PROVIDER_ERROR_PATTERNS:
+            if pattern in raw:
+                raise GatewayClientError(
+                    f"模型供应商返回了错误消息（匹配关键词：{pattern}）：{raw[:200]}"
+                )
 
     @staticmethod
     def _repair_truncated_json(text: str) -> dict[str, Any] | None:

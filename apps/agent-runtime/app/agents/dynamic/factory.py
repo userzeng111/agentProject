@@ -42,14 +42,22 @@ class AgentFactory:
         "passing_score",
         "target_score",
     }
+    _LOCALIZED_SCORE_KEYS = (
+        "评分",
+        "得分",
+        "分数",
+        "总分",
+        "总评分",
+        "综合评分",
+        "最终评分",
+        "整体评分",
+    )
 
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
-        default_model: str = "MiniMax-M2.7-highspeed",
     ) -> None:
         self._gateway_client = gateway_client
-        self._default_model = default_model
 
     def create(self, blueprint: AgentBlueprint) -> DynamicAgent:
         """根据蓝图创建单个 DynamicAgent 实例。"""
@@ -116,6 +124,11 @@ class AgentFactory:
             if score is not None:
                 return score, score_key
 
+        for score_key in cls._LOCALIZED_SCORE_KEYS:
+            score = cls._coerce_score(response.get(score_key))
+            if score is not None:
+                return score, score_key
+
         return 0.0, None
 
     @staticmethod
@@ -168,7 +181,9 @@ class AgentFactory:
             ]
 
             # 调用 LLM
-            use_model = model or self._default_model
+            use_model = str(model or "").strip()
+            if not use_model:
+                raise ValueError("动态 Agent 缺少显式模型，调用已拒绝。")
 
             # 使用 BaseAgent 的 JSON 调用能力
             base = BaseAgent(gateway_client=self._gateway_client)
@@ -219,18 +234,22 @@ class AgentFactory:
                     )
 
             # 兼容多种问题/警告/亮点字段名
-            issues = response.get("issues") or response.get("key_issues") or []
-            warnings = response.get("warnings") or response.get("weaknesses") or []
+            issues = response.get("issues") or response.get("key_issues") or response.get("问题") or []
+            warnings = response.get("warnings") or response.get("weaknesses") or response.get("警告") or []
             highlights = (
                 response.get("highlights")
                 or response.get("key_strengths")
                 or response.get("strengths")
+                or response.get("亮点")
                 or []
             )
             reasoning = (
                 response.get("reasoning", "")
                 or response.get("analysis", "")
                 or response.get("comment", "")
+                or response.get("理由", "")
+                or response.get("分析", "")
+                or response.get("评价", "")
                 or ""
             )
 

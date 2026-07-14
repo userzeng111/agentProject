@@ -35,20 +35,13 @@ from app.llm.story_engine import (
     StoryEngine,
 )
 from app.observability import RequestContext, request_id_var
+from app.observability.context import push_request_flow
 from app.observability.performance import log_performance, performance_span
 from app.rag.service import RagService
 from app.storage.db_repository import get_novel_project, update_project_status
 from app.storage.task_store import TaskLogStore
 
 logger = get_logger(__name__)
-
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
 
 
 class TaskServiceCoreMixin:
@@ -114,11 +107,6 @@ class TaskServiceCoreMixin:
         db_path = Path(configured_db_path) if configured_db_path else Path(self.store.root_dir) / "data.db"
         init_db(str(db_path), settings=self.engine.settings)
 
-        # 启动时同步运行时默认模型到 StoryEngine
-        runtime_default = self.model_catalog._effective_default_model()
-        if self.model_catalog._runtime_default_model and hasattr(self.engine, "set_runtime_default_model"):
-            self.engine.set_runtime_default_model(runtime_default)
-
     @property
     def graph(self):
         """向后兼容：旧代码与测试通过 graph 属性访问工作流引擎。"""
@@ -132,7 +120,7 @@ class TaskServiceCoreMixin:
         兼容形态，使 ``start/resume/get_state/update_state`` 均可正常调用。
         """
         if value is None:
-            logger.warning("workflow_engine 被设置为 None，后续依赖工作流引擎的操作可能失败。")
+            logger.warning("workflow_engine 被设置为 None，后续依赖工作流引擎的操作可能失败。 caller=%s", type(self).__name__)
             self.workflow_engine = None
             return
         if all(hasattr(value, attr) for attr in ("start", "resume", "get_state", "update_state")):
@@ -162,7 +150,10 @@ class TaskServiceCoreMixin:
         self.workflow_engine = _FakeEngineAdapter(value)
 
     def create_task(self, payload: TaskCreateRequest) -> TaskRecord:
-        requested_model = (payload.model_id or "").strip() or self.model_catalog._effective_default_model()
+        push_request_flow("service.create_task")
+        requested_model = (payload.model_id or "").strip()
+        if not requested_model:
+            raise ValueError("请显式选择当前供应商返回的模型后再创建任务。")
         self.model_catalog.ensure_novel_generation_model_supported(requested_model)
         review_model_id = (payload.review_model_id or "").strip()
         if payload.auto_review_model_mode is AutoReviewModelMode.FIXED and review_model_id:
@@ -177,7 +168,9 @@ class TaskServiceCoreMixin:
         return self._sync_supervisor_plan(task.id)
 
     def _resolve_task_model_id(self, task: TaskRecord) -> str:
-        candidate = (task.model_id or "").strip() or self.model_catalog._effective_default_model()
+        candidate = (task.model_id or "").strip()
+        if not candidate:
+            raise ValueError("任务没有已选模型，请在本次动作中显式选择当前供应商返回的模型。")
         self.model_catalog.ensure_novel_generation_model_supported(candidate)
         return candidate
 
@@ -188,8 +181,15 @@ class TaskServiceCoreMixin:
             return requested_model
         return self._resolve_task_model_id(task)
 
-    def _resolve_auto_review_policy(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, Any]:
-        policy_dict = dict(task.auto_review_policy or self.auto_review_policy or {})
+    def _resolve_auto_review_policy(
+        self,
+        task: TaskRecord,
+        action_model_id: str | None = None,
+        *,
+        validate_models: bool = True,
+        policy_source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        policy_dict = dict(policy_source) if policy_source is not None else dict(task.auto_review_policy or self.auto_review_policy or {})
         if task.auto_review_model_mode is not None:
             policy_dict["auto_review_model_mode"] = task.auto_review_model_mode.value
         if task.review_model_id:
@@ -210,12 +210,24 @@ class TaskServiceCoreMixin:
                 policy_dict["auditor_model"] = resolved_model_id
             if not str(policy_dict.get("synthesis_model") or "").strip():
                 policy_dict["synthesis_model"] = str(policy_dict.get("auditor_model") or resolved_model_id)
-        AutoReviewPolicy.model_validate(policy_dict)
+        policy = AutoReviewPolicy.model_validate(policy_dict)
+        if validate_models and policy.auto_review_model_mode is AutoReviewModelMode.FIXED:
+            checked_model_ids: set[str] = set()
+            for configured_model_id in (policy.auditor_model, policy.synthesis_model):
+                candidate = configured_model_id.strip()
+                if candidate and candidate not in checked_model_ids:
+                    self.model_catalog.ensure_novel_generation_model_supported(candidate)
+                    checked_model_ids.add(candidate)
         return policy_dict
 
     def _auto_review_model_metadata(self, task: TaskRecord, action_model_id: str | None = None) -> dict[str, str]:
-        creative_model_id = self._resolve_action_model_id(task, action_model_id)
-        policy = AutoReviewPolicy.model_validate(self._resolve_auto_review_policy(task, action_model_id))
+        creative_model_id = (action_model_id or task.model_id or "").strip()
+        policy_dict = dict(task.auto_review_policy or self.auto_review_policy or {})
+        if task.auto_review_model_mode is not None:
+            policy_dict["auto_review_model_mode"] = task.auto_review_model_mode.value
+        if task.review_model_id:
+            policy_dict["review_model_id"] = task.review_model_id
+        policy = AutoReviewPolicy.model_validate(policy_dict)
         if policy.auto_review_model_mode is AutoReviewModelMode.FOLLOW_CREATIVE:
             return {
                 "auto_review_model_mode": AutoReviewModelMode.FOLLOW_CREATIVE.value,
@@ -223,7 +235,12 @@ class TaskServiceCoreMixin:
             }
         return {
             "auto_review_model_mode": AutoReviewModelMode.FIXED.value,
-            "review_model_id": policy.auditor_model or policy.synthesis_model or "",
+            "review_model_id": (
+                str(policy_dict.get("review_model_id") or "").strip()
+                or policy.auditor_model
+                or policy.synthesis_model
+                or creative_model_id
+            ),
         }
 
     def _with_model_id(self, payload: dict[str, Any], model_id: str) -> dict[str, Any]:
@@ -248,6 +265,7 @@ class TaskServiceCoreMixin:
 
     def cancel_task(self, task_id: str, comment: str = "") -> TaskRecord:
         """取消一个正在运行或等待审核的任务。"""
+        push_request_flow("service.cancel_task")
         # 检查任务是否在活跃运行中，如果是则请求后台链路停止写入。
         with self._run_lock:
             was_active = task_id in self._active_runs
@@ -284,6 +302,7 @@ class TaskServiceCoreMixin:
 
     def delete_task(self, task_id: str) -> dict[str, str]:
         """删除一个已取消/已完成/失败的任务（不能删除运行中的任务）。"""
+        push_request_flow("service.delete_task")
         # 再次确认任务不在活跃运行中
         with self._run_lock:
             if task_id in self._active_runs:
@@ -305,6 +324,7 @@ class TaskServiceCoreMixin:
             raise RuntimeError(f"删除任务 {task_id} 的数据库关联记录失败") from exc
 
     def run_task(self, task_id: str, model_id: str | None = None) -> TaskRecord:
+        push_request_flow("service.run_task")
         with self._run_lock:
             if task_id in self._active_runs:
                 raise ValueError("任务正在运行中，请勿重复提交。")
@@ -489,7 +509,7 @@ class TaskServiceCoreMixin:
             task_id,
             kind="completed",
             title="正文生成完成",
-            detail="章节已全部写完，正文与工件已归档。",
+            detail="章节已全部写完，正文与工件等待用户确认归档。",
         )
         return record
 
@@ -556,7 +576,11 @@ class TaskServiceCoreMixin:
         reference_text = "\n\n".join(source.content for source in task.sources)
         resolved_auto_review = self._resolve_task_auto_review(task)
         resolved_model_id = self._resolve_action_model_id(task, action_model_id)
-        auto_review_policy = self._resolve_auto_review_policy(task, action_model_id)
+        auto_review_policy = self._resolve_auto_review_policy(
+            task,
+            action_model_id,
+            validate_models=resolved_auto_review,
+        )
         return {
             "task_id": task.id,
             "input_payload": {
@@ -607,6 +631,7 @@ class TaskServiceCoreMixin:
         try:
             snapshot = self.workflow_engine.get_state(self._config(task_id))
         except Exception:
+            logger.warning("读取工作流 checkpoint 状态失败 task_id=%s", task_id, exc_info=True)
             return {}
         return snapshot.values if snapshot and hasattr(snapshot, "values") and isinstance(snapshot.values, dict) else {}
 
@@ -680,6 +705,18 @@ class TaskServiceCoreMixin:
         current = self.store.get(task_id)
         if self._is_stop_requested(task_id):
             return current
+        recovered_completed = self._recover_completed_result_from_available_chapters(
+            current,
+            source="runtime_failure",
+            failure_message=message,
+        )
+        if recovered_completed is not None:
+            logger.warning(
+                "后台异常发生时章节已完整落盘，已恢复为完成态。task_id=%s reason=%s",
+                task_id,
+                message,
+            )
+            return self._safe_sync_supervisor_plan(task_id, fallback=recovered_completed)
         if self._has_stable_terminal_state(current):
             logger.warning(
                 "任务已进入稳定状态，跳过失败覆盖。task_id=%s status=%s reason=%s",

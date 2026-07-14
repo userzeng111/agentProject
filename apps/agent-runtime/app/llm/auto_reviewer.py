@@ -589,11 +589,9 @@ class AutoReviewManager(BaseAgent):
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient | None = None,
-        default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 3,
     ) -> None:
         super().__init__(gateway_client=gateway_client)
-        self.default_model = default_model
         self.max_workers = max_workers
         self._lock = threading.Lock()
 
@@ -657,6 +655,9 @@ class AutoReviewManager(BaseAgent):
         review_type = payload.type
         logger.info("自动审核开始: review_type=%s, auditor_model=%s, synthesis_model=%s", review_type, policy.auditor_model, policy.synthesis_model)
 
+        if not str(policy.auditor_model or "").strip() or not str(policy.synthesis_model or "").strip():
+            return self._fallback_decision("自动审核缺少显式模型，请重新选择当前在线模型后再试。")
+
         try:
             if review_type == "outline_review":
                 decision = self._review_outline_multi(payload, policy)
@@ -669,7 +670,7 @@ class AutoReviewManager(BaseAgent):
             logger.info("自动审核结束: review_type=%s, score=%s, approved=%s, auto_escalated=%s, agent_trace_count=%s", review_type, decision.overall_score, decision.approved, decision.auto_escalated, len(decision.agent_trace))
             return decision
         except GatewayClientError:
-            logger.error("自动审核失败: gateway_client 未配置")
+            logger.error("自动审核失败: gateway_client 未配置 review_type=%s", review_type)
             return self._fallback_decision("自动审核服务未配置 gateway_client")
         except Exception as e:
             logger.error("自动审核执行异常: %s", e, exc_info=True)
@@ -725,7 +726,7 @@ class AutoReviewManager(BaseAgent):
     ) -> list[SubAgentOutput]:
         """并行执行多个子 Agent（使用线程池）"""
         if not specs:
-            logger.warning("并行执行子 Agent: specs 为空")
+            logger.warning("并行执行子 Agent: specs 为空 model=%s", model)
             return []
 
         max_workers = min(len(specs), self.max_workers)
@@ -1043,9 +1044,12 @@ class AutoReviewManager(BaseAgent):
             {"role": "system", "content": "你是一个中文小说质量审核专家，请严格返回 JSON 格式的审核结果，不要输出额外解释。"},
             {"role": "user", "content": prompt},
         ]
+        model_id = str(model or "").strip()
+        if not model_id:
+            raise GatewayClientError("自动审核缺少显式模型，调用已拒绝。")
         response = self._call_llm_json(
             messages,
-            model=model or self.default_model,
+            model=model_id,
             max_retries=1,
         )
         return json.dumps(response, ensure_ascii=False)

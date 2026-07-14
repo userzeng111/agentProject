@@ -16,10 +16,9 @@ logger = get_logger(__name__)
 class ChatService:
     """聊天服务，封装与模型网关的交互及 RAG 增强逻辑。"""
 
-    def __init__(self, gateway_client, rag_service=None, default_model_resolver=None):
+    def __init__(self, gateway_client, rag_service=None):
         self.gateway_client = gateway_client
         self.rag_service = rag_service
-        self._default_model_resolver = default_model_resolver
 
     def _apply_chat_rag(self, messages: list[dict[str, str]], payload: ChatRequest) -> list[dict[str, str]]:
         """根据请求对消息进行 RAG 增强。"""
@@ -29,7 +28,7 @@ class ChatService:
             augmented_messages, _ = self.rag_service.augment_chat_messages(messages, top_k=payload.rag_top_k)
             return augmented_messages
         except Exception:
-            logger.exception("RAG 增强失败，回退到原始消息")
+            logger.exception("RAG 增强失败，回退到原始消息 rag_top_k=%s", payload.rag_top_k)
             return messages
 
     def _resolve_chat_model(self, requested_model: str | None) -> str:
@@ -37,16 +36,10 @@ class ChatService:
         candidate = (requested_model or "").strip()
         if candidate:
             return candidate
-        if self._default_model_resolver is not None:
-            candidate = str(self._default_model_resolver() or "").strip()
-            if candidate:
-                return candidate
-        raise HTTPException(status_code=400, detail="未指定模型且系统默认模型不可用。")
+        raise HTTPException(status_code=400, detail="未指定模型，请显式选择当前供应商返回的模型。")
 
     def _build_thinking_param(self, model_id: str) -> dict[str, Any] | None:
-        """为支持 extended thinking 的模型构造 thinking 参数（Anthropic 协议）。"""
-        if model_id == "K2.6":
-            return {"type": "enabled", "budget_tokens": 1024}
+        """网关能力未声明扩展思考参数时，不注入特定模型专用请求字段。"""
         return None
 
     def _sse_payload(self, event_name: str, payload: dict) -> str:
@@ -64,6 +57,7 @@ class ChatService:
         messages = self._apply_chat_rag(messages, payload)
 
         resolved_model = self._resolve_chat_model(payload.model)
+        self._ensure_current_provider_model(resolved_model)
 
         async def _sse_stream():
             try:
@@ -85,7 +79,7 @@ class ChatService:
                     yield self._sse_payload("chat.chunk", data)
                 yield self._sse_payload("chat.done", {"model": resolved_model})
             except GatewayClientError as exc:
-                logger.exception("流式聊天网关错误")
+                logger.exception("流式聊天网关错误 model=%s", resolved_model)
                 yield self._sse_payload("chat.error", {"message": str(exc)})
 
         return _sse_stream()
@@ -101,6 +95,7 @@ class ChatService:
         messages = self._apply_chat_rag(messages, payload)
 
         resolved_model = self._resolve_chat_model(payload.model)
+        self._ensure_current_provider_model(resolved_model)
 
         if payload.stream:
             # 流式模式：以 OpenAI 兼容 SSE 格式返回
@@ -127,46 +122,54 @@ class ChatService:
 
                     yield "data: [DONE]\n\n"
                 except GatewayClientError as exc:
-                    logger.exception("OpenAI 流式聊天网关错误")
+                    logger.exception("OpenAI 流式聊天网关错误 model=%s", resolved_model)
                     error_chunk = {"error": {"message": str(exc), "type": "gateway_error"}}
                     yield f"data: {json.dumps(error_chunk, ensure_ascii=False)}\n\n"
 
             return _openai_sse_stream()
-        else:
-            # 非流式模式：收集全部内容一次性返回
-            try:
-                full_content = ""
-                full_reasoning = ""
-                usage_data = {}
-                thinking_param = self._build_thinking_param(resolved_model)
-                async for chunk in self.gateway_client.complete_stream(
-                    messages=messages,
-                    model=resolved_model,
-                    **({"thinking": thinking_param} if thinking_param else {}),
-                ):
-                    full_content += chunk.content
-                    full_reasoning += chunk.reasoning_content
-                    if chunk.usage:
-                        usage_data = chunk.usage
-                message: dict[str, Any] = {"role": "assistant", "content": full_content}
-                if full_reasoning:
-                    message["reasoning_content"] = full_reasoning
-                return {
-                    "id": f"chatcmpl-{uuid4().hex[:24]}",
-                    "object": "chat.completion",
-                    "model": resolved_model,
-                    "choices": [
-                        {
-                            "index": 0,
-                            "message": message,
-                            "finish_reason": "stop",
-                        }
-                    ],
-                    "usage": usage_data,
-                }
-            except GatewayClientError as exc:
-                logger.exception("OpenAI 非流式聊天网关错误")
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # 非流式模式：收集全部内容一次性返回
+        try:
+            full_content = ""
+            full_reasoning = ""
+            usage_data = {}
+            thinking_param = self._build_thinking_param(resolved_model)
+            async for chunk in self.gateway_client.complete_stream(
+                messages=messages,
+                model=resolved_model,
+                **({"thinking": thinking_param} if thinking_param else {}),
+            ):
+                full_content += chunk.content
+                full_reasoning += chunk.reasoning_content
+                if chunk.usage:
+                    usage_data = chunk.usage
+            message: dict[str, Any] = {"role": "assistant", "content": full_content}
+            if full_reasoning:
+                message["reasoning_content"] = full_reasoning
+            return {
+                "id": f"chatcmpl-{uuid4().hex[:24]}",
+                "object": "chat.completion",
+                "model": resolved_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": usage_data,
+            }
+        except GatewayClientError as exc:
+            logger.exception("OpenAI 非流式聊天网关错误 model=%s", resolved_model)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def _ensure_current_provider_model(self, model_id: str) -> None:
+        validator = getattr(self.gateway_client, "ensure_model_available", None)
+        if not callable(validator):
+            return
+        try:
+            validator(model_id, force_refresh=True)
+        except GatewayClientError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _openai_chunk(

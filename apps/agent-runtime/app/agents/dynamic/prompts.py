@@ -53,9 +53,11 @@ MASTER_BLUEPRINT_PROMPT = """请根据以下任务信息，动态规划所需的
    - 子 Agent 仅作为主 Agent 派发的工具执行单元
 7. 用户 prompt 模板中**必须**使用以下可用变量占位符（按原样使用，不要发明新变量名）：
    - {{current_chapters_text}}: 当前待审核的完整章节文本（chapter_pair_review 任务必须直接使用此变量，不得自行构造如"【第1章内容】"之类的占位符）
+   - {{working_title}}, {{logline}}, {{world_notes}}, {{character_notes}}, {{chapter_plan}}: 当前小说大纲与章节计划（outline_review 任务必须直接使用 {{chapter_plan}}，并至少结合 {{working_title}}、{{logline}} 判断结构与逻辑）
    - {{sub_agents_json}}: 子 Agent 的审核结果（仅综合 Agent 可用）
    - {{mode}}, {{genre}}, {{style}}, {{target_words}}: 任务基本信息
    如果上下文中有章节内容，分析型 Agent 的模板中**必须包含 {{current_chapters_text}}**，确保子 Agent 能拿到实际文本进行审核。
+   如果任务类型是 outline_review，分析型 Agent 的模板中**必须包含 {{chapter_plan}}**，确保子 Agent 能拿到真实大纲和章节计划进行审核。
 
 【输出要求】
 严格返回 JSON：

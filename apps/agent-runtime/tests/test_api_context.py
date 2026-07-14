@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import time
 import unittest
@@ -9,13 +10,82 @@ from fastapi.testclient import TestClient
 from app.api.routes import build_router
 from app.application.task_service import TaskService
 from app.domain.models import CreativeMode, DraftResult, NovelSize, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode
-from app.llm.model_catalog import ModelCatalogService
 from app.llm.gateway_client import StreamChunk
 from app.llm.story_engine import StoryEngine
 from app.rag.service import RagHit
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
-from tests.fakes import FakeRagService
+from tests.fakes import FakeRagService, build_verified_gateway_model_catalog
+
+
+class FakeGatewayModelDirectory:
+    """为任务接口测试提供当前供应商可见的模型目录。"""
+
+    def list_models(self):
+        return [
+            {
+                "id": "gpt-5.4",
+                "object": "model",
+                "owned_by": "openai",
+                "context_length": 256000,
+            },
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+            {"id": "K2.6", "object": "model", "owned_by": "custom"},
+        ]
+
+
+class FakeModelCompatibilityService:
+    def __init__(self) -> None:
+        self.reports = {
+            "K2.7": {
+                "model_id": "K2.7",
+                "status": "failed",
+                "summary": "验证失败",
+                "failure_reason": "未收到推理信号",
+                "checks": [],
+                "evidence": {},
+            }
+        }
+
+    def get_report(self, model_id: str):
+        return self.reports.get(model_id, {"model_id": model_id, "status": "unverified", "summary": "尚未验证"})
+
+    def clear_report(self, model_id: str):
+        self.reports.pop(model_id, None)
+        return self.get_report(model_id)
+
+    async def run_validation_stream(self, model_id: str, context_marker: str | None = None):
+        yield {
+            "event": "validation.started",
+            "data": {
+                "model_id": model_id,
+                "context_marker": context_marker or "CTX-api",
+            },
+        }
+        yield {
+            "event": "validation.check",
+            "data": {
+                "model_id": model_id,
+                "check": {"id": "streaming", "status": "passed", "summary": "收到 chunk"},
+            },
+        }
+        yield {
+            "event": "validation.chat_chunk",
+            "data": {
+                "model_id": model_id,
+                "content": "验证正文",
+                "reasoning_signal": True,
+                "reasoning_chars_delta": 12,
+            },
+        }
+        yield {
+            "event": "validation.done",
+            "data": {
+                "model_id": model_id,
+                "status": "verified",
+                "report": {"model_id": model_id, "status": "verified"},
+            },
+        }
 
 
 class ApiContextIntegrationTests(unittest.TestCase):
@@ -23,12 +93,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         settings = Settings(
             LLM_API_KEY="",
-            DEFAULT_CHAT_MODEL="gpt-5.4",
+            DEFAULT_CHAT_MODEL="",
             tasklog_root=str(Path(self.tmp_dir.name) / "tasklog"),
         )
         store = TaskLogStore(root_dir=str(Path(self.tmp_dir.name) / "tasklog"))
         engine = StoryEngine(settings)
-        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
         task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
         app = FastAPI()
@@ -45,22 +115,23 @@ class ApiContextIntegrationTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["meta"]["default_model"], "gpt-5.4")
-        self.assertIn("capabilities", payload["data"][0])
-        self.assertIn("context_window", payload["data"][0]["capabilities"])
+        self.assertNotIn("default_model", payload["meta"])
+        gpt_model = next(item for item in payload["data"] if item["id"] == "gpt-5.4")
+        self.assertIn("capabilities", gpt_model)
+        self.assertIn("context_window", gpt_model["capabilities"])
 
     def test_protocol_settings_endpoint_returns_configured_default_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 _env_file=None,
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 DEFAULT_PROTOCOL="anthropic",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             app = FastAPI()
@@ -72,7 +143,197 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["default_protocol"], "anthropic")
 
-    def test_create_task_returns_400_for_unverified_novel_model(self) -> None:
+    def test_model_validation_get_delete_and_stream_endpoints(self) -> None:
+        app = FastAPI()
+        service = FakeModelCompatibilityService()
+        app.include_router(
+            build_router(self.task_service, model_compatibility_service=service),
+            prefix="/api",
+        )
+        client = TestClient(app)
+
+        get_response = client.get("/api/model-validation", params={"model_id": "K2.7"})
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.json()["status"], "failed")
+
+        stream_response = client.post("/api/model-validation", json={"model_id": "K2.7"})
+        self.assertEqual(stream_response.status_code, 200)
+        self.assertIn("text/event-stream", stream_response.headers["content-type"])
+        self.assertIn("event: validation.started", stream_response.text)
+        self.assertIn("event: validation.check", stream_response.text)
+        self.assertIn("event: validation.chat_chunk", stream_response.text)
+        self.assertIn("event: validation.done", stream_response.text)
+
+        delete_response = client.request("DELETE", "/api/model-validation", json={"model_id": "K2.7"})
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertEqual(delete_response.json()["status"], "unverified")
+
+    def test_task_event_stream_warns_once_when_terminal_status_check_fails(self) -> None:
+        class FailingStore:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get(self, task_id: str):
+                self.calls += 1
+                raise RuntimeError(f"store unavailable for {task_id}")
+
+        class OneShotQueue:
+            def __init__(self, payload: dict) -> None:
+                self.payload = payload
+                self.calls = 0
+
+            async def get(self) -> dict:
+                self.calls += 1
+                if self.calls == 1:
+                    raise asyncio.TimeoutError
+                if self.calls > 2:
+                    raise RuntimeError("测试队列只能读取两次")
+                return self.payload
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = FailingStore()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> OneShotQueue:
+                return OneShotQueue(
+                    {
+                        "task_id": task_id,
+                        "event_type": "task.completed",
+                    }
+                )
+
+            def unsubscribe_task_events(self, task_id: str, queue: OneShotQueue) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_terminal_check_warning_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        with self.assertLogs("app.api.routes", level="WARNING") as logs:
+            response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn(": keep-alive", response.text)
+        self.assertIn("event: task.event", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertIn("task.completed", response.text)
+        self.assertEqual(service.store.calls, 2)
+        self.assertTrue(service.unsubscribed)
+        self.assertEqual(len(logs.output), 1)
+        log_output = logs.output[0]
+        self.assertIn("任务事件流终态检查失败", log_output)
+        self.assertIn(task_id, log_output)
+
+    def test_task_event_stream_stops_when_status_is_waiting_manual_action(self) -> None:
+        class StatusValue:
+            value = "waiting_manual_action"
+
+        class ManualActionTask:
+            status = StatusValue()
+
+        class ManualActionStore:
+            def get(self, task_id: str):
+                return ManualActionTask()
+
+        class QueueShouldNotBeRead:
+            async def get(self) -> dict:
+                raise RuntimeError("等待人工处理状态不应继续读取事件队列")
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = ManualActionStore()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> QueueShouldNotBeRead:
+                return QueueShouldNotBeRead()
+
+            def unsubscribe_task_events(self, task_id: str, queue: QueueShouldNotBeRead) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_manual_action_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertIn("task.recovery.blocked", response.text)
+        self.assertIn('"status": "waiting_manual_action"', response.text)
+        self.assertNotIn("event: task.event", response.text)
+        self.assertTrue(service.unsubscribed)
+
+    def test_task_event_stream_stops_on_recovery_blocked_event(self) -> None:
+        class StatusValue:
+            value = "planning"
+
+        class RunningTask:
+            status = StatusValue()
+
+        class RunningStore:
+            def get(self, task_id: str):
+                return RunningTask()
+
+        class RecoveryBlockedQueue:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def get(self) -> dict:
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("task.recovery.blocked 后不应再次读取事件队列")
+                return {
+                    "task_id": "task_sse_recovery_blocked_fixture",
+                    "event_type": "task.recovery.blocked",
+                    "stage": "waiting_manual_action",
+                    "payload": {"reason": "recoverable_runtime_error"},
+                }
+
+        class StreamTaskService:
+            def __init__(self) -> None:
+                self.store = RunningStore()
+                self.queue = RecoveryBlockedQueue()
+                self.unsubscribed = False
+
+            def build_sse_snapshot(self, task_id: str) -> dict:
+                return {"task_id": task_id, "event_type": "snapshot"}
+
+            def subscribe_task_events(self, task_id: str) -> RecoveryBlockedQueue:
+                return self.queue
+
+            def unsubscribe_task_events(self, task_id: str, queue: RecoveryBlockedQueue) -> None:
+                self.unsubscribed = True
+
+        task_id = "task_sse_recovery_blocked_fixture"
+        service = StreamTaskService()
+        app = FastAPI()
+        app.include_router(build_router(service), prefix="/api")
+        client = TestClient(app)
+
+        response = client.get(f"/api/tasks/{task_id}/events/stream")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("event: snapshot", response.text)
+        self.assertIn("event: task.event", response.text)
+        self.assertIn("task.recovery.blocked", response.text)
+        self.assertIn("event: task.done", response.text)
+        self.assertEqual(service.queue.calls, 1)
+        self.assertTrue(service.unsubscribed)
+
+    def test_create_task_returns_400_for_model_absent_from_gateway_catalog(self) -> None:
         response = self.client.post(
             "/api/tasks",
             json={
@@ -89,7 +350,21 @@ class ApiContextIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("未完成兼容性验证", response.json()["detail"])
+        self.assertIn("不在当前供应商模型目录", response.json()["detail"])
+
+    def test_create_task_requires_an_explicit_model(self) -> None:
+        response = self.client.post(
+            "/api/tasks",
+            json={
+                "prompt": "写一个无默认模型的小说任务",
+                "creative_mode": "original",
+                "novel_size": "short",
+                "chapter_word_min": 1800,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("请显式选择", response.json()["detail"])
 
     def test_workspace_endpoint_returns_context_status(self) -> None:
         task = self.task_service.create_task(
@@ -136,7 +411,62 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(payload["supervisor_plan"]["planner_version"], "v1")
         self.assertEqual(payload["supervisor_plan"]["subtasks"][0]["kind"], "reference_analysis")
 
-    def test_workspace_endpoint_returns_default_and_last_action_model_fields(self) -> None:
+    def test_workspace_payload_omits_legacy_default_model_alias(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇任务模型字段契约测试小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["meta"]["creative_model_id"], "gpt-5.4")
+        self.assertEqual(payload["request_preview"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["meta"])
+        self.assertNotIn("default_model_id", payload["request_preview"])
+
+    def test_workspace_endpoint_returns_debug_summary_fields(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="港口谜案",
+            logline="档案员调查夜航失踪案。",
+            world_notes=["潮湿港口"],
+            character_notes=["女档案员"],
+            chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            story_plan=story_plan,
+            revision_count=2,
+        )
+        self.store.set_waiting_review(task.id, review, story_plan)
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("pending_review_summary", payload)
+        self.assertIn("rag_status", payload)
+        self.assertEqual(payload["pending_review_summary"]["review_type"], "outline_review")
+        self.assertNotIn("story_plan", payload["pending_review_summary"])
+
+    def test_workspace_endpoint_returns_creative_and_last_action_model_fields(self) -> None:
         self.task_service.model_catalog.ensure_novel_generation_model_supported = lambda _model_id: None
         self.task_service._start_background = lambda *args, **kwargs: None
 
@@ -156,10 +486,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.json()
         self.assertEqual(payload["meta"]["model_id"], "gpt-5.4")
-        self.assertEqual(payload["meta"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["meta"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["meta"])
         self.assertEqual(payload["meta"]["last_action_model_id"], "glm-5.1")
         self.assertEqual(payload["meta"]["last_action_kind"], "run")
-        self.assertEqual(payload["request_preview"]["default_model_id"], "gpt-5.4")
+        self.assertEqual(payload["request_preview"]["creative_model_id"], "gpt-5.4")
+        self.assertNotIn("default_model_id", payload["request_preview"])
         self.assertEqual(payload["request_preview"]["last_action_model_id"], "glm-5.1")
         self.assertEqual(payload["allowed_actions"], [])
         self.assertEqual(payload["recommended_action"], "")
@@ -410,13 +742,18 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 "total_tokens": 140,
                 "cached_tokens": 30,
                 "cache_read_input_tokens": 20,
+                "cache_creation_input_tokens": 0,
+                "reasoning_tokens": 0,
             },
         )
         self.assertEqual(report["by_model"]["gpt-5.4"]["total_tokens"], 140)
         self.assertEqual(report["by_model"]["gpt-5.4"]["usage_count"], 1)
         self.assertEqual(report["by_stage"]["planning"]["total_tokens"], 140)
         self.assertEqual(report["exchange_count"], 3)
+        self.assertEqual(report["request_count"], 2)
         self.assertEqual(report["cache_hit_count"], 1)
+        self.assertEqual(report["runtime_response_cache_hit_count"], 1)
+        self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
         self.assertEqual(report["latest_exchange"]["exchange_label"], "full-story-verification")
         self.assertFalse(report["latest_exchange"]["cache_hit"])
         self.assertEqual(report["latest_usage"]["model"], "gpt-5.4")
@@ -427,6 +764,182 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(report["slowest_step"]["duration_ms"], 52000.0)
         self.assertEqual(report["slowest_first_token"]["exchange_label"], "full-story-verification")
         self.assertEqual(report["slowest_first_token"]["first_token_ms"], 4200.0)
+
+    def test_workspace_endpoint_normalizes_real_provider_usage_shapes(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="K2.6",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="drafting",
+            message="模型调用用量已更新。",
+            event_type="model.usage",
+            unit_id="chapter-01",
+            payload={
+                "prompt_tokens": 216,
+                "completion_tokens": 272,
+                "total_tokens": 488,
+                "output_tokens": 0,
+                "usage_semantic": "openai",
+                "usage_source": "anthropic",
+                "prompt_tokens_details": {
+                    "cached_tokens": 33,
+                    "text_tokens": 200,
+                },
+                "completion_tokens_details": {
+                    "reasoning_tokens": 44,
+                    "text_tokens": 228,
+                },
+                "input_tokens_details": {
+                    "cache_read": 11,
+                },
+                "claude_cache_creation_5_m_tokens": 5,
+                "claude_cache_creation_1_h_tokens": 4,
+                "model": "K2.6",
+                "finish_reason": "stop",
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(
+            report["usage_total"],
+            {
+                "input_tokens": 216,
+                "output_tokens": 272,
+                "total_tokens": 488,
+                "cached_tokens": 33,
+                "cache_read_input_tokens": 11,
+                "cache_creation_input_tokens": 9,
+                "reasoning_tokens": 44,
+            },
+        )
+        self.assertEqual(report["by_model"]["K2.6"]["reasoning_tokens"], 44)
+        self.assertEqual(report["by_stage"]["drafting"]["cache_creation_input_tokens"], 9)
+        self.assertEqual(report["provider_prompt_cache_hit_count"], 1)
+        self.assertTrue(report["latest_usage"]["provider_prompt_cache_hit"])
+        self.assertEqual(report["latest_usage"]["output_tokens"], 272)
+
+    def test_workspace_endpoint_normalizes_nested_usage_payload(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="K2.6",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="drafting",
+            message="模型调用用量已更新。",
+            event_type="model.usage",
+            unit_id="chapter-01",
+            payload={
+                "usage": {
+                    "prompt_tokens": 305,
+                    "completion_tokens": 32,
+                    "total_tokens": 337,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 64,
+                        "cache_read_input_tokens": 48,
+                    },
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 12,
+                    },
+                },
+                "usage_source_path": "usage",
+                "model": "K2.6",
+                "finish_reason": "length",
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(
+            report["usage_total"],
+            {
+                "input_tokens": 305,
+                "output_tokens": 32,
+                "total_tokens": 337,
+                "cached_tokens": 64,
+                "cache_read_input_tokens": 48,
+                "cache_creation_input_tokens": 0,
+                "reasoning_tokens": 12,
+            },
+        )
+        self.assertEqual(report["usage_count"], 1)
+        self.assertEqual(report["usage_status"], "complete")
+        self.assertEqual(report["by_model"]["K2.6"]["total_tokens"], 337)
+        self.assertEqual(report["latest_usage"]["finish_reason"], "length")
+
+    def test_workspace_llm_report_counts_requests_without_usage_events(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                prompt="写一篇港口悬疑小说",
+                creative_mode=CreativeMode.ORIGINAL,
+                novel_size=NovelSize.SHORT,
+                chapter_word_min=1800,
+                model_id="gpt-5.4",
+            )
+        )
+        self.store.append_event(
+            task.id,
+            stage="planning",
+            message="planning 阶段已记录模型上下文链：outline",
+            event_type="context.history.updated",
+            unit_id="outline",
+            payload={
+                "cache_hit": False,
+                "model": "gpt-5.4",
+                "exchange_label": "outline",
+                "timing_details": [
+                    {
+                        "stage": "planning",
+                        "exchange_label": "outline",
+                        "model": "gpt-5.4",
+                        "duration_ms": 900.0,
+                        "first_token_ms": 120.0,
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+        self.store.append_event(
+            task.id,
+            stage="verification",
+            message="verification 阶段模型响应 JSON 解析失败：chapter-window-gate",
+            event_type="model.response.parse_failed",
+            unit_id="chapter-window-gate",
+            payload={
+                "model": "gpt-5.4",
+                "exchange_label": "chapter-window-gate",
+                "finish_reason": "length",
+                "raw_response_chars": 0,
+            },
+        )
+
+        response = self.client.get(f"/api/tasks/{task.id}/workspace")
+
+        self.assertEqual(response.status_code, 200)
+        report = response.json()["llm_report"]
+        self.assertEqual(report["usage_count"], 0)
+        self.assertEqual(report["request_count"], 2)
+        self.assertEqual(report["usage_missing_count"], 2)
+        self.assertEqual(report["usage_status"], "missing")
+        self.assertEqual(report["exchange_count"], 1)
+        self.assertEqual(report["timing_count"], 1)
 
     def test_review_endpoint_returns_outline_revision_count(self) -> None:
         task = self.task_service.create_task(
@@ -619,7 +1132,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(captured["model_id"], "gpt-5.4")
         self.assertEqual(captured["recovery_mode"], "restart_from_input")
 
-    def test_result_and_archive_endpoints_expose_json_refs_and_sources(self) -> None:
+    def test_completed_task_stays_in_completed_until_user_archives(self) -> None:
         task = self.task_service.create_task(
             TaskCreateRequest(
                 mode=TaskMode.SHORT_STORY,
@@ -633,31 +1146,62 @@ class ApiContextIntegrationTests(unittest.TestCase):
             logline="档案员调查夜航失踪案。",
             world_notes=["潮湿港口"],
             character_notes=["女档案员"],
-            chapter_plan=[{"number": 1, "title": "起始", "goal": "发现异常"}],
+            chapter_plan=[
+                {"number": 1, "title": "起始", "goal": "发现异常"},
+                {"number": 2, "title": "夜航", "goal": "追查失踪船只"},
+            ],
         )
         draft_result = DraftResult(
             title="港口谜案",
             summary="调查开始。",
             body="正文内容",
-            chapters=[{"number": 1, "title": "起始", "summary": "发现异常", "content": "章节正文"}],
+            chapters=[
+                {"number": 1, "title": "起始", "summary": "发现异常", "content": "章节正文"},
+                {"number": 2, "title": "夜航", "summary": "追查船只", "content": "第二章正文"},
+            ],
         )
         artifacts = self.task_service._build_artifacts(story_plan, draft_result)
         self.store.set_completed(task.id, story_plan, draft_result, artifacts)
 
+        dashboard_response = self.client.get("/api/dashboard")
         result_response = self.client.get(f"/api/tasks/{task.id}/result")
         archive_list_response = self.client.get("/api/archive")
-        archive_detail_response = self.client.get(f"/api/archive/{task.id}")
 
+        self.assertEqual(self.store.get(task.id).storage_state, "runs")
+        self.assertEqual(dashboard_response.status_code, 200)
         self.assertEqual(result_response.status_code, 200)
         self.assertEqual(archive_list_response.status_code, 200)
-        self.assertEqual(archive_detail_response.status_code, 200)
 
+        dashboard_payload = dashboard_response.json()
         result_payload = result_response.json()
         archive_list_payload = archive_list_response.json()
+
+        self.assertIn(task.id, [item["task_id"] for item in dashboard_payload["completed_tasks"]])
+        self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
+        self.assertEqual(archive_list_payload["total"], 0)
+
+        archive_response = self.client.post(f"/api/tasks/{task.id}/archive")
+        archive_detail_response = self.client.get(f"/api/archive/{task.id}")
+        dashboard_after_archive_response = self.client.get("/api/dashboard")
+        archive_list_after_response = self.client.get("/api/archive")
+
+        self.assertEqual(archive_response.status_code, 200)
+        self.assertEqual(archive_detail_response.status_code, 200)
+        self.assertEqual(dashboard_after_archive_response.status_code, 200)
+        self.assertEqual(archive_list_after_response.status_code, 200)
+        self.assertEqual(self.store.get(task.id).storage_state, "archive")
+        self.assertFalse((Path(self.tmp_dir.name) / "tasklog" / "runs" / task.id).exists())
+        self.assertTrue((Path(self.tmp_dir.name) / "tasklog" / "archive" / task.id / "result.json").exists())
+
+        dashboard_after_archive = dashboard_after_archive_response.json()
+        archive_list_after = archive_list_after_response.json()
         archive_detail_payload = archive_detail_response.json()
 
-        self.assertTrue(any(item.get("json_ref") for item in result_payload["artifact_index"]))
-        self.assertIn("entry_refs", archive_list_payload["items"][0])
+        self.assertNotIn(task.id, [item["task_id"] for item in dashboard_after_archive["completed_tasks"]])
+        self.assertEqual(archive_list_after["items"][0]["task_id"], task.id)
+        self.assertIn("entry_refs", archive_list_after["items"][0])
+        self.assertEqual(archive_list_after["items"][0]["chapter_count"], 2)
+        self.assertGreater(archive_list_after["items"][0]["word_count"], 0)
         self.assertEqual(len(archive_detail_payload["sources"]), 1)
 
     def test_chat_completions_injects_rag_context_before_gateway_call(self) -> None:
@@ -713,7 +1257,7 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertEqual(call_messages[0]["role"], "system")
         self.assertIn("港口档案", call_messages[0]["content"])
 
-    def test_chat_completions_uses_updated_runtime_default_model_when_request_model_missing(self) -> None:
+    def test_chat_completions_rejects_missing_model_and_removed_default_model_endpoint(self) -> None:
         class FakeGateway:
             def __init__(self) -> None:
                 self.calls = []
@@ -731,13 +1275,13 @@ class ApiContextIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FakeGateway()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             from app.services import ChatService
@@ -746,13 +1290,12 @@ class ApiContextIntegrationTests(unittest.TestCase):
             chat_service = ChatService(
                 gateway_client=engine.gateway_client,
                 rag_service=None,
-                default_model_resolver=lambda: engine.resolve_model(None),
             )
             app.include_router(build_router(task_service, chat_service=chat_service), prefix="/api")
             client = TestClient(app)
 
             update_response = client.patch("/api/settings/default-model", json={"model_id": "glm-5.1"})
-            self.assertEqual(update_response.status_code, 200)
+            self.assertEqual(update_response.status_code, 410)
 
             response = client.post(
                 "/api/chat/completions",
@@ -762,22 +1305,22 @@ class ApiContextIntegrationTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(engine.gateway_client.calls[0]["model"], "glm-5.1")
-            self.assertEqual(response.json()["model"], "glm-5.1")
+            self.assertEqual(response.status_code, 400)
+            self.assertIn("未指定模型", response.json()["detail"])
+            self.assertEqual(engine.gateway_client.calls, [])
 
     def test_upload_asset_rejects_file_larger_than_configured_limit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 _env_file=None,
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
                 UPLOAD_MAX_BYTES=4,
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, FakeGatewayModelDirectory())
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             task = task_service.create_task(
                 TaskCreateRequest(

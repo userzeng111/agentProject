@@ -358,9 +358,14 @@ class NovelCorpusRebuildService:
         if not self.config.status_path.exists():
             return None
         try:
-            return json.loads(self.config.status_path.read_text(encoding="utf-8"))
-        except Exception:
+            payload = json.loads(self.config.status_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("读取 RAG 重建状态失败: path=%s error=%s", self.config.status_path, exc)
             return None
+        if not isinstance(payload, dict):
+            logger.warning("RAG 重建状态格式不正确: path=%s type=%s", self.config.status_path, type(payload).__name__)
+            return None
+        return payload
 
     def _write_status(self, payload: dict[str, Any]) -> None:
         self.config.library_dir.mkdir(parents=True, exist_ok=True)

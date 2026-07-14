@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import TaskReviewClient from "@/features/task-review/task-review-client";
+import LegacyReviewPage from "./legacy-review-page";
 
 export default function ReviewPage() {
   return (
     <Suspense fallback={null}>
-      <TaskReviewClient />
+      <LegacyReviewPage />
     </Suspense>
   );
 }

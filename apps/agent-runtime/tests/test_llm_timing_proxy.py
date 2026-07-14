@@ -88,7 +88,7 @@ def _start_upstream_server(
     first_chunk_size: int = 1,
     delay_after_first_chunk: float = 0.05,
 ) -> _ServerHandle:
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+    server = ThreadingHTTPServer(("localhost", 0), _UpstreamHandler)
     server.response_bytes = response_body
     server.status_code = status_code
     server.first_chunk_size = first_chunk_size
@@ -111,15 +111,15 @@ def test_proxy_records_only_safe_http_metadata(
 
     try:
         config = proxy_module.ProxyConfig(
-            upstream_base_url=f"http://127.0.0.1:{upstream.server.server_port}",
+            upstream_base_url=f"http://localhost:{upstream.server.server_port}",
         )
-        proxy_server = proxy_module.create_server(("127.0.0.1", 0), config)
+        proxy_server = proxy_module.create_server(("localhost", 0), config)
         thread = threading.Thread(target=proxy_server.serve_forever, daemon=True)
         thread.start()
         proxy = _ServerHandle(server=proxy_server, thread=thread)
 
         with caplog.at_level(logging.INFO, logger="llm_timing_proxy"):
-            conn = http.client.HTTPConnection("127.0.0.1", proxy_server.server_port, timeout=5)
+            conn = http.client.HTTPConnection("localhost", proxy_server.server_port, timeout=5)
             payload = json.dumps(
                 {
                     "model": "glm-5.1",
@@ -172,15 +172,15 @@ def test_proxy_falls_back_to_query_request_id_and_missing_model(
 
     try:
         config = proxy_module.ProxyConfig(
-            upstream_base_url=f"http://127.0.0.1:{upstream.server.server_port}",
+            upstream_base_url=f"http://localhost:{upstream.server.server_port}",
         )
-        proxy_server = proxy_module.create_server(("127.0.0.1", 0), config)
+        proxy_server = proxy_module.create_server(("localhost", 0), config)
         thread = threading.Thread(target=proxy_server.serve_forever, daemon=True)
         thread.start()
         proxy = _ServerHandle(server=proxy_server, thread=thread)
 
         with caplog.at_level(logging.INFO, logger="llm_timing_proxy"):
-            conn = http.client.HTTPConnection("127.0.0.1", proxy_server.server_port, timeout=5)
+            conn = http.client.HTTPConnection("localhost", proxy_server.server_port, timeout=5)
             conn.request("GET", "/health?request_id=req-query-1")
             response = conn.getresponse()
             body = response.read()

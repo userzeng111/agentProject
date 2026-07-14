@@ -8,9 +8,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$SCRIPT_DIR/apps/agent-runtime"
 FRONTEND_DIR="$SCRIPT_DIR/apps/web"
-BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_HOST="${BACKEND_HOST:-localhost}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
-FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_HOST="${FRONTEND_HOST:-localhost}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
 RUNTIME_DIR="${RUNTIME_DIR:-$SCRIPT_DIR/.run}"
 DETACH_MODE="false"
@@ -53,9 +53,9 @@ usage() {
   --detach    以后台模式启动前后端，健康检查通过后退出脚本
 
 可选环境变量：
-  BACKEND_HOST   后端监听地址，默认 127.0.0.1
+  BACKEND_HOST   后端监听地址，默认 localhost
   BACKEND_PORT   后端端口，默认 8000
-  FRONTEND_HOST  前端监听地址，默认 127.0.0.1
+  FRONTEND_HOST  前端监听地址，默认 localhost
   FRONTEND_PORT  前端端口，默认 3000
   RUNTIME_DIR    pid 与日志目录，默认 ./.run
 EOF

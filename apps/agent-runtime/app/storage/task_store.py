@@ -77,13 +77,9 @@ class TaskLogStore:
             task.updated_at = utc_now()
             with self._lock:
                 self._tasks[task.id] = task
-            before_storage_state = task.storage_state
             with performance_span(logger, "task_store_write_task_files", task_id=task.id):
                 self._write_task_files(task)
             self._sync_to_db(task)
-            self._archive_completed_task(task)
-            if task.storage_state != before_storage_state:
-                self._sync_to_db(task)
             with performance_span(logger, "task_store_write_index", task_id=task.id):
                 self._write_index()
             return task
@@ -335,6 +331,27 @@ class TaskLogStore:
             task=task,
         )
         return self.save(task)
+
+    def archive_completed_task(self, task_id: str) -> TaskRecord:
+        task = self.get(task_id)
+        if task.status is not TaskStatus.COMPLETED:
+            raise ValueError("只有已完成任务可以归档。")
+        if task.draft_result is None:
+            raise ValueError("任务缺少正文结果，无法归档。")
+        if task.storage_state == "archive":
+            return task
+        self.append_event(
+            task_id,
+            stage="completed",
+            message="用户已确认结果，任务已归档。",
+            event_type="task.archived",
+            payload={"summary": "用户已确认结果，任务已归档", "display_level": "public"},
+            task=task,
+        )
+        self._archive_completed_task(task)
+        self._sync_to_db(task)
+        self._write_index()
+        return task
 
     def set_cancelled(self, task_id: str, story_plan: StoryPlan, comment: str) -> TaskRecord:
         task = self.get(task_id)
@@ -634,7 +651,20 @@ class TaskLogStore:
         for queue in self._subscribers.get(task_id, []):
             try:
                 queue.put_nowait(payload)
-            except (asyncio.QueueFull, Exception):
+            except asyncio.QueueFull:
+                logger.warning(
+                    "任务事件广播失败 task_id=%s event_type=%s reason=queue_full",
+                    task_id,
+                    event.event_type,
+                )
+                dead_queues.append(queue)
+            except Exception:
+                logger.warning(
+                    "任务事件广播失败 task_id=%s event_type=%s",
+                    task_id,
+                    event.event_type,
+                    exc_info=True,
+                )
                 dead_queues.append(queue)
         for queue in dead_queues:
             self.unsubscribe(task_id, queue)
@@ -652,6 +682,7 @@ class TaskLogStore:
                     data = json.loads(snapshot_path.read_text(encoding="utf-8"))
                     task = TaskRecord.model_validate(data)
                     task.storage_state = storage_state
+                    self._migrate_legacy_model_fields(task_dir, task)
                     loaded[task.id] = task
                 except json.JSONDecodeError:
                     logger.warning("跳过损坏的任务快照 %s: JSON 解析失败", snapshot_path)
@@ -659,6 +690,43 @@ class TaskLogStore:
                     logger.warning("跳过无法加载的任务 %s", snapshot_path)
         with self._lock:
             self._tasks.update(loaded)
+
+    def _migrate_legacy_model_fields(self, task_dir: Path, task: TaskRecord) -> None:
+        legacy_paths = self._legacy_model_field_paths(task_dir)
+        if not legacy_paths:
+            return
+        try:
+            self._write_json(task_dir / "task.json", task.model_dump(mode="json"))
+            self._write_json(task_dir / "state" / "task.json", task.model_dump(mode="json"))
+            self._write_json(task_dir / "meta.json", self._meta_payload(task))
+            self._write_json(task_dir / "request.json", self._request_payload(task))
+            logger.info(
+                "已规范化历史任务模型字段 task_id=%s files=%s",
+                task.id,
+                ",".join(legacy_paths),
+            )
+        except OSError:
+            logger.warning(
+                "规范化历史任务模型字段失败 task_id=%s files=%s",
+                task.id,
+                ",".join(legacy_paths),
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _legacy_model_field_paths(task_dir: Path) -> list[str]:
+        paths: list[str] = []
+        for relative_path in ("task.json", "state/task.json", "meta.json", "request.json"):
+            path = task_dir / relative_path
+            if not path.exists():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and "default_model_id" in payload:
+                paths.append(relative_path)
+        return paths
 
     def _write_specs(self) -> None:
         specs = {
@@ -823,7 +891,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "status": task.status.value,
@@ -850,7 +918,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "status": task.status.value,
@@ -870,7 +938,7 @@ class TaskLogStore:
             "novel_size": task.novel_size.value if task.novel_size else "",
             "chapter_word_min": int(task.chapter_word_min or task.input.target_words or 1800),
             "model_id": task.model_id,
-            "default_model_id": task.model_id,
+            "creative_model_id": task.model_id,
             "last_action_model_id": task.last_action_model_id,
             "last_action_kind": task.last_action_kind,
             "input": task.input.model_dump(mode="json"),
@@ -885,7 +953,7 @@ class TaskLogStore:
             f"- mode: {task.mode.value}",
             f"- creative_mode: {task.creative_mode.value if task.creative_mode else '无'}",
             f"- novel_size: {task.novel_size.value if task.novel_size else '无'}",
-            f"- model_id: {task.model_id or 'gpt-5.4'}",
+            f"- model_id: {task.model_id or '未设置'}",
             f"- prompt: {task.input.prompt}",
             f"- genre: {task.input.genre}",
             f"- style: {task.input.style}",

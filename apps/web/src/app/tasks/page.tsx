@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import TaskRunClient from "@/features/task-run/task-run-client";
+import LegacyTasksPage from "./legacy-tasks-page";
 
 export default function TasksPage() {
   return (
     <Suspense fallback={null}>
-      <TaskRunClient />
+      <LegacyTasksPage />
     </Suspense>
   );
 }

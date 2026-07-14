@@ -18,7 +18,9 @@ import {
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
+  alpha,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { createTask, getModelCatalog, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
@@ -27,6 +29,7 @@ import { formatModelRefreshStatus, isCurrentSelectionValid, resolveSelectionAfte
 import { settingsHref, workspaceHref } from "@/lib/task-routes";
 import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
 import { CreativeMode, ModelOption, ModelRefreshState, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
+import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 
 const defaultPayload: TaskCreatePayload = {
   creative_mode: "original",
@@ -45,6 +48,42 @@ const defaultPayload: TaskCreatePayload = {
   auto_review_model_mode: "follow_creative",
   review_model_id: "",
 };
+
+type TaskCreateModelSelection = Pick<
+  TaskCreatePayload,
+  "model_id" | "review_model_id" | "auto_review_model_mode"
+>;
+
+export function reconcileTaskCreateModelSelection(
+  payload: TaskCreatePayload,
+  selectableModels: ModelOption[],
+): TaskCreatePayload;
+export function reconcileTaskCreateModelSelection(
+  payload: TaskCreateModelSelection,
+  selectableModels: ModelOption[],
+): TaskCreateModelSelection;
+export function reconcileTaskCreateModelSelection(
+  payload: TaskCreateModelSelection,
+  selectableModels: ModelOption[],
+): TaskCreateModelSelection {
+  const nextSelection = resolveSelectionAfterRefresh({
+    currentModelId: payload.model_id,
+    availableModels: selectableModels,
+  });
+  const currentReviewModelId = typeof payload.review_model_id === "string" ? payload.review_model_id : "";
+  const nextModelId = nextSelection.selectedModelId;
+
+  return {
+    ...payload,
+    model_id: nextModelId,
+    review_model_id:
+      payload.auto_review_model_mode === "follow_creative"
+        ? nextModelId
+        : isCurrentSelectionValid(currentReviewModelId, selectableModels)
+          ? currentReviewModelId
+          : "",
+  };
+}
 
 const creativeModeOptions: { value: CreativeMode; label: string }[] = [
   { value: "original", label: "全新原创" },
@@ -168,30 +207,12 @@ export default function CreateTaskClient() {
             ? currentModelsRef.current.find((option) => option.id === previousModelId)?.display_name || previousModelId || undefined
             : undefined,
       }));
-      setPayload((current) => {
-        const nextModelId = !current.model_id
-          ? selectableModelOptions[0]?.id || ""
-          : nextSelection.invalidated
-            ? ""
-            : nextSelection.selectedModelId;
-        if (!current.model_id) {
-          return {
-            ...current,
-            model_id: nextModelId,
-            review_model_id:
-              current.auto_review_model_mode === "follow_creative" ? nextModelId : current.review_model_id,
-          };
-        }
-        return {
-          ...current,
-          model_id: nextModelId,
-          review_model_id:
-            current.auto_review_model_mode === "follow_creative" ? nextModelId : current.review_model_id,
-        };
-      });
+      setPayload((current) => reconcileTaskCreateModelSelection(current, selectableModelOptions));
     } catch (loadError) {
       const nextError = loadError instanceof Error ? loadError.message : "读取模型列表失败";
       setError(nextError);
+      setModels([]);
+      setPayload((current) => reconcileTaskCreateModelSelection(current, []));
       setModelRefresh((current) => ({
         ...current,
         loading: false,
@@ -267,7 +288,7 @@ export default function CreateTaskClient() {
           audience: input.audience ?? current.audience,
           banned: input.banned ?? current.banned,
           title_hint: input.title_hint ?? current.title_hint,
-          model_id: task.default_model_id ?? input.model_id ?? current.model_id,
+          model_id: input.model_id ?? task.creative_model_id ?? task.model_id ?? current.model_id,
           auto_review_model_mode: input.auto_review_model_mode ?? task.auto_review_model_mode ?? current.auto_review_model_mode,
           review_model_id: input.review_model_id ?? task.review_model_id ?? current.review_model_id,
           style_profile_id: input.style_profile_id ?? current.style_profile_id,
@@ -298,15 +319,18 @@ export default function CreateTaskClient() {
   const resetPayload = useMemo(
     () => ({
       ...defaultPayload,
-      model_id: selectableModels.find((item) => item.id === payload.model_id)?.id || selectableModels[0]?.id || "",
     }),
-    [payload.model_id, selectableModels],
+    [],
   );
   const hasValidSelectedModel = isCurrentSelectionValid(payload.model_id, selectableModels);
   const hasValidReviewModel =
     !payload.auto_review ||
     payload.auto_review_model_mode !== "fixed" ||
     isCurrentSelectionValid(payload.review_model_id, selectableModels);
+  const validationErrorHref = getValidationLinkFromError(
+    error,
+    error.includes("固定审核") ? payload.review_model_id : payload.model_id,
+  );
 
   const selectedModelCapabilities = selectedModel?.capabilities;
   const selectedStyleProfile = useMemo(
@@ -330,6 +354,19 @@ export default function CreateTaskClient() {
     Boolean(hasValidReviewModel) &&
     Number(payload.target_chapter_count || 0) > 0 &&
     (!requiresStyleProfile || Boolean(selectedStyleProfile));
+  const disabledReason = !canSubmit
+    ? !payload.prompt.trim()
+      ? "请填写创意提示词"
+      : !hasValidSelectedModel || !isNovelTaskModelSupported(selectedModel)
+        ? "请选择经过小说工作流兼容性验证的创作模型"
+        : !hasValidReviewModel
+          ? "审核模型配置不完整"
+          : Number(payload.target_chapter_count || 0) <= 0
+            ? "目标总章节数必须大于 0"
+            : requiresStyleProfile && !selectedStyleProfile
+              ? "请选择创作风格"
+              : "请完成所有必填项"
+    : "";
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -394,7 +431,7 @@ export default function CreateTaskClient() {
       payload.auto_review_model_mode === "fixed" &&
       (!selectedReviewModel || !isNovelTaskModelSupported(selectedReviewModel))
     ) {
-      setError("当前固定审核模型未完成小说工作流兼容性验证，请改用已验证模型或切换为跟随创作模型。");
+      setError("当前固定审核模型未完成小说工作流兼容性验证，请改用已验证模型或切换为跟随任务创作模型。");
       return;
     }
     if (requiresStyleProfile && !selectedStyleProfile) {
@@ -459,7 +496,21 @@ export default function CreateTaskClient() {
         </Alert>
       ) : null}
 
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      {error ? (
+        <Alert
+          severity="error"
+          role="alert"
+          action={
+            validationErrorHref ? (
+              <Button component={Link} href={validationErrorHref} color="inherit" size="small">
+                去 AI 对话验证
+              </Button>
+            ) : undefined
+          }
+        >
+          {error}
+        </Alert>
+      ) : null}
 
       {/* 表单卡片 */}
       <Card>
@@ -512,14 +563,15 @@ export default function CreateTaskClient() {
             ) : (
               <Stack spacing={1.5}>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
-                  <Typography variant="subtitle2">创作模型</Typography>
+                  <Typography variant="subtitle2">任务创作模型</Typography>
                   <Button size="small" variant="outlined" onClick={() => void loadModels(true)}>
                     刷新模型
                   </Button>
                 </Stack>
                 <TextField
                   select
-                  label="创作模型"
+                  label="任务创作模型"
+                  inputProps={{ "data-testid": "model-select" }}
                   value={hasValidSelectedModel ? payload.model_id : ""}
                   onChange={updateField("model_id")}
                   helperText={
@@ -535,7 +587,7 @@ export default function CreateTaskClient() {
                   }
                 >
                   <MenuItem value="">
-                    <em>请选择创作模型</em>
+                    <em>请选择任务创作模型</em>
                   </MenuItem>
                   {models.length ? (
                     models.map((option) => (
@@ -560,13 +612,13 @@ export default function CreateTaskClient() {
 
             {!modelsLoading && selectedModel && (
               <Box
-                sx={{
+                sx={(theme) => ({
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(29, 42, 39, 0.03)",
-                }}
+                  backgroundColor: alpha(theme.palette.text.primary, 0.03),
+                })}
               >
                 <Stack spacing={1.5}>
                   <Stack
@@ -633,13 +685,13 @@ export default function CreateTaskClient() {
 
             {requiresStyleProfile ? (
               <Box
-                sx={{
+                sx={(theme) => ({
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(39, 100, 81, 0.03)",
-                }}
+                  backgroundColor: alpha(theme.palette.primary.main, 0.03),
+                })}
               >
                 <Stack spacing={2}>
                   <Stack
@@ -701,13 +753,13 @@ export default function CreateTaskClient() {
 
                   {selectedStyleProfile ? (
                     <Box
-                      sx={{
+                      sx={(theme) => ({
                         p: 2,
                         borderRadius: 2,
                         border: "1px solid",
                         borderColor: "divider",
-                        backgroundColor: "rgba(29, 42, 39, 0.02)",
-                      }}
+                        backgroundColor: alpha(theme.palette.text.primary, 0.02),
+                      })}
                     >
                       <Stack spacing={1.25}>
                         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -786,13 +838,13 @@ export default function CreateTaskClient() {
             </Box>
 
             <Box
-              sx={{
+              sx={(theme) => ({
                 p: 2,
                 borderRadius: 2,
                 border: "1px solid",
                 borderColor: "divider",
-                backgroundColor: "rgba(39, 100, 81, 0.03)",
-              }}
+                backgroundColor: alpha(theme.palette.primary.main, 0.03),
+              })}
             >
               <Stack direction="row" spacing={2} alignItems="center">
                 <FormControlLabel
@@ -819,9 +871,9 @@ export default function CreateTaskClient() {
                     label="审核模型模式"
                     value={payload.auto_review_model_mode ?? "follow_creative"}
                     onChange={updateField("auto_review_model_mode")}
-                    helperText="跟随模式会让自动审核使用当前创作模型；固定模式会始终使用下方审核模型。"
+                    helperText="跟随模式会让自动审核使用当前任务创作模型；固定模式会始终使用下方审核模型。"
                   >
-                    <MenuItem value="follow_creative">跟随当前创作模型</MenuItem>
+                    <MenuItem value="follow_creative">跟随当前任务创作模型</MenuItem>
                     <MenuItem value="fixed">固定审核模型</MenuItem>
                   </TextField>
                   {payload.auto_review_model_mode === "fixed" ? (
@@ -851,7 +903,7 @@ export default function CreateTaskClient() {
                     <Chip
                       size="small"
                       variant="outlined"
-                      label={`审核模型：跟随创作模型${payload.model_id ? `（${payload.model_id}）` : ""}`}
+                      label={`审核模型：跟随任务创作模型${payload.model_id ? `（${payload.model_id}）` : ""}`}
                       sx={{ alignSelf: "flex-start" }}
                     />
                   )}
@@ -868,9 +920,13 @@ export default function CreateTaskClient() {
             </Stack>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
-                {submitting ? "正在创建..." : "创建并进入任务页"}
-              </Button>
+              <Tooltip title={disabledReason} placement="top">
+                <span>
+                  <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
+                    {submitting ? "正在创建..." : "创建并进入任务页"}
+                  </Button>
+                </span>
+              </Tooltip>
               <Button onClick={() => setPayload(resetPayload)} variant="text">
                 重置表单
               </Button>

@@ -58,6 +58,11 @@ class ProtocolAdapter(ABC):
         ...
 
     @abstractmethod
+    def parse_completion_usage(self, response_json: dict[str, Any]) -> dict[str, Any]:
+        """解析非流式响应中的 usage。"""
+        ...
+
+    @abstractmethod
     def parse_stream_chunk(self, chunk_data: dict[str, Any]) -> dict[str, Any] | None:
         """解析单个流式 chunk 的 JSON。
 
@@ -111,21 +116,39 @@ class OpenAIAdapter(ProtocolAdapter):
             "stream": stream,
         }
         payload.update(kwargs)
+        if stream:
+            stream_options = payload.get("stream_options")
+            if stream_options is None:
+                payload["stream_options"] = {"include_usage": True}
+            elif isinstance(stream_options, dict):
+                next_stream_options = dict(stream_options)
+                next_stream_options.setdefault("include_usage", True)
+                payload["stream_options"] = next_stream_options
         return payload
 
     def parse_completion_response(self, response_json: dict[str, Any]) -> str:
         return response_json["choices"][0]["message"]["content"]
 
+    def parse_completion_usage(self, response_json: dict[str, Any]) -> dict[str, Any]:
+        usage, usage_source_path = self._extract_usage(response_json)
+        if not usage:
+            return {}
+        result = dict(usage)
+        if usage_source_path:
+            result.setdefault("usage_source_path", usage_source_path)
+        return result
+
     def parse_stream_chunk(self, chunk_data: dict[str, Any]) -> dict[str, Any] | None:
+        usage, usage_source_path = self._extract_usage(chunk_data)
         choices = chunk_data.get("choices") or []
         if not choices:
-            usage = chunk_data.get("usage")
             if usage:
                 return {
                     "content": "",
                     "reasoning_content": "",
                     "finish_reason": None,
                     "usage": usage,
+                    "usage_source_path": usage_source_path,
                 }
             return None
 
@@ -138,8 +161,35 @@ class OpenAIAdapter(ProtocolAdapter):
             "content": content,
             "reasoning_content": reasoning_content,
             "finish_reason": finish_reason,
-            "usage": None,
+            "usage": usage,
+            "usage_source_path": usage_source_path,
         }
+
+    @staticmethod
+    def _extract_usage(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            return usage, "usage"
+
+        response = payload.get("response")
+        if isinstance(response, dict) and isinstance(response.get("usage"), dict):
+            return response["usage"], "response.usage"
+
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            if isinstance(choice, dict):
+                choice_usage = choice.get("usage")
+                if isinstance(choice_usage, dict):
+                    return choice_usage, "choices[0].usage"
+                delta = choice.get("delta")
+                if isinstance(delta, dict) and isinstance(delta.get("usage"), dict):
+                    return delta["usage"], "choices[0].delta.usage"
+                message = choice.get("message")
+                if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                    return message["usage"], "choices[0].message.usage"
+
+        return None, ""
 
 
 class AnthropicAdapter(ProtocolAdapter):
@@ -261,9 +311,6 @@ class AnthropicAdapter(ProtocolAdapter):
                 prompt_cache_min_chars=prompt_cache_min_chars,
                 prompt_cache_ttl=prompt_cache_ttl,
             )
-        # 仅在 kwargs 未显式提供 max_tokens 时才使用默认值 4096
-        if "max_tokens" not in kwargs:
-            payload["max_tokens"] = 4096
         payload.update(kwargs)
         # 若调用方显式传入 max_tokens=None，则不在 payload 中发送该字段
         if payload.get("max_tokens") is None:
@@ -275,6 +322,16 @@ class AnthropicAdapter(ProtocolAdapter):
         if content_blocks and content_blocks[0].get("type") == "text":
             return content_blocks[0]["text"]
         return ""
+
+    def parse_completion_usage(self, response_json: dict[str, Any]) -> dict[str, Any]:
+        usage = response_json.get("usage")
+        if not isinstance(usage, dict):
+            return {}
+        if "total_tokens" in usage:
+            return usage
+        result = dict(usage)
+        result["total_tokens"] = result.get("input_tokens", 0) + result.get("output_tokens", 0)
+        return result
 
     def parse_stream_chunk(self, chunk_data: dict[str, Any]) -> dict[str, Any] | None:
         chunk_type = chunk_data.get("type")

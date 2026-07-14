@@ -1,6 +1,6 @@
 import unittest
 
-from app.llm.gateway_client import OpenAICompatibleGatewayClient
+from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
 from app.llm.protocols import AnthropicAdapter, OpenAIAdapter
 
 
@@ -9,33 +9,92 @@ class TestGatewayMaxTokensInjection(unittest.TestCase):
         return OpenAICompatibleGatewayClient(
             base_url="http://test",
             api_key="test-key",
-            model="gpt-5.4",
+            model="",
         )
 
-    def test_resolve_max_tokens_for_k26(self):
-        client = self._client()
-        self.assertEqual(client._resolve_max_tokens("K2.6"), 10000)
+    def _response(self, payload):
+        class Response:
+            status_code = 200
+            content = b"{}"
+            text = "{}"
 
-    def test_resolve_max_tokens_for_gpt54(self):
-        client = self._client()
-        self.assertEqual(client._resolve_max_tokens("gpt-5.4"), 10000)
+            def json(self):
+                return payload
 
-    def test_resolve_max_tokens_fallback_for_unknown(self):
-        client = self._client()
-        self.assertEqual(client._resolve_max_tokens("unknown-model"), 10000)
+        return Response()
 
-    def test_inject_max_tokens_when_not_present(self):
+    def test_complete_uses_current_provider_output_limit(self):
         client = self._client()
-        kwargs = {"stream": True}
-        result = client._inject_max_tokens("K2.6", kwargs)
-        self.assertEqual(result["max_tokens"], 10000)
-        # 原始 kwargs 不应被修改
-        self.assertNotIn("max_tokens", kwargs)
+        calls = []
+
+        def request(method, path, json=None, protocol="openai"):
+            calls.append({"method": method, "path": path, "json": json, "protocol": protocol})
+            if path == "/models":
+                return self._response(
+                    {
+                        "data": [
+                            {
+                                "id": "provider-text-model",
+                                "context_length": 120000,
+                                "max_tokens": 6000,
+                            }
+                        ]
+                    }
+                )
+            return self._response(
+                {
+                    "model": "provider-text-model",
+                    "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+                }
+            )
+
+        client._request = request
+
+        client.ensure_model_available("provider-text-model", force_refresh=True)
+        self.assertEqual(client.complete([{"role": "user", "content": "hello"}], model="provider-text-model"), "ok")
+        completion_request = next(item for item in calls if item["path"] == "/chat/completions")
+        self.assertEqual(completion_request["json"]["max_tokens"], 6000)
+
+    def test_complete_rejects_model_missing_from_current_provider_directory(self):
+        client = self._client()
+        calls = []
+
+        def request(method, path, json=None, protocol="openai"):
+            calls.append({"method": method, "path": path, "json": json, "protocol": protocol})
+            return self._response({"data": [{"id": "another-provider-model"}]})
+
+        client._request = request
+
+        with self.assertRaisesRegex(GatewayClientError, "当前供应商模型目录"):
+            client.ensure_model_available("removed-provider-model", force_refresh=True)
+        self.assertEqual([item["path"] for item in calls], ["/models"])
+
+    def test_complete_rejects_constructor_model_when_request_model_is_missing(self):
+        client = OpenAICompatibleGatewayClient(
+            base_url="http://test",
+            api_key="test-key",
+            model="constructor-model",
+        )
+        calls = []
+
+        def request(method, path, json=None, protocol="openai"):
+            calls.append({"method": method, "path": path, "json": json, "protocol": protocol})
+            return self._response(
+                {
+                    "choices": [{"message": {"content": "不应调用"}, "finish_reason": "stop"}],
+                }
+            )
+
+        client._request = request
+
+        with self.assertRaisesRegex(GatewayClientError, "未显式选择模型"):
+            client.complete([{"role": "user", "content": "hello"}])
+        self.assertEqual(calls, [])
 
     def test_inject_max_tokens_preserves_explicit(self):
         client = self._client()
         kwargs = {"max_tokens": 512}
-        result = client._inject_max_tokens("K2.6", kwargs)
+        result = client._inject_max_tokens("provider-text-model", kwargs)
         self.assertEqual(result["max_tokens"], 512)
 
     def test_anthropic_adapter_uses_injected_max_tokens(self):
@@ -44,7 +103,7 @@ class TestGatewayMaxTokensInjection(unittest.TestCase):
         messages = [{"role": "user", "content": "hello"}]
         payload = adapter.build_payload(
             messages=messages,
-            model="K2.6",
+            model="provider-text-model",
             stream=False,
             max_tokens=32768,
         )
@@ -56,14 +115,14 @@ class TestGatewayMaxTokensInjection(unittest.TestCase):
         messages = [{"role": "user", "content": "hello"}]
         payload = adapter.build_payload(
             messages=messages,
-            model="gpt-5.4",
+            model="provider-text-model",
             stream=False,
             max_tokens=16000,
         )
         self.assertEqual(payload["max_tokens"], 16000)
 
-    def test_anthropic_adapter_default_max_tokens_when_not_provided(self):
-        """kwargs 未传 max_tokens 时，AnthropicAdapter 应使用默认值 4096。"""
+    def test_anthropic_adapter_does_not_inject_static_max_tokens_when_not_provided(self):
+        """输出上限必须由网关目录或调用方提供，适配器本身不能注入固定值。"""
         adapter = AnthropicAdapter()
         messages = [{"role": "user", "content": "hello"}]
         payload = adapter.build_payload(
@@ -71,7 +130,7 @@ class TestGatewayMaxTokensInjection(unittest.TestCase):
             model="claude-3-5-sonnet",
             stream=False,
         )
-        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertNotIn("max_tokens", payload)
 
     def test_anthropic_adapter_explicit_max_tokens(self):
         """kwargs 传 max_tokens=32768 时，应使用传入值。"""

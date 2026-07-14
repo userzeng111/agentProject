@@ -4,78 +4,52 @@ import Link from "next/link";
 import { useState, useRef, useCallback, useEffect } from "react";
 import {
   Box,
-  Paper,
   TextField,
   IconButton,
   Typography,
-  Collapse,
-  CircularProgress,
-  Chip,
-  Tooltip,
   MenuItem,
-  List,
-  ListItemButton,
-  ListItemText,
-  ListItemIcon,
-  Divider,
   Button,
   Drawer,
   useMediaQuery,
   useTheme,
   Snackbar,
   Alert,
+  Stack,
 } from "@mui/material";
 import {
-  Send as SendIcon,
-  Psychology as ThinkIcon,
-  Delete as DeleteIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
   SmartToy as BotIcon,
-  Person as UserIcon,
-  Add as AddIcon,
-  ChatBubbleOutline as ChatIcon,
   Menu as MenuIcon,
+  FactCheck as ValidationIcon,
 } from "@mui/icons-material";
-import { getModelCatalog, getRagSettings, streamChat } from "@/lib/api";
-import type { ChatStreamChunk, ChatMessage, ModelOption } from "@/lib/types";
+import { clearModelValidation, getModelCatalog, getModelValidation, getRagSettings, streamChat, streamModelValidation } from "@/lib/api";
+import type { ChatStreamChunk } from "@/lib/types";
 import {
+  getModelValidationLabel,
   isGatewayBackedModel,
   resolveChatSelectValue,
   resolveConversationModel,
-  resolveDefaultChatModelId,
 } from "./model-selection.mjs";
+import ModelValidationPanel from "./model-validation-panel";
+import ChatSessionSidebar from "./chat-session-sidebar";
+import ChatMessageArea from "./chat-message-area";
+import ChatInputArea from "./chat-input-area";
+import type { DisplayMessage } from "./chat-types";
+import { useChatController } from "./use-chat-controller";
+import {
+  applyValidationChatChunkToMessage,
+  buildValidationSessionMessages,
+  createInitialValidationState,
+  parseValidationSearch,
+  reduceValidationEvent,
+} from "./model-validation-state.mjs";
 import {
   type StoredMessage,
   listConversations,
   getConversation,
   saveConversation,
-  deleteConversation,
-  createConversation,
-  getActiveConversationId,
-  setActiveConversationId,
   buildConversationTitle,
 } from "@/lib/chat-storage";
 
-interface DisplayMessage extends ChatMessage {
-  reasoning_content?: string;
-  isStreaming?: boolean;
-  isThinking?: boolean;
-  tokens?: number;
-}
-
-/** 将持久化消息恢复为显示消息（重设运行时默认值） */
-function restoreMessages(stored: StoredMessage[]): DisplayMessage[] {
-  return stored.map((m) => ({
-    role: m.role,
-    content: m.content,
-    reasoning_content: m.reasoning_content,
-    tokens: m.tokens,
-    // 运行时字段重置为默认值
-    isStreaming: false,
-    isThinking: false,
-  }));
-}
 
 /** 将显示消息序列化为持久化消息（过滤运行时字段） */
 function serializeMessages(msgs: DisplayMessage[]): StoredMessage[] {
@@ -88,91 +62,67 @@ function serializeMessages(msgs: DisplayMessage[]): StoredMessage[] {
   }));
 }
 
-/** 格式化时间戳为可读字符串 */
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  const now = new Date();
-  const isToday =
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-  if (isToday) {
-    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-  }
-  return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
-}
-
 /** 侧边栏宽度 */
 const SIDEBAR_WIDTH = 280;
+const VALIDATION_PANEL_WIDTH = 340;
 
 export function ChatClient() {
   const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const isSmallDrawer = useMediaQuery(theme.breakpoints.down("md"));
+  const isDesktop = useMediaQuery(theme.breakpoints.up("lg"));
 
-  // ── 会话与消息状态 ──
-  const [messages, setMessages] = useState<DisplayMessage[]>([]);
-  const [currentConvId, setCurrentConvId] = useState<string | null>(null);
-  const [conversationList, setConversationList] = useState<
-    Array<{ id: string; title: string; updatedAt: number }>
-  >([]);
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [expandedThinking, setExpandedThinking] = useState<Record<number, boolean>>({});
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [ragAvailable, setRagAvailable] = useState<boolean | null>(null);
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [defaultModelId, setDefaultModelId] = useState("");
-  const [currentModel, setCurrentModel] = useState("");
+  // ── 控制器层（状态 + 会话管理） ──
+  const ctrl = useChatController();
+  const {
+    messages, setMessages,
+    currentConvId,
+    conversationList, setConversationList,
+    input, setInput,
+    loading, setLoading,
+    expandedThinking, setExpandedThinking,
+    mobileDrawerOpen, setMobileDrawerOpen,
+    ragAvailable, setRagAvailable,
+    models, setModels,
+    modelCatalogLoaded, setModelCatalogLoaded,
+    currentModel, setCurrentModel,
+    validationPanelOpen, setValidationPanelOpen,
+    messagesEndRef,
+    streamingRef,
+    handleSwitchConversation,
+    handleNewConversation,
+    handleDeleteConversation,
+    scrollToBottom,
+  } = ctrl;
+
+  // ChatClient 独有状态
+  const [validationState, setValidationState] = useState(() => createInitialValidationState(""));
+  const [validationRunning, setValidationRunning] = useState(false);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: "success" | "error" | "info" }>({
     open: false,
     message: "",
     severity: "info",
   });
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  // 用于标记是否正在流式输出中（避免在流式期间写入 localStorage）
-  const streamingRef = useRef(false);
+  const activeStreamCountRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
-
-  const scrollToBottom = useCallback(() => {
-    setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    }, 50);
-  }, []);
+  const validationAbortControllerRef = useRef<AbortController | null>(null);
+  const queryModelRef = useRef("");
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
-  // ── 初始化：从 localStorage 恢复 ──
-  const hasInitializedRef = useRef(false);
   useEffect(() => {
-    if (hasInitializedRef.current) return;
-    hasInitializedRef.current = true;
-
-    // 刷新会话列表
-    const refreshList = () => setConversationList(listConversations());
-    refreshList();
-
-    // 恢复活跃会话
-    const activeId = getActiveConversationId();
-    if (activeId) {
-      const conv = getConversation(activeId);
-      if (conv) {
-        setCurrentConvId(activeId);
-        setMessages(restoreMessages(conv.messages));
-        setCurrentModel(conv.model ?? "");
-        return;
-      }
+    const parsed = parseValidationSearch(window.location.search);
+    if (parsed.modelId) {
+      queryModelRef.current = parsed.modelId;
+      setCurrentModel(parsed.modelId);
+      setValidationState(createInitialValidationState(parsed.modelId));
     }
-    // 没有活跃会话，自动创建新会话
-    const newConv = createConversation();
-    setCurrentConvId(newConv.id);
-    setMessages([]);
-    setCurrentModel(newConv.model ?? "");
-    refreshList();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (parsed.shouldOpen) {
+      setValidationPanelOpen(true);
+    }
+  }, [setCurrentModel, setValidationPanelOpen]);
 
   useEffect(() => {
     async function loadModelCatalog() {
@@ -180,28 +130,35 @@ export function ChatClient() {
         const catalog = await getModelCatalog();
         const nextModels = catalog.data ?? [];
         setModels(nextModels);
-        const requestedDefault = catalog.meta?.default_model ?? "";
-        const nextDefault = resolveDefaultChatModelId(nextModels, requestedDefault);
-        setDefaultModelId(nextDefault);
+        setModelCatalogLoaded(true);
       } catch {
         setModels([]);
-        setDefaultModelId("");
+        setModelCatalogLoaded(false);
       }
     }
     void loadModelCatalog();
-  }, []);
+  }, [setModelCatalogLoaded, setModels]);
 
   useEffect(() => {
-    if (!currentConvId) {
+    if (!currentConvId || !modelCatalogLoaded) {
+      return;
+    }
+    const queryModelId = queryModelRef.current;
+    if (queryModelId && models.some((item) => item.id === queryModelId && isGatewayBackedModel(item))) {
+      queryModelRef.current = "";
+      if (currentModel !== queryModelId) {
+        setCurrentModel(queryModelId);
+      }
       return;
     }
     const conv = getConversation(currentConvId);
+    const currentSelection = resolveChatSelectValue(currentModel, models);
     const savedModel = conv?.model || "";
-    const nextModel = resolveConversationModel(savedModel, models, defaultModelId);
-    if (nextModel && currentModel !== nextModel) {
+    const nextModel = currentSelection || resolveConversationModel(savedModel, models);
+    if (currentModel !== nextModel) {
       setCurrentModel(nextModel);
     }
-  }, [currentConvId, currentModel, defaultModelId, models]);
+  }, [currentConvId, currentModel, modelCatalogLoaded, models, setCurrentModel]);
 
   useEffect(() => {
     async function loadRagStatus() {
@@ -213,7 +170,34 @@ export function ChatClient() {
       }
     }
     void loadRagStatus();
-  }, []);
+  }, [setRagAvailable]);
+
+  useEffect(() => {
+    if (!currentModel) {
+      setValidationState(createInitialValidationState(""));
+      return;
+    }
+    let disposed = false;
+    const initialState = createInitialValidationState(currentModel);
+    setValidationState(initialState);
+    void getModelValidation(currentModel)
+      .then((report) => {
+        if (disposed || !report || report.status === "unverified") {
+          return;
+        }
+        setValidationState(
+          reduceValidationEvent(initialState, report.status === "failed"
+            ? { type: "validation.error", data: { model_id: currentModel, status: "failed", message: report.failure_reason, report } }
+            : { type: "validation.done", data: { model_id: currentModel, status: "verified", report } }),
+        );
+      })
+      .catch(() => {
+        // 验证结果读取失败不影响普通聊天。
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [currentModel]);
 
   // ── 消息变化后持久化（非流式期间） ──
   useEffect(() => {
@@ -222,7 +206,7 @@ export function ChatClient() {
       // 空消息也要保存（更新时间戳）
       const conv = getConversation(currentConvId);
       if (conv) {
-        saveConversation({ ...conv, model: currentModel || conv.model, updatedAt: Date.now() });
+        saveConversation({ ...conv, model: currentModel, updatedAt: Date.now() });
       }
       return;
     }
@@ -234,16 +218,17 @@ export function ChatClient() {
       ...conv,
       title,
       messages: serialized,
-      model: currentModel || conv.model,
+      model: currentModel,
       updatedAt: Date.now(),
     });
     setConversationList(listConversations());
-  }, [messages, currentConvId, currentModel]);
+  }, [currentConvId, currentModel, messages, setConversationList, streamingRef]);
 
   // 组件卸载时中止正在进行的请求
   useEffect(() => {
     return () => {
       abortControllerRef.current?.abort();
+      validationAbortControllerRef.current?.abort();
     };
   }, []);
 
@@ -252,88 +237,85 @@ export function ChatClient() {
     setSnackbar({ open: true, message, severity });
   }, []);
 
-  // ── 切换会话 ──
-  const handleSwitchConversation = useCallback(
-    (id: string) => {
-      if (id === currentConvId) {
-        setMobileDrawerOpen(false);
-        return;
-      }
-      const conv = getConversation(id);
-      if (!conv) return;
-      setActiveConversationId(id);
-      setCurrentConvId(id);
-      setMessages(restoreMessages(conv.messages));
-      setCurrentModel(conv.model || defaultModelId);
-      setExpandedThinking({});
-      setMobileDrawerOpen(false);
-    },
-    [currentConvId, defaultModelId],
-  );
+  const selectableModels = models.filter((item) => isGatewayBackedModel(item));
+  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels);
+  const selectedModel = selectableModels.find((item) => item.id === chatSelectValue) ?? null;
+  const chatModelMenuItems = selectableModels.length
+    ? [
+        <MenuItem key="empty-model" value="" disabled>
+          <em>请选择聊天模型</em>
+        </MenuItem>,
+        ...selectableModels.map((item) => (
+          <MenuItem key={item.id} value={item.id}>
+            <Stack spacing={0.25} sx={{ minWidth: 0 }}>
+              <Typography
+                variant="body2"
+                sx={{
+                  fontWeight: 500,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.display_name || item.id}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {getModelValidationLabel(item)}
+                {item.provider ? ` · ${item.provider}` : ""}
+              </Typography>
+            </Stack>
+          </MenuItem>
+        )),
+      ]
+    : [
+        <MenuItem key="no-model" value="" disabled>
+          暂无可用模型
+        </MenuItem>,
+      ];
 
-  // ── 新建会话 ──
-  const handleNewConversation = useCallback(() => {
-    const newConv = createConversation(defaultModelId);
-    setCurrentConvId(newConv.id);
-    setMessages([]);
-    setCurrentModel(newConv.model ?? defaultModelId);
-    setExpandedThinking({});
-    setConversationList(listConversations());
-    setMobileDrawerOpen(false);
-  }, [defaultModelId]);
+  const beginStreaming = useCallback(() => {
+    activeStreamCountRef.current += 1;
+    streamingRef.current = true;
+  }, [streamingRef]);
 
-  // ── 删除会话 ──
-  const handleDeleteConversation = useCallback(
-    (id: string, e: React.MouseEvent) => {
-      e.stopPropagation(); // 阻止触发切换
-      deleteConversation(id);
-      setConversationList(listConversations());
-
-      if (id === currentConvId) {
-        // 删除的是当前会话，切换到最近的或新建
-        const remaining = listConversations();
-        if (remaining.length > 0) {
-          const nextConv = getConversation(remaining[0].id);
-          if (nextConv) {
-            setActiveConversationId(nextConv.id);
-            setCurrentConvId(nextConv.id);
-            setMessages(restoreMessages(nextConv.messages));
-            setCurrentModel(nextConv.model || defaultModelId);
-          }
-        } else {
-          const newConv = createConversation(defaultModelId);
-          setCurrentConvId(newConv.id);
-          setMessages([]);
-          setCurrentModel(newConv.model ?? defaultModelId);
-          setConversationList(listConversations());
-        }
-      }
-      showSnackbar("会话已删除", "success");
-    },
-    [currentConvId, defaultModelId, showSnackbar],
-  );
+  const endStreaming = useCallback(() => {
+    activeStreamCountRef.current = Math.max(0, activeStreamCountRef.current - 1);
+    streamingRef.current = activeStreamCountRef.current > 0;
+  }, [streamingRef]);
 
   // ── 发送消息 ──
   const handleSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || !chatSelectValue) return;
 
     abortControllerRef.current?.abort();
+    validationAbortControllerRef.current?.abort();
     abortControllerRef.current = new AbortController();
 
-    const userMsg: DisplayMessage = { role: "user", content: text };
+    const userMsg: DisplayMessage = { role: "user", content: text, createdAt: Date.now() };
     const assistantMsg: DisplayMessage = {
       role: "assistant",
       content: "",
       reasoning_content: "",
       isStreaming: true,
       isThinking: true,
+      createdAt: Date.now(),
     };
 
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setInput("");
     setLoading(true);
-    streamingRef.current = true;
+    beginStreaming();
 
     const apiMessages = [...messages, userMsg].map((m) => ({
       role: m.role,
@@ -346,7 +328,7 @@ export function ChatClient() {
 
     await streamChat(
       apiMessages,
-      currentModel || undefined,
+      chatSelectValue,
       Boolean(ragAvailable),
       (chunk: ChatStreamChunk) => {
         if (chunk.reasoning_content) {
@@ -390,7 +372,7 @@ export function ChatClient() {
           return updated;
         });
         setLoading(false);
-        streamingRef.current = false;
+        endStreaming();
       },
       (msg: string) => {
         setMessages((prev) => {
@@ -407,28 +389,150 @@ export function ChatClient() {
           return updated;
         });
         setLoading(false);
-        streamingRef.current = false;
+        endStreaming();
       },
       abortControllerRef.current?.signal,
     );
-  }, [currentModel, input, loading, messages, ragAvailable]);
+  }, [
+    beginStreaming,
+    chatSelectValue,
+    endStreaming,
+    input,
+    loading,
+    messages,
+    ragAvailable,
+    setInput,
+    setLoading,
+    setMessages,
+  ]);
 
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
+  const refreshModelCatalog = useCallback(async (refresh = true) => {
+    const catalog = await getModelCatalog({ refresh });
+    const nextModels = catalog.data ?? [];
+    setModels(nextModels);
+    setModelCatalogLoaded(true);
+  }, [setModelCatalogLoaded, setModels]);
+
+  const updateValidationAssistant = useCallback((runId: string, update: (message: DisplayMessage) => DisplayMessage) => {
+    setMessages((prev) => {
+      const updated = [...prev];
+      for (let idx = updated.length - 1; idx >= 0; idx -= 1) {
+        const message = updated[idx];
+        if (message.role === "assistant" && message.validation_meta?.runId === runId) {
+          updated[idx] = update(message);
+          break;
+        }
       }
-    },
-    [handleSend],
-  );
+      return updated;
+    });
+  }, [setMessages]);
 
-  const toggleThinking = useCallback((idx: number) => {
-    setExpandedThinking((prev) => ({ ...prev, [idx]: !prev[idx] }));
-  }, []);
+  const handleRunValidation = useCallback(async () => {
+    const modelId = currentModel || chatSelectValue;
+    if (!modelId || validationRunning) {
+      return;
+    }
 
-  const selectableModels = models.filter((item) => isGatewayBackedModel(item));
-  const chatSelectValue = resolveChatSelectValue(currentModel, selectableModels, defaultModelId);
+    abortControllerRef.current?.abort();
+    validationAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    validationAbortControllerRef.current = controller;
+    const runId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `validation-${Date.now()}`;
+    const [userMsg, assistantMsg] = buildValidationSessionMessages(modelId, runId) as DisplayMessage[];
+
+    setMessages((prev) => [...prev, userMsg, assistantMsg]);
+    setValidationState(createInitialValidationState(modelId));
+    setValidationPanelOpen(true);
+    setValidationRunning(true);
+    beginStreaming();
+
+    try {
+      await streamModelValidation(
+        modelId,
+        {
+          onEvent: (event) => {
+            setValidationState((prev) => reduceValidationEvent(prev, event));
+            if (event.type === "validation.chat_chunk") {
+              updateValidationAssistant(runId, (message) =>
+                applyValidationChatChunkToMessage(message, event.data) as DisplayMessage,
+              );
+            }
+            if (event.type === "validation.done" || event.type === "validation.error") {
+              updateValidationAssistant(runId, (message) => ({ ...message, isStreaming: false, isThinking: false }));
+            }
+            if (event.type === "validation.done") {
+              void refreshModelCatalog(true);
+            }
+          },
+          onError: (message) => {
+            setValidationState((prev) =>
+              reduceValidationEvent(prev, {
+                type: "validation.error",
+                data: { model_id: modelId, status: "failed", message },
+              }),
+            );
+            updateValidationAssistant(runId, (assistant) => ({
+              ...assistant,
+              content: assistant.content || `错误: ${message}`,
+              isStreaming: false,
+              isThinking: false,
+            }));
+          },
+        },
+        controller.signal,
+      );
+    } finally {
+      setValidationRunning(false);
+      endStreaming();
+      updateValidationAssistant(runId, (message) => ({ ...message, isStreaming: false, isThinking: false }));
+    }
+  }, [
+    beginStreaming,
+    chatSelectValue,
+    currentModel,
+    endStreaming,
+    refreshModelCatalog,
+    setMessages,
+    setValidationPanelOpen,
+    updateValidationAssistant,
+    validationRunning,
+  ]);
+
+  const handleCancelValidation = useCallback(() => {
+    validationAbortControllerRef.current?.abort();
+    validationAbortControllerRef.current = null;
+    setValidationRunning(false);
+    setMessages((prev) =>
+      prev.map((message) =>
+        message.role === "assistant" && message.validation_meta
+          ? { ...message, isStreaming: false, isThinking: false }
+          : message,
+      ),
+    );
+    setValidationState((prev) =>
+      reduceValidationEvent(prev, { type: "validation.cancelled", data: { message: "用户取消验证" } }),
+    );
+  }, [setMessages]);
+
+  const handleClearValidation = useCallback(async () => {
+    const modelId = currentModel || chatSelectValue;
+    if (!modelId || validationRunning) {
+      return;
+    }
+    try {
+      const report = await clearModelValidation(modelId);
+      setValidationState(createInitialValidationState(modelId));
+      if (report?.status === "unverified") {
+        await refreshModelCatalog(true);
+      }
+      showSnackbar("验证记录已清除", "success");
+    } catch (err) {
+      showSnackbar(err instanceof Error ? err.message : "清除验证记录失败", "error");
+    }
+  }, [chatSelectValue, currentModel, refreshModelCatalog, showSnackbar, validationRunning]);
 
   const handleModelChange = useCallback(
     (modelId: string) => {
@@ -443,107 +547,24 @@ export function ChatClient() {
       saveConversation({ ...conv, model: modelId, updatedAt: Date.now() });
       setConversationList(listConversations());
     },
-    [currentConvId],
+    [currentConvId, setConversationList, setCurrentModel],
   );
 
   // ── 侧边栏会话列表渲染 ──
   const renderSidebarContent = () => (
-    <Box
-      sx={{
-        height: "100%",
-        display: "flex",
-        flexDirection: "column",
-        bgcolor: "background.default",
-      }}
-    >
-      {/* 新对话按钮 */}
-      <Box sx={{ p: 2 }}>
-        <Button
-          variant="outlined"
-          fullWidth
-          startIcon={<AddIcon />}
-          onClick={handleNewConversation}
-          sx={{
-            textTransform: "none",
-            borderColor: "primary.main",
-            color: "primary.main",
-            "&:hover": { borderColor: "primary.dark", bgcolor: "rgba(39,100,81,0.04)" },
-          }}
-        >
-          新对话
-        </Button>
-      </Box>
-      <Divider />
-
-      {/* 会话列表 */}
-      <List sx={{ flex: 1, overflowY: "auto", py: 0 }}>
-        {conversationList.map((item) => (
-          <ListItemButton
-            key={item.id}
-            selected={item.id === currentConvId}
-            onClick={() => handleSwitchConversation(item.id)}
-            sx={{
-              px: 2,
-              py: 1.2,
-              "&.Mui-selected": {
-                bgcolor: "rgba(39, 100, 81, 0.08)",
-                borderLeft: "3px solid",
-                borderColor: "primary.main",
-              },
-              "&.Mui-selected:hover": {
-                bgcolor: "rgba(39, 100, 81, 0.12)",
-              },
-              display: "flex",
-              alignItems: "center",
-              gap: 1,
-            }}
-          >
-            <ListItemIcon sx={{ minWidth: 32 }}>
-              <ChatIcon sx={{ fontSize: 20, color: item.id === currentConvId ? "primary.main" : "text.secondary" }} />
-            </ListItemIcon>
-            <ListItemText
-              primary={item.title}
-              secondary={formatTime(item.updatedAt)}
-              primaryTypographyProps={{
-                noWrap: true,
-                fontSize: "0.875rem",
-                fontWeight: item.id === currentConvId ? 600 : 400,
-              }}
-              secondaryTypographyProps={{
-                noWrap: true,
-                fontSize: "0.7rem",
-                color: "text.disabled",
-              }}
-              sx={{ flex: 1, minWidth: 0 }}
-            />
-            <Tooltip title="删除会话">
-              <IconButton
-                size="small"
-                onClick={(e) => handleDeleteConversation(item.id, e)}
-                sx={{
-                  opacity: 0,
-                  transition: "opacity 0.2s",
-                  ".MuiListItemButton-root:hover &": { opacity: 1 },
-                }}
-              >
-                <DeleteIcon fontSize="small" sx={{ color: "text.secondary", "&:hover": { color: "error.main" } }} />
-              </IconButton>
-            </Tooltip>
-          </ListItemButton>
-        ))}
-        {conversationList.length === 0 && (
-          <Box sx={{ py: 4, textAlign: "center", color: "text.disabled" }}>
-            <Typography variant="body2">暂无会话记录</Typography>
-          </Box>
-        )}
-      </List>
-    </Box>
+    <ChatSessionSidebar
+      conversations={conversationList}
+      currentConvId={currentConvId}
+      onSelectConversation={handleSwitchConversation}
+      onNewConversation={handleNewConversation}
+      onDeleteConversation={(id) => handleDeleteConversation(id, { stopPropagation: () => {} } as React.MouseEvent)}
+    />
   );
 
   return (
     <Box sx={{ display: "flex", height: "calc(100vh - 64px)" }}>
-      {/* ── 侧边栏（桌面端固定，移动端 Drawer） ── */}
-      {isMobile ? (
+      {/* ── 侧边栏（桌面端固定，小屏 Drawer） ── */}
+      {isSmallDrawer ? (
         <Drawer
           open={mobileDrawerOpen}
           onClose={() => setMobileDrawerOpen(false)}
@@ -578,47 +599,108 @@ export function ChatClient() {
         <Box
           sx={{
             display: "flex",
-            alignItems: "center",
+            alignItems: { xs: "stretch", sm: "center" },
             justifyContent: "space-between",
-            px: 2,
-            py: 1.5,
+            flexWrap: { xs: "wrap", sm: "nowrap" },
+            gap: { xs: 1, sm: 2 },
+            px: { xs: 1.25, sm: 2 },
+            py: { xs: 1, sm: 1.5 },
             borderBottom: "1px solid",
             borderColor: "divider",
+            minWidth: 0,
           }}
         >
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-            {/* 移动端菜单按钮 */}
-            {isMobile && (
-              <IconButton size="small" onClick={() => setMobileDrawerOpen(true)}>
+          <Box
+            sx={{
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              minWidth: 0,
+              flex: { xs: "1 1 auto", sm: "0 1 auto" },
+            }}
+          >
+            {/* 小屏菜单按钮 */}
+            {isSmallDrawer && (
+              <IconButton size="small" aria-label="打开会话列表" onClick={() => setMobileDrawerOpen(true)}>
                 <MenuIcon />
               </IconButton>
             )}
-            <BotIcon sx={{ color: "primary.main", fontSize: 28 }} />
-            <Typography variant="h6" sx={{ fontWeight: 600, color: "primary.main" }}>
+            <BotIcon sx={{ color: "primary.main", display: { xs: "none", sm: "block" }, fontSize: 28 }} />
+            <Typography
+              variant="h6"
+              noWrap
+              sx={{
+                fontWeight: 600,
+                color: "primary.main",
+                fontSize: { xs: "1rem", sm: "1.25rem" },
+                minWidth: 0,
+              }}
+            >
               AI 对话
             </Typography>
           </Box>
-          <TextField
-            select
-            size="small"
-            label="聊天模型"
-            value={chatSelectValue}
-            onChange={(event) => handleModelChange(event.target.value)}
-            sx={{ minWidth: { xs: 160, sm: 220 } }}
-            helperText={defaultModelId ? `默认：${defaultModelId}` : "未读取默认模型"}
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="flex-start"
+            sx={{
+              flex: { xs: "1 0 100%", sm: "0 0 auto" },
+              width: { xs: "100%", sm: "auto" },
+              minWidth: 0,
+            }}
           >
-            {selectableModels.length ? (
-              selectableModels.map((item) => (
-                <MenuItem key={item.id} value={item.id}>
-                  {item.display_name || item.id}
-                </MenuItem>
-              ))
-            ) : (
-              <MenuItem value="" disabled>
-                暂无可用模型
-              </MenuItem>
-            )}
-          </TextField>
+            {!isDesktop ? (
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<ValidationIcon />}
+                onClick={() => setValidationPanelOpen(true)}
+                sx={{ minHeight: 40, flexShrink: 0 }}
+              >
+                验证
+              </Button>
+            ) : null}
+            <TextField
+              select
+              size="small"
+              label="聊天模型"
+              value={chatSelectValue}
+              onChange={(event) => handleModelChange(event.target.value)}
+              sx={{
+                flex: { xs: 1, sm: "0 0 220px" },
+                minWidth: 0,
+                width: { xs: "auto", sm: 220 },
+              }}
+              helperText={chatSelectValue ? "当前会话已显式选择模型" : "请选择当前在线模型后再发送消息"}
+              SelectProps={{
+                displayEmpty: true,
+                renderValue: (value) => (value ? String(value) : <em>请选择聊天模型</em>),
+                MenuProps: {
+                  PaperProps: {
+                    "data-testid": "chat-model-menu",
+                    sx: {
+                      maxHeight: "min(52vh, 420px)",
+                      width: { xs: "calc(100vw - 32px)", sm: 320 },
+                      maxWidth: "calc(100vw - 32px)",
+                      overflowY: "auto",
+                      overscrollBehavior: "contain",
+                    },
+                  },
+                  MenuListProps: {
+                    sx: { py: 0.5 },
+                  },
+                },
+              }}
+              FormHelperTextProps={{
+                sx: {
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
+                },
+              }}
+            >
+              {chatModelMenuItems}
+            </TextField>
+          </Stack>
         </Box>
 
         {ragAvailable === false ? (
@@ -631,240 +713,69 @@ export function ChatClient() {
           </Alert>
         ) : null}
 
-        {/* 消息列表 */}
-        <Box
-          sx={{
-            flex: 1,
-            overflowY: "auto",
-            px: 2,
-            py: 1,
-            "&::-webkit-scrollbar": { width: 6 },
-            "&::-webkit-scrollbar-thumb": {
-              backgroundColor: "rgba(0,0,0,0.15)",
-              borderRadius: 3,
-            },
-          }}
-        >
+        {/* 消息列表 + 输入区域 */}
+        <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
           {messages.length === 0 && (
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                justifyContent: "center",
-                height: "100%",
-                color: "text.disabled",
-                gap: 1,
-              }}
-            >
+            <Box sx={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "text.disabled", gap: 1 }}>
               <BotIcon sx={{ fontSize: 48, opacity: 0.3 }} />
               <Typography variant="body2">输入消息开始与 AI 对话</Typography>
             </Box>
           )}
-
-          {messages.map((msg, idx) => (
-            <Box
-              key={`${msg.role}-${msg.content.slice(0, 20)}-${idx}`}
-              sx={{
-                display: "flex",
-                justifyContent: msg.role === "user" ? "flex-end" : "flex-start",
-                mb: 1.5,
-              }}
-            >
-              {msg.role === "user" ? (
-                <Paper
-                  elevation={0}
-                  sx={{
-                    px: 2,
-                    py: 1.5,
-                    maxWidth: "75%",
-                    bgcolor: "rgba(39, 100, 81, 0.06)",
-                    border: "1px solid rgba(39, 100, 81, 0.12)",
-                    borderRadius: 2,
-                  }}
-                >
-                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
-                    <UserIcon sx={{ fontSize: 20, color: "primary.main", mt: 0.5 }} />
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
-                      {msg.content}
-                    </Typography>
-                  </Box>
-                </Paper>
-              ) : (
-                <Paper
-                  elevation={0}
-                  sx={{
-                    px: 2,
-                    py: 1.5,
-                    maxWidth: "85%",
-                    bgcolor: "background.paper",
-                    border: "1px solid",
-                    borderColor: "divider",
-                    borderRadius: 2,
-                  }}
-                >
-                  {/* 思考链区域 */}
-                  {msg.reasoning_content && (
-                    <Box sx={{ mb: 1 }}>
-                      <Box
-                        onClick={() => toggleThinking(idx)}
-                        sx={{
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 0.5,
-                          cursor: "pointer",
-                          color: "text.secondary",
-                          "&:hover": { color: "primary.main" },
-                          userSelect: "none",
-                        }}
-                      >
-                        <ThinkIcon
-                          sx={{
-                            fontSize: 18,
-                            color: msg.isThinking ? "primary.main" : "text.secondary",
-                          }}
-                        />
-                        <Box
-                          component="span"
-                          sx={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 0.5,
-                            fontSize: "0.75rem",
-                          }}
-                        >
-                          {msg.isThinking ? "正在思考..." : "思考过程"}
-                          {msg.isThinking ? (
-                            <CircularProgress size={12} sx={{ ml: 0.5 }} />
-                          ) : expandedThinking[idx] ? (
-                            <CollapseIcon sx={{ fontSize: 16 }} />
-                          ) : (
-                            <ExpandIcon sx={{ fontSize: 16 }} />
-                          )}
-                        </Box>
-                      </Box>
-                      <Collapse in={expandedThinking[idx] ?? false}>
-                        <Box
-                          sx={{
-                            pl: 1.5,
-                            py: 1,
-                            bgcolor: "rgba(39, 100, 81, 0.03)",
-                            borderRadius: 1,
-                            border: "1px dashed rgba(39, 100, 81, 0.1)",
-                            maxHeight: 300,
-                            overflowY: "auto",
-                            fontSize: "0.85rem",
-                            color: "text.secondary",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            lineHeight: 1.6,
-                            fontFamily: "monospace",
-                          }}
-                        >
-                          {msg.reasoning_content}
-                          {msg.isStreaming && (
-                            <Box
-                              component="span"
-                              sx={{
-                                display: "inline-block",
-                                width: 6,
-                                height: 14,
-                                bgcolor: "primary.main",
-                                borderRadius: "3px",
-                                animation: "pulse 1.2s infinite",
-                                "@keyframes pulse": {
-                                  "0%": { opacity: 1 },
-                                  "100%": { opacity: 0.3 },
-                                },
-                              }}
-                            />
-                          )}
-                        </Box>
-                      </Collapse>
-                    </Box>
-                  )}
-                  {/* 正式回复内容 */}
-                  <Box sx={{ display: "flex", alignItems: "flex-start", gap: 1 }}>
-                    <BotIcon sx={{ fontSize: 20, color: "primary.main", mt: 0.5 }} />
-                    <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", lineHeight: 1.6 }}>
-                      {msg.content}
-                      {msg.isStreaming && (
-                        <Box
-                          component="span"
-                          sx={{
-                            display: "inline-block",
-                            width: 6,
-                            height: 14,
-                            bgcolor: "primary.main",
-                            borderRadius: "3px",
-                            animation: "pulse 1.2s infinite",
-                            "@keyframes pulse": {
-                              "0%": { opacity: 1 },
-                              "100%": { opacity: 0.3 },
-                            },
-                          }}
-                        />
-                      )}
-                    </Typography>
-                  </Box>
-                  {msg.tokens != null && msg.tokens > 0 && (
-                    <Chip size="small" label={`${msg.tokens} tokens`} sx={{ mt: 1, fontSize: "0.7rem" }} />
-                  )}
-                </Paper>
-              )}
-            </Box>
-          ))}
-          <div ref={messagesEndRef} />
+          {messages.length > 0 && (
+            <ChatMessageArea
+              messages={messages}
+              messagesEndRef={messagesEndRef}
+              expandedThinking={expandedThinking}
+              onToggleThinking={(idx) => setExpandedThinking((prev) => ({ ...prev, [idx]: !prev[idx] }))}
+            />
+          )}
+          <ChatInputArea
+            value={input}
+            onChange={setInput}
+            onSend={handleSend}
+            loading={loading}
+            canSend={Boolean(chatSelectValue)}
+          />
+          </Box>
         </Box>
 
-        {/* 输入区域 */}
-        <Paper
-          elevation={0}
+      {isDesktop ? (
+        <Box
           sx={{
-            px: 2,
-            py: 1,
-            display: "flex",
-            alignItems: "flex-end",
-            gap: 1,
-            borderTop: "1px solid",
+            width: VALIDATION_PANEL_WIDTH,
+            flexShrink: 0,
+            borderLeft: "1px solid",
             borderColor: "divider",
-            borderRadius: 0,
+            p: 1.5,
+            height: "100%",
           }}
         >
-          <TextField
-            fullWidth
-            multiline
-            minRows={1}
-            maxRows={4}
-            placeholder="输入消息，按回车发送..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={loading}
-            size="small"
-            sx={{
-              flex: 1,
-              "& .MuiOutlinedInput-root": {
-                borderRadius: 2,
-              },
-            }}
+          <ModelValidationPanel
+            model={selectedModel}
+            state={validationState}
+            running={validationRunning}
+            onRun={handleRunValidation}
+            onClear={handleClearValidation}
+            onCancel={handleCancelValidation}
           />
-          <IconButton
-            color="primary"
-            onClick={handleSend}
-            disabled={!input.trim() || loading}
-            sx={{
-              bgcolor: "primary.main",
-              color: "white",
-              borderRadius: 2,
-              "&:hover": { bgcolor: "primary.dark" },
-              "&:disabled": { bgcolor: "action.disabledBackground" },
-            }}
-          >
-            {loading ? <CircularProgress size={20} color="inherit" /> : <SendIcon />}
-          </IconButton>
-        </Paper>
-      </Box>
+        </Box>
+      ) : (
+        <Drawer
+          anchor="right"
+          open={validationPanelOpen}
+          onClose={() => setValidationPanelOpen(false)}
+          sx={{ "& .MuiDrawer-paper": { width: "min(100vw, 360px)", p: 1.5 } }}
+        >
+          <ModelValidationPanel
+            model={selectedModel}
+            state={validationState}
+            running={validationRunning}
+            onRun={handleRunValidation}
+            onClear={handleClearValidation}
+            onCancel={handleCancelValidation}
+          />
+        </Drawer>
+      )}
 
       {/* 提示条 */}
       <Snackbar

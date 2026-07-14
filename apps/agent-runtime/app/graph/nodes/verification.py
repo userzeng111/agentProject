@@ -53,7 +53,6 @@ def review_verification(
                 verification_report=state.get("verification_report", {}),
                 verification_revision_count=state.get("verification_revision_count", 0),
             )
-            logger.info("验证审核节点: 调用 execute_auto_review")
             decision = execute_auto_review(payload, policy)
             agent_items = [a.model_dump() for a in decision.agent_trace]
             prev_trace = list(state.get("auto_review_trace") or [])
@@ -114,7 +113,7 @@ def review_verification(
             "auto_review_trace": trace,
         }
     # 人工审核模式
-    logger.info("验证审核节点: 进入人工审核模式")
+    logger.info("验证审核节点: 进入人工审核模式 review_type=%s", "verification_review")
     review = interrupt_verification_review(state)
     approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
     comment = review.get("comment", "") if isinstance(review, dict) else ""

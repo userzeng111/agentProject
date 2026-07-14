@@ -3,6 +3,7 @@ import unittest
 from app.context.manager import ContextManager
 from app.domain.models import ChapterDraft, ChapterPlan, StoryPlan
 from app.graph.main_graph import build_default_callbacks, build_graph
+from tests.fakes import FakeVerifiedGatewayModelCatalog
 
 
 class FakeEngine:
@@ -35,17 +36,6 @@ class FakeEngine:
         return {"overall_score": 100, "issues": []}
 
 
-class FakeModelCatalog:
-    def get_model_profile(self, model_id):
-        return {
-            "id": model_id or "gpt-5.4",
-            "provider": "openai_compatible",
-            "capabilities": {
-                "context_window": {"max_input_tokens": 256000, "max_output_tokens": 16000}
-            },
-        }
-
-
 class FakeNovelSkillService:
     def build_runtime_context(self, *, mode: str, style_profile_id: str = "", custom_style: str = ""):
         canon_guidance = ""
@@ -74,7 +64,7 @@ class GraphStyleProfileTests(unittest.TestCase):
         callbacks = build_default_callbacks(
             FakeEngine(),
             context_manager=ContextManager(),
-            model_catalog=FakeModelCatalog(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
             novel_skill_service=FakeNovelSkillService(),
         )
         graph = build_graph(callbacks=callbacks)
@@ -108,7 +98,7 @@ class GraphStyleProfileTests(unittest.TestCase):
         graph = build_graph(
             FakeEngine(),
             context_manager=ContextManager(),
-            model_catalog=FakeModelCatalog(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
             novel_skill_service=FakeNovelSkillService(),
         )
         config = {"configurable": {"thread_id": "task-fanfic-style-graph"}}

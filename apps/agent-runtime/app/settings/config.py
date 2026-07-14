@@ -1,3 +1,4 @@
+import logging
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,12 +10,21 @@ from app.llm.model_capabilities_config import DEFAULT_MODEL_CAPABILITIES_PATH
 
 DEFAULT_TASKLOG_ROOT = str(Path(__file__).resolve().parents[4] / "tasklog")
 RUNTIME_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+LOGGER = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
     app_env: str = "development"
     app_name: str = "小说 Agent Runtime"
-    runtime_origin: str = "http://127.0.0.1:3001"
+    runtime_origin: str = "http://localhost:3001"
+    rate_limit_general_per_minute: int = Field(
+        default=60,
+        validation_alias=AliasChoices("RATE_LIMIT_GENERAL_PER_MINUTE"),
+    )
+    rate_limit_chat_per_minute: int = Field(
+        default=20,
+        validation_alias=AliasChoices("RATE_LIMIT_CHAT_PER_MINUTE"),
+    )
     tasklog_root: str = DEFAULT_TASKLOG_ROOT
     llm_provider: str = "openai_compatible"
     openai_base_url: str = Field(
@@ -26,7 +36,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANTHROPIC_BASE_URL"),
     )
     default_chat_model: str = Field(
-        default="glm-5.1",
+        default="",
         validation_alias=AliasChoices("DEFAULT_CHAT_MODEL"),
     )
     openai_api_key: str | None = Field(
@@ -39,11 +49,11 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("AUTO_REVIEW"),
     )
     auto_review_auditor_model: str = Field(
-        default="MiniMax-M2.7-highspeed",
+        default="",
         validation_alias=AliasChoices("AUTO_REVIEW_AUDITOR_MODEL"),
     )
     auto_review_synthesis_model: str = Field(
-        default="MiniMax-M2.7-highspeed",
+        default="",
         validation_alias=AliasChoices("AUTO_REVIEW_SYNTHESIS_MODEL"),
     )
     auto_review_model_mode: str = Field(
@@ -157,6 +167,11 @@ class Settings(BaseSettings):
         default=str(DEFAULT_MODEL_CAPABILITIES_PATH),
         validation_alias=AliasChoices("MODEL_CAPABILITIES_PATH"),
     )
+    # 静态文件目录配置（前端构建产物）
+    static_dir: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("STATIC_DIR"),
+    )
     # 数据库配置
     database_path: str | None = Field(
         default=None,
@@ -235,7 +250,8 @@ class Settings(BaseSettings):
         import json
         try:
             return json.loads(v)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("MODEL_PROTOCOL_OVERRIDES 解析失败，已忽略该环境变量：%s", exc)
             return {}
 
     @property

@@ -6,7 +6,6 @@ import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
-  Breadcrumbs,
   Button,
   Card,
   CardContent,
@@ -16,7 +15,6 @@ import {
   List,
   ListItem,
   ListItemText,
-  Pagination,
   Paper,
   Snackbar,
   Stack,
@@ -24,12 +22,12 @@ import {
   Tabs,
   Typography,
 } from "@mui/material";
-import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { fetchTextRef, getArchiveDetail } from "@/lib/api";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { resultHref } from "@/lib/task-routes";
+import { projectViewHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse, ResultChapterItem, StoryPlan, WorkspaceEvent } from "@/lib/types";
-import MarkdownContent from "@/components/markdown-content";
+import { NovelReader } from "@/components/novel-reader";
+import { ProjectShell } from "@/components/project-shell";
 
 type TabValue = "overview" | "outline" | "read" | "meta";
 
@@ -244,178 +242,6 @@ function OutlineTab({ storyPlan }: { storyPlan?: StoryPlan | null }) {
 }
 
 // ─────────────────────────────────────────────
-// 章节阅读 Tab（核心，参考起点/纵横风格）
-// ─────────────────────────────────────────────
-function ChapterReader({ chapters }: { chapters: ResultChapterItem[] }) {
-  const [page, setPage] = useState(1);
-
-  const totalPages = chapters.length;
-  const currentChapter = chapters[page - 1];
-
-  const handlePageChange = (_: React.ChangeEvent<unknown>, p: number) => {
-    setPage(p);
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  };
-
-  const goPrev = () => {
-    if (page > 1) {
-      setPage(page - 1);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  };
-
-  const goNext = () => {
-    if (page < totalPages) {
-      setPage(page + 1);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  };
-
-  if (chapters.length === 0) {
-    return <Alert severity="info">当前归档任务没有章节内容。</Alert>;
-  }
-
-  return (
-    <Stack spacing={2}>
-      {/* 顶部导航 */}
-      <Paper
-        elevation={0}
-        sx={{
-          p: 2,
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          gap: 2,
-          flexWrap: "wrap",
-          bgcolor: "background.paper",
-          borderRadius: 2,
-          border: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Button variant="outlined" size="small" disabled={page <= 1} onClick={goPrev}>
-          上一章
-        </Button>
-        <Typography variant="body2" color="text.secondary">
-          第 {page} / {totalPages} 章
-        </Typography>
-        <Button variant="outlined" size="small" disabled={page >= totalPages} onClick={goNext}>
-          下一章
-        </Button>
-      </Paper>
-
-      {/* 章节内容 */}
-      <Paper
-        elevation={1}
-        sx={{
-          p: { xs: 3, sm: 4, md: 5 },
-          bgcolor: "#fffaf2",
-          borderRadius: 2,
-        }}
-      >
-        {currentChapter ? (
-          <Stack spacing={3}>
-            {/* 章节标题 */}
-            <Box textAlign="center" sx={{ mb: 2 }}>
-              <Typography
-                variant="h4"
-                sx={{
-                  fontFamily: "var(--font-serif-sc)",
-                  fontWeight: 700,
-                  fontSize: { xs: "1.5rem", md: "1.75rem" },
-                  lineHeight: 1.4,
-                }}
-              >
-                第 {currentChapter.number} 章
-              </Typography>
-              <Typography
-                variant="h5"
-                sx={{
-                  fontFamily: "var(--font-serif-sc)",
-                  fontWeight: 600,
-                  fontSize: { xs: "1.25rem", md: "1.5rem" },
-                  mt: 1,
-                  color: "text.primary",
-                }}
-              >
-                {currentChapter.title}
-              </Typography>
-            </Box>
-
-            <Divider />
-
-            {/* 正文 */}
-            {currentChapter.content ? (
-              <MarkdownContent
-                variant="article"
-                sx={{
-                  "& p": {
-                    fontFamily: "var(--font-serif-sc) !important",
-                    fontSize: "1.125rem !important",
-                    lineHeight: "1.8 !important",
-                    color: "#1d2a27",
-                    textIndent: "2em",
-                    marginBottom: "0.75em",
-                    marginTop: 0,
-                    textAlign: "justify",
-                  },
-                  "& p:first-of-type": {
-                    marginTop: "1em",
-                  },
-                }}
-              >
-                {currentChapter.content}
-              </MarkdownContent>
-            ) : (
-              <Alert severity="warning">本章暂无正文内容。</Alert>
-            )}
-          </Stack>
-        ) : (
-          <Alert severity="warning">章节加载失败。</Alert>
-        )}
-      </Paper>
-
-      {/* 底部导航 */}
-      <Paper
-        elevation={0}
-        sx={{
-          p: 2,
-          display: "flex",
-          justifyContent: "center",
-          alignItems: "center",
-          gap: 2,
-          flexWrap: "wrap",
-          bgcolor: "background.paper",
-          borderRadius: 2,
-          border: "1px solid",
-          borderColor: "divider",
-        }}
-      >
-        <Button variant="outlined" size="small" disabled={page <= 1} onClick={goPrev}>
-          上一章
-        </Button>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          <Typography variant="body2" color="text.secondary">
-            跳转至
-          </Typography>
-          <Pagination
-            count={totalPages}
-            page={page}
-            onChange={handlePageChange}
-            size="small"
-            shape="rounded"
-            siblingCount={1}
-          />
-        </Box>
-        <Button variant="outlined" size="small" disabled={page >= totalPages} onClick={goNext}>
-          下一章
-        </Button>
-      </Paper>
-    </Stack>
-  );
-}
-
-// ─────────────────────────────────────────────
 // 原始信息 Tab
 // ─────────────────────────────────────────────
 function MetaTab({
@@ -623,7 +449,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
   if (loading && !detail) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-        <Box sx={{ py: 6 }}>
+        <Box sx={{ py: 6 }} role="status" aria-live="polite">
           <Typography>正在读取归档详情...</Typography>
         </Box>
       </Container>
@@ -634,7 +460,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Stack spacing={2} sx={{ py: 6 }}>
-          <Alert severity="error">{error || "读取归档详情失败"}</Alert>
+          <Alert severity="error" role="alert">{error || "读取归档详情失败"}</Alert>
           <Box>
             <Button variant="outlined" onClick={() => void load()}>
               重新加载
@@ -645,62 +471,52 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
     );
   }
 
+  const taskTypeLabel = formatTaskTypeLabel({
+    creativeMode: detail.meta.creative_mode,
+    novelSize: detail.meta.novel_size,
+    mode: detail.meta.mode,
+  });
+
   return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-      <Stack spacing={3} className="page-fade-in">
-        {/* 面包屑 */}
-        <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-          <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              首页
-            </Typography>
-          </Link>
-          <Link href="/archive" style={{ color: "inherit", textDecoration: "none" }}>
-            <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-              归档
-            </Typography>
-          </Link>
-          <Typography variant="body2">{detail.meta.title}</Typography>
-        </Breadcrumbs>
-
-        {/* 标题 + 操作 */}
-        <Stack
-          direction={{ xs: "column", md: "row" }}
-          spacing={2}
-          justifyContent="space-between"
-          alignItems={{ xs: "flex-start", md: "center" }}
-        >
-          <Stack spacing={1}>
-            <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-              归档详情
-            </Typography>
-            <Typography color="text.secondary">
-              {detail.meta.title} · 类型：
-              {formatTaskTypeLabel({
-                creativeMode: detail.meta.creative_mode,
-                novelSize: detail.meta.novel_size,
-                mode: detail.meta.mode,
-              })}
-              {" · "}任务默认模型：
-              {detail.meta.default_model_id || detail.meta.model_id || "默认模型"}
-              {detail.meta.last_action_model_id ? ` · 最近一次动作模型：${detail.meta.last_action_model_id}` : ""}
-            </Typography>
-          </Stack>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <Button component={Link} href="/archive" variant="outlined" size="small">
-              返回列表
-            </Button>
-            <Button component={Link} href={resultHref(resolvedTaskId)} variant="text" size="small">
-              结果页视图
-            </Button>
-          </Stack>
+    <ProjectShell
+      breadcrumbs={[
+        { label: "首页", href: "/" },
+        { label: "归档", href: "/archive" },
+        { label: detail.meta.title },
+      ]}
+      title="归档详情"
+      metaItems={[
+        { label: detail.meta.title },
+        { label: `类型：${taskTypeLabel}`, variant: "outlined" },
+        { label: `任务创作模型：${detail.meta.creative_model_id || detail.meta.model_id || "未设置"}`, variant: "outlined" },
+        ...(detail.meta.last_action_model_id
+          ? [{ label: `最近一次动作模型：${detail.meta.last_action_model_id}`, variant: "outlined" as const }]
+          : []),
+      ]}
+      actions={
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <Button component={Link} href="/archive" variant="outlined" size="small">
+            返回列表
+          </Button>
+          <Button component={Link} href={projectViewHref(resolvedTaskId, "result")} variant="text" size="small">
+            结果页视图
+          </Button>
         </Stack>
+      }
+    >
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" role="alert">{error}</Alert> : null}
 
         {/* Tab 导航 */}
         <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
-          <Tabs value={activeTab} onChange={handleTabChange} variant="scrollable" scrollButtons="auto">
+          <Tabs
+            value={activeTab}
+            onChange={handleTabChange}
+            variant="scrollable"
+            scrollButtons="auto"
+            allowScrollButtonsMobile
+            aria-label="归档详情视图"
+          >
             {TAB_ORDER.map((tab) => (
               <Tab key={tab} value={tab} label={TAB_LABELS[tab]} />
             ))}
@@ -711,7 +527,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
         <Box sx={{ minHeight: 400 }}>
           {activeTab === "overview" && <OverviewTab detail={detail} />}
           {activeTab === "outline" && <OutlineTab storyPlan={detail.story_plan} />}
-          {activeTab === "read" && <ChapterReader chapters={detail.chapter_index} />}
+          {activeTab === "read" && <NovelReader chapters={detail.chapter_index} />}
           {activeTab === "meta" && (
             <MetaTab
               detail={detail}
@@ -721,7 +537,6 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
             />
           )}
         </Box>
-      </Stack>
 
       <Snackbar
         open={snackbarOpen}
@@ -730,6 +545,6 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
         message={snackbarMsg}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       />
-    </Container>
+    </ProjectShell>
   );
 }

@@ -46,25 +46,20 @@ class TaskOrchestrator:
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
-        default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 4,
     ) -> None:
         self._gateway_client = gateway_client
-        self._default_model = default_model
         self._max_workers = max_workers
 
         # 初始化子系统
         self._master = MasterAgent(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._factory = AgentFactory(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._planner = PlannerAgent(
             gateway_client=gateway_client,
-            default_model=default_model,
         )
         self._registry = AgentRegistry()
 
@@ -88,16 +83,16 @@ class TaskOrchestrator:
             OrchestrationResult 编排汇总结果
         """
         started_at = datetime.now(timezone.utc)
-        use_model = model or self._default_model
+        use_model = str(model or "").strip()
+        if not use_model:
+            raise ValueError("动态编排缺少显式模型，调用已拒绝。")
         task_context = task_context or {}
 
-        logger.info("=" * 60)
         logger.info("动态编排开始 — 任务类型: %s", task_type)
-        logger.info("=" * 60)
 
         try:
             # ── 步骤 1: Master Agent 分析任务，生成蓝图 ──
-            logger.info("[步骤 1/4] Master Agent 分析任务...")
+            logger.debug("[步骤 1/4] Master Agent 分析任务...")
             blueprints = self._master.analyze_task(
                 task_type=task_type,
                 task_description=task_description,
@@ -111,12 +106,12 @@ class TaskOrchestrator:
             logger.info("Master Agent 生成 %d 个 Agent 蓝图", len(blueprints))
 
             # ── 步骤 2: AgentFactory 创建实例 ──
-            logger.info("[步骤 2/4] AgentFactory 创建 Agent 实例...")
+            logger.debug("[步骤 2/4] AgentFactory 创建 Agent 实例...")
             agents = self._factory.create_batch(blueprints)
             self._registry.register_batch(agents)
 
             # ── 步骤 3: Planner Agent 规划 DAG ──
-            logger.info("[步骤 3/4] Planner Agent 规划执行 DAG...")
+            logger.debug("[步骤 3/4] Planner Agent 规划执行 DAG...")
             dag = self._planner.plan(
                 blueprints=blueprints,
                 task_context=task_context,
@@ -124,7 +119,7 @@ class TaskOrchestrator:
             )
 
             # ── 步骤 4: 按 DAG 执行 ──
-            logger.info("[步骤 4/4] 按 DAG 执行 Agent...")
+            logger.debug("[步骤 4/4] 按 DAG 执行 Agent...")
             results = self._execute_dag(agents, dag, task_context, use_model)
 
             # ── 汇总结果 ──
@@ -164,12 +159,10 @@ class TaskOrchestrator:
                 total_duration_ms=total_ms,
             )
 
-            logger.info("=" * 60)
             logger.info(
                 "动态编排完成 — 创建: %d，成功: %d，失败: %d，评分: %.1f，耗时: %dms",
                 len(agents), succeeded, failed, overall_score, total_ms,
             )
-            logger.info("=" * 60)
 
             return orchestration_result
 

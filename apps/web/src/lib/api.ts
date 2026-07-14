@@ -3,6 +3,8 @@ import {
   ArchiveIndexResponse,
   ContinueDraftPayload,
   ModelListResponse,
+  ModelValidationEvent,
+  ModelValidationReport,
   ModelOption,
   DashboardResponse,
   RecoverTaskPayload,
@@ -17,13 +19,45 @@ import {
   WorkspaceResponse,
 } from "@/lib/types";
 import { createChatSseParser, getStreamChatErrorMessage } from "@/lib/stream-chat-events.mjs";
+import { createModelValidationSseParser } from "@/lib/model-validation-events.mjs";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 type RequestLogContext = Record<string, unknown>;
 
 interface RequestOptions {
   logContext?: RequestLogContext;
+}
+
+interface ApiRequestErrorOptions {
+  status: number | null;
+  path: string;
+  requestId: string;
+  detail: string;
+  retryable: boolean;
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number | null;
+  readonly path: string;
+  readonly requestId: string;
+  readonly detail: string;
+  readonly retryable: boolean;
+
+  constructor({ status, path, requestId, detail, retryable }: ApiRequestErrorOptions) {
+    super(detail);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.path = path;
+    this.requestId = requestId;
+    this.detail = detail;
+    this.retryable = retryable;
+  }
+}
+
+function isRetryableHttpStatus(method: string, status: number) {
+  if (method !== "GET") return false;
+  return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function logRequestStart(path: string, method: string, logContext?: RequestLogContext) {
@@ -84,16 +118,23 @@ async function request<T>(path: string, init?: RequestInit, options?: RequestOpt
           response = await makeRequest();
         } catch (retryErr) {
           console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
-          throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+          throw retryErr;
         }
       } else {
         console.error(`请求失败（写操作不重试）: ${url}`, err instanceof Error ? err.message : String(err));
-        throw new Error(err instanceof Error ? err.message : "请求失败");
+        throw err;
       }
     }
   } catch (err) {
     logRequestEnd(path, method, Date.now() - startedAt, null, "", options?.logContext);
-    throw err;
+    const detail = err instanceof Error ? err.message : "请求失败";
+    throw new ApiRequestError({
+      status: null,
+      path,
+      requestId: "",
+      detail,
+      retryable: canRetry,
+    });
   }
 
   const httpStatus = response.status;
@@ -102,14 +143,20 @@ async function request<T>(path: string, init?: RequestInit, options?: RequestOpt
   if (!response.ok) {
     let errorMessage = "请求失败";
     try {
-      const data = await response.json();
+      const data = await response.clone().json();
       errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
     } catch {
       const text = await response.text();
       errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
     }
     logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);
-    throw new Error(errorMessage);
+    throw new ApiRequestError({
+      status: httpStatus,
+      path,
+      requestId,
+      detail: errorMessage,
+      retryable: isRetryableHttpStatus(method, httpStatus),
+    });
   }
 
   logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);
@@ -127,17 +174,23 @@ export function createTask(payload: TaskCreatePayload) {
   });
 }
 
-export async function getModels(options?: { refresh?: boolean }) {
-  const response = await request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
-  return response.data ?? [];
-}
-
 export function getModelCatalog(options?: { refresh?: boolean }) {
   return request<ModelListResponse>(`/api/models${options?.refresh ? "?refresh=true" : ""}`);
 }
 
 export function getProtocolSettings() {
   return request<{ default_protocol: string; overrides: Record<string, string> }>("/api/settings/protocols");
+}
+
+export function getModelValidation(modelId: string) {
+  return request<ModelValidationReport>(`/api/model-validation?model_id=${encodeURIComponent(modelId)}`);
+}
+
+export function clearModelValidation(modelId: string) {
+  return request<ModelValidationReport>("/api/model-validation", {
+    method: "DELETE",
+    body: JSON.stringify({ model_id: modelId }),
+  });
 }
 
 export function setModelProtocol(modelId: string, protocol: string) {
@@ -150,13 +203,6 @@ export function setModelProtocol(modelId: string, protocol: string) {
 export async function getStyleProfiles() {
   const response = await request<StyleProfileListResponse>("/api/style-profiles");
   return Array.isArray(response.items) ? response.items : [];
-}
-
-export async function updateDefaultModel(modelId: string) {
-  return request<{ default_model: string; supported_models: string[] }>("/api/settings/default-model", {
-    method: "PATCH",
-    body: JSON.stringify({ model_id: modelId }),
-  });
 }
 
 export function getRagSettings() {
@@ -244,33 +290,18 @@ export function getWorkspace(taskId: string) {
   return request<WorkspaceResponse>(`/api/tasks/${taskId}/workspace`);
 }
 
-export function getSupervisor(taskId: string) {
-  return request<{
-    planner_version: string;
-    subtasks: Array<{
-      id: string;
-      kind: string;
-      title: string;
-      status: string;
-      assigned_agent?: string;
-      payload?: Record<string, unknown>;
-    }>;
-    dependencies: Array<{
-      upstream_subtask_id: string;
-      downstream_subtask_id: string;
-      kind: string;
-    }>;
-    metadata?: Record<string, unknown>;
-    agent_runs?: WorkspaceResponse["agent_runs"];
-  }>(`/api/tasks/${taskId}/supervisor`);
-}
-
 export function getReview(taskId: string) {
   return request<ReviewResponse>(`/api/tasks/${taskId}/review`);
 }
 
 export function getResult(taskId: string) {
   return request<ResultResponse>(`/api/tasks/${taskId}/result`);
+}
+
+export function archiveTask(taskId: string) {
+  return request<TaskRecord>(`/api/tasks/${taskId}/archive`, {
+    method: "POST",
+  });
 }
 
 export function getCurrentChapters(taskId: string) {
@@ -296,15 +327,6 @@ export async function fetchTextRef(ref: string) {
     throw new Error("读取文本引用失败");
   }
   return response.text();
-}
-
-export async function fetchJsonRef<T>(ref: string) {
-  const target = ref.startsWith("http") ? ref : `${API_BASE}${ref.startsWith("/") ? ref : `/${ref}`}`;
-  const response = await fetch(target, { cache: "no-store" });
-  if (!response.ok) {
-    throw new Error("读取 JSON 引用失败");
-  }
-  return response.json() as Promise<T>;
 }
 
 export function normalizeModelOptions(models: ModelOption[]) {
@@ -364,6 +386,10 @@ export function normalizeModelOptions(models: ModelOption[]) {
             profile_version:
               typeof item.metadata.profile_version === "string" && item.metadata.profile_version.trim()
                 ? item.metadata.profile_version.trim()
+                : undefined,
+            validation:
+              item.metadata.validation && typeof item.metadata.validation === "object"
+                ? item.metadata.validation
                 : undefined,
           }
         : undefined,
@@ -457,5 +483,73 @@ export async function streamChat(
     const msg = err instanceof Error ? err.message : "流式读取中断";
     console.error("streamChat 流式读取异常:", msg);
     onError(msg);
+  }
+}
+
+export async function streamModelValidation(
+  modelId: string,
+  callbacks: {
+    onEvent: (event: ModelValidationEvent) => void;
+    onError: (message: string) => void;
+    onDone?: () => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/api/model-validation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_id: modelId }),
+      signal,
+    });
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      callbacks.onDone?.();
+      return;
+    }
+    callbacks.onError(getStreamChatErrorMessage(err));
+    return;
+  }
+
+  if (!response.ok) {
+    let errorMessage = "模型验证请求失败";
+    try {
+      const data = await response.json();
+      errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
+    } catch {
+      const text = await response.text();
+      errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
+    }
+    callbacks.onError(errorMessage);
+    return;
+  }
+
+  if (!response.body) {
+    callbacks.onError("模型验证响应体为空");
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parser = createModelValidationSseParser({
+    onEvent: callbacks.onEvent,
+    onError: callbacks.onError,
+  });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parser.push(decoder.decode(value, { stream: true }));
+    }
+    parser.flush();
+    callbacks.onDone?.();
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") {
+      callbacks.onDone?.();
+      return;
+    }
+    callbacks.onError(err instanceof Error ? err.message : "模型验证流式读取中断");
   }
 }

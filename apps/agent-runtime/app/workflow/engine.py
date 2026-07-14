@@ -6,9 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -25,77 +23,6 @@ from app.graph.routers.review import (
 )
 from app.graph.state import WorkflowState
 from app.workflow.callbacks import WorkflowCallbacks
-
-
-def _trace_round_count(trace: list[dict[str, Any]] | None) -> int:
-    """统计已完成的审核轮数。"""
-    return sum(
-        1
-        for item in (trace or [])
-        if isinstance(item, dict) and item.get("__summary__")
-    )
-
-
-def _build_auto_review_summary(
-    *,
-    prev_trace: list[dict[str, Any]],
-    decision: Any,
-    review_type: str,
-    revision_count: int,
-    batch_index: int | None = None,
-) -> dict[str, Any]:
-    """构建自动审核摘要记录。"""
-    return {
-        "__summary__": True,
-        "trace_round": _trace_round_count(prev_trace) + 1,
-        "review_type": review_type,
-        "revision_count": revision_count,
-        "batch_index": batch_index,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "overall_score": decision.overall_score,
-        "approved": decision.approved,
-        "auto_escalated": decision.auto_escalated,
-        "comment": decision.comment,
-        "reasoning": decision.reasoning,
-        "critical_issues": decision.critical_issues,
-        "warnings": decision.warnings,
-    }
-
-
-def _should_interrupt_manual_review(
-    *,
-    approved: bool,
-    policy: Any,
-    revision_count: int,
-    review_type: str,
-) -> bool:
-    """判断当前审核是否应中断并转人工。"""
-    if approved:
-        return False
-    if not policy.allow_self_revisions:
-        return True
-    return revision_count >= max(policy.get_max_auto_revisions(review_type), 0)
-
-
-def _interrupt_outline_review(state: WorkflowState):
-    """大纲审核中断处理。"""
-    from app.graph.nodes.outline import interrupt_outline_review
-
-    return interrupt_outline_review(state)
-
-
-def _interrupt_chapter_pair_review(state: WorkflowState):
-    """章节对审核中断处理。"""
-    from app.graph.nodes.chapter import interrupt_chapter_pair_review
-
-    return interrupt_chapter_pair_review(state)
-
-
-def _interrupt_verification_review(state: WorkflowState):
-    """验证审核中断处理。"""
-    from app.graph.nodes.verification import interrupt_verification_review
-
-    return interrupt_verification_review(state)
 
 
 class NovelWorkflowEngine:

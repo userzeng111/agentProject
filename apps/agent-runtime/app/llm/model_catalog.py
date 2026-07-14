@@ -1,18 +1,20 @@
 from __future__ import annotations
 
-import json
 from copy import deepcopy
 from datetime import datetime, timezone
-from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from app.observability import get_logger
 from app.llm.model_capabilities_config import (
     apply_context_window_config,
+    extract_provider_model_limits,
     resolve_generation_max_tokens,
 )
 from app.settings.config import Settings
 
+
+logger = get_logger(__name__)
 
 _CAPABILITY_SCHEMA_VERSION = "v1"
 _CACHE_TTL_SECONDS = 300.0
@@ -436,72 +438,21 @@ class ModelCatalogService:
         gateway_client: Any | None = None,
         registry: dict[str, dict[str, Any]] | None = None,
         cache_ttl_seconds: float = _CACHE_TTL_SECONDS,
+        compatibility_provider: Any | None = None,
     ) -> None:
         self.settings = settings
         self.gateway_client = gateway_client
         self.registry = registry or _PROFILE_REGISTRY
         self.cache_ttl_seconds = cache_ttl_seconds
+        self.compatibility_provider = compatibility_provider
         self._cached_payload: dict[str, Any] | None = None
         self._cached_at: float = 0.0
-        # 运行时默认模型覆盖，持久化到 tasklog/settings.json
-        self._runtime_default_model: str | None = None
-        self._settings_file = Path(settings.tasklog_root) / "settings.json"
-        self._load_runtime_settings()
-
-    def _settings_path(self) -> Path:
-        return self._settings_file
-
-    def _load_runtime_settings(self) -> None:
-        """从 tasklog/settings.json 加载运行时设置（如默认模型覆盖）。"""
-        path = self._settings_path()
-        if path.exists():
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                self._runtime_default_model = data.get("default_model") or None
-            except Exception:
-                pass
-
-    def _save_runtime_settings(self) -> None:
-        """保存运行时设置到 tasklog/settings.json。"""
-        path = self._settings_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        data: dict[str, Any] = {}
-        if self._runtime_default_model:
-            data["default_model"] = self._runtime_default_model
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _effective_default_model(self) -> str:
-        """返回当前生效的默认模型（优先运行时覆盖，其次配置文件）。"""
-        return self._runtime_default_model or self.settings.default_chat_model
-
-    def update_default_model(self, model_id: str) -> dict[str, Any]:
-        """更新运行时默认模型，持久化到配置文件，返回更新后的摘要。"""
-        valid_ids = {item["id"] for item in self.list_models()}
-        if model_id not in valid_ids:
-            raise ValueError(f"模型 ID 不在可用模型列表中：{model_id}")
-        self.ensure_runtime_default_model_supported(model_id)
-        self.ensure_novel_generation_model_supported(model_id)
-        self._runtime_default_model = model_id
-        self._save_runtime_settings()
-        # 清除模型列表缓存，使下次 list_models_payload 重新聚合
-        self._cached_payload = None
-        return {
-            "default_model": self._effective_default_model(),
-            "supported_models": [item["id"] for item in self.list_models()],
-        }
-
-    def ensure_runtime_default_model_supported(self, model_id: str | None) -> dict[str, Any]:
-        profile = self.get_model_profile(model_id)
-        metadata = profile.get("metadata") if isinstance(profile.get("metadata"), dict) else {}
-        source = str(metadata.get("source") or "").strip()
-        if source in {"registry", "default+registry"}:
-            raise ValueError(
-                f"模型 {profile.get('id') or model_id or ''} 当前仅存在本地画像，未接入网关，不能设为默认聊天模型。"
-            )
-        return profile
-
     def list_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         return self.list_models_payload(force_refresh=force_refresh)["data"]
+
+    def invalidate_cache(self) -> None:
+        self._cached_payload = None
+        self._cached_at = 0.0
 
     def list_models_payload(self, force_refresh: bool = False) -> dict[str, Any]:
         cache_age_seconds = monotonic() - self._cached_at
@@ -519,13 +470,10 @@ class ModelCatalogService:
 
         raw_models = self._load_gateway_models()
         aggregated = self._merge_models(raw_models)
-        if self._sync_runtime_default_from_verified_env_default(aggregated):
-            aggregated = self._order_default_model_first(aggregated)
         fetched_at = datetime.now(timezone.utc).isoformat()
         payload = {
             "data": aggregated,
             "meta": {
-                "default_model": self._effective_default_model(),
                 "capability_schema_version": _CAPABILITY_SCHEMA_VERSION,
                 "cache_ttl_seconds": self.cache_ttl_seconds,
                 "cache_age_seconds": 0.0,
@@ -537,23 +485,29 @@ class ModelCatalogService:
         self._cached_at = monotonic()
         return payload
 
-    def get_model_profile(self, model_id: str | None) -> dict[str, Any]:
-        payload = self.list_models_payload()
-        candidate = (model_id or "").strip() or self._effective_default_model()
+    def get_model_profile(self, model_id: str | None, *, force_refresh: bool = False) -> dict[str, Any]:
+        payload = self.list_models_payload(force_refresh=force_refresh)
+        candidate = (model_id or "").strip()
         for item in payload["data"]:
             if item.get("id") == candidate:
                 return deepcopy(item)
-        return self._build_model_item({"id": candidate}, source="default")
+        return self._build_model_item({"id": candidate}, source="missing")
 
     def ensure_novel_generation_model_supported(self, model_id: str | None) -> dict[str, Any]:
-        profile = self.get_model_profile(model_id)
+        candidate = (model_id or "").strip()
+        if not candidate:
+            raise ValueError("请显式选择当前供应商返回的模型后再创建或执行任务。")
+        profile = self.get_model_profile(model_id, force_refresh=True)
+        source = str((profile.get("metadata") or {}).get("source") or "")
+        if "gateway" not in source:
+            raise ValueError(f"模型 {candidate} 不在当前供应商模型目录中，请刷新模型列表后重新选择。")
         compatibility = str((profile.get("metadata") or {}).get("compatibility") or "").strip()
         supported = bool(((profile.get("capabilities") or {}).get("features") or {}).get("novel_task_supported"))
         if compatibility == "verified" and supported:
             return profile
         raise ValueError(
-            f"模型 {profile.get('id') or model_id or ''} 未完成兼容性验证，暂不支持小说任务流。"
-            "请改用已验证模型，例如 gpt-5.4、glm-5.1 或 MiniMax-M2.7-highspeed。"
+            f"模型 {profile.get('id') or candidate} 未完成兼容性验证，暂不支持小说任务流。"
+            "请在 AI 对话页完成当前在线模型的兼容性验证后重试。"
         )
 
     def _load_gateway_models(self) -> list[dict[str, Any]]:
@@ -561,7 +515,8 @@ class ModelCatalogService:
             return []
         try:
             payload = self.gateway_client.list_models()
-        except Exception:
+        except Exception as exc:
+            logger.warning("读取网关模型列表失败，不使用本地模型画像作为候选项: error=%s", exc)
             return []
         if not isinstance(payload, list):
             return []
@@ -577,79 +532,34 @@ class ModelCatalogService:
             if not model_id or model_id in seen:
                 continue
             seen.add(model_id)
-            source = "gateway+registry" if model_id in self.registry else "gateway"
-            items.append(self._build_model_item(raw, source=source))
+            items.append(self._build_model_item(raw, source="gateway"))
 
-        # 2. 再补充注册表中有 profile 但网关未返回的模型
-        for model_id, profile in self.registry.items():
-            if model_id in seen:
-                continue
-            seen.add(model_id)
-            items.append(self._build_model_item({"id": model_id}, source="registry"))
-
-        return self._order_default_model_first(items)
-
-    def _order_default_model_first(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """将当前生效默认模型置顶。"""
-        effective_default = self._effective_default_model().strip()
-        default_idx = next((i for i, item in enumerate(items) if item["id"] == effective_default), -1)
-        if default_idx > 0:
-            items.insert(0, items.pop(default_idx))
         return items
-
-    def _sync_runtime_default_from_verified_env_default(self, items: list[dict[str, Any]]) -> bool:
-        """刷新模型目录后，将缺失或失效的持久化默认模型同步为已验证的配置默认模型。"""
-        env_default = (self.settings.default_chat_model or "").strip()
-        if not env_default:
-            return False
-        env_default_item = self._find_model_item(items, env_default)
-        if not self._is_verified_runtime_default_item(env_default_item):
-            return False
-
-        runtime_default = (self._runtime_default_model or "").strip()
-        if runtime_default:
-            runtime_item = self._find_model_item(items, runtime_default)
-            if self._is_verified_runtime_default_item(runtime_item):
-                return False
-
-        self._runtime_default_model = env_default
-        self._save_runtime_settings()
-        return True
-
-    @staticmethod
-    def _find_model_item(items: list[dict[str, Any]], model_id: str) -> dict[str, Any] | None:
-        for item in items:
-            if item.get("id") == model_id:
-                return item
-        return None
-
-    @staticmethod
-    def _is_verified_runtime_default_item(item: dict[str, Any] | None) -> bool:
-        if not item:
-            return False
-        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
-        source = str(metadata.get("source") or "").strip()
-        if source in {"registry", "default+registry"}:
-            return False
-        compatibility = str(metadata.get("compatibility") or "").strip()
-        features = (item.get("capabilities") or {}).get("features") or {}
-        return compatibility == "verified" and bool(features.get("novel_task_supported"))
 
     def _build_model_item(self, raw: dict[str, Any], source: str) -> dict[str, Any]:
         model_id = str(raw.get("id") or "").strip()
         profile = deepcopy(self.registry.get(model_id, {}))
-        capabilities = profile.get("capabilities") or self._unknown_capabilities(model_id)
-        capabilities = apply_context_window_config(capabilities, model_id, settings=self.settings)
+        profile_capabilities = profile.get("capabilities")
+        capabilities = deepcopy(profile_capabilities) if isinstance(profile_capabilities, dict) else self._unknown_capabilities(model_id)
+        # 型号注册表只允许补充非限额元数据；上下文窗口必须来自当前供应商目录或通用默认配置。
+        capabilities["context_window"] = {}
+        provider_limits, provider_limit_sources = extract_provider_model_limits(raw)
+        capabilities = apply_context_window_config(
+            capabilities,
+            model_id,
+            settings=self.settings,
+            provider_context_window=provider_limits,
+        )
         provider = profile.get("provider") or self.settings.llm_provider
         display_name = profile.get("display_name") or model_id
-        compatibility = "verified" if source in {"gateway+registry", "registry", "default+registry"} else "unverified"
+        compatibility = "unverified"
         protocol = profile.get("protocol") or getattr(self.settings, "default_protocol", "openai") or "openai"
         if hasattr(self.settings, "effective_protocol_overrides"):
             protocol = self.settings.effective_protocol_overrides.get(model_id, protocol)
         capabilities.setdefault("features", {})
         if isinstance(capabilities["features"], dict):
-            capabilities["features"].setdefault("novel_task_supported", compatibility == "verified")
-        return {
+            capabilities["features"]["novel_task_supported"] = False
+        item = {
             "id": model_id,
             "object": raw.get("object", "model"),
             "owned_by": raw.get("owned_by", "unknown"),
@@ -662,7 +572,53 @@ class ModelCatalogService:
                 "protocol": protocol,
                 "profile_version": "2026-03-31",
                 "last_refreshed_at": None,
+                "context_limit_source": provider_limit_sources.get("max_total_tokens", ""),
+                "input_limit_source": provider_limit_sources.get("max_input_tokens", ""),
+                "output_limit_source": provider_limit_sources.get("max_output_tokens", ""),
+                "limits_known": bool(provider_limits),
             },
+        }
+        return self._apply_compatibility_override(item, source)
+
+    def _apply_compatibility_override(self, item: dict[str, Any], source: str) -> dict[str, Any]:
+        if self.compatibility_provider is None:
+            return item
+        model_id = str(item.get("id") or "").strip()
+        if not model_id:
+            return item
+        try:
+            report = self.compatibility_provider.get_report(model_id)
+        except Exception as exc:
+            logger.warning("读取模型兼容性覆盖失败: model=%s error=%s", model_id, exc)
+            return item
+        if not isinstance(report, dict):
+            return item
+        status = str(report.get("status") or "").strip()
+        if status not in {"verified", "failed"}:
+            return item
+
+        metadata = item.setdefault("metadata", {})
+        features = item.setdefault("capabilities", {}).setdefault("features", {})
+        metadata["validation"] = self._validation_summary(report)
+        source_value = str(metadata.get("source") or source or "")
+        if status == "verified" and "gateway" in source_value:
+            metadata["compatibility"] = "verified"
+            features["novel_task_supported"] = True
+        elif status == "failed":
+            metadata["compatibility"] = "unverified"
+            features["novel_task_supported"] = False
+        return item
+
+    @staticmethod
+    def _validation_summary(report: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status": str(report.get("status") or "unverified"),
+            "validated_at": str(report.get("validated_at") or ""),
+            "validator_version": str(report.get("validator_version") or ""),
+            "summary": str(report.get("summary") or ""),
+            "last_error": str(report.get("failure_reason") or ""),
+            "checks": report.get("checks") if isinstance(report.get("checks"), list) else [],
+            "evidence": report.get("evidence") if isinstance(report.get("evidence"), dict) else {},
         }
 
     def _unknown_capabilities(self, model_id: str | None = None) -> dict[str, Any]:
@@ -695,11 +651,5 @@ class ModelCatalogService:
 
 
 def get_model_max_output_tokens(model_id: str | None, settings: Settings | None = None) -> int | None:
-    """查询模型本次生成使用的输出 token 上限。"""
-    configured = resolve_generation_max_tokens(model_id, settings=settings)
-    if configured is not None:
-        return configured
-    profile = _PROFILE_REGISTRY.get((model_id or "").strip(), {})
-    capabilities = profile.get("capabilities") or {}
-    context_window = capabilities.get("context_window") or {}
-    return context_window.get("max_output_tokens")
+    """返回供应商未提供限额时使用的通用输出 token 默认值。"""
+    return resolve_generation_max_tokens(None, settings=settings)

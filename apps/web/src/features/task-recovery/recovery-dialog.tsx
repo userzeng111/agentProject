@@ -17,6 +17,7 @@ import {
   Select,
   Stack,
   Typography,
+  alpha,
 } from "@mui/material";
 
 import { ModelOption, RecoveryContractFields, RecoveryMode, RecoveryPreview } from "@/lib/types";
@@ -62,7 +63,7 @@ export interface RecoveryDialogProps {
   models: ModelOption[];
   selectedAction: RecoveryMode;
   selectedModelId: string;
-  defaultModelId?: string;
+  taskCreativeModelId?: string;
   submitting?: boolean;
   onActionChange: (action: RecoveryMode) => void;
   onModelChange: (modelId: string) => void;
@@ -76,7 +77,7 @@ export default function RecoveryDialog({
   models,
   selectedAction,
   selectedModelId,
-  defaultModelId = "",
+  taskCreativeModelId = "",
   submitting = false,
   onActionChange,
   onModelChange,
@@ -87,8 +88,8 @@ export default function RecoveryDialog({
   const selectedOption = options.find((option) => option.action === selectedAction) ?? null;
   const preview = resolveRecoveryPreview(recovery, selectedAction);
   const filteredModels = filterRecoveryModels(models, preview?.allowed_model_ids);
-  const taskDefaultModelAvailable = Boolean(
-    defaultModelId && filteredModels.some((model) => model.id === defaultModelId),
+  const taskCreativeModelAvailable = Boolean(
+    taskCreativeModelId && filteredModels.some((model) => model.id === taskCreativeModelId),
   );
   const selectedModelAvailable = Boolean(
     selectedModelId && filteredModels.some((model) => model.id === selectedModelId),
@@ -127,15 +128,15 @@ export default function RecoveryDialog({
                 return (
                   <Box
                     key={action}
-                    sx={{
+                    sx={(theme) => ({
                       px: 1.5,
                       py: 1,
                       borderRadius: 2,
                       border: "1px solid",
                       borderColor: selectedAction === action ? "primary.main" : "divider",
-                      backgroundColor: selectedAction === action ? "rgba(39, 100, 81, 0.05)" : "transparent",
+                      backgroundColor: selectedAction === action ? alpha(theme.palette.primary.main, 0.05) : "transparent",
                       mb: 1,
-                    }}
+                    })}
                   >
                     <FormControlLabel
                       value={action}
@@ -156,13 +157,13 @@ export default function RecoveryDialog({
           </FormControl>
 
           <Box
-            sx={{
+            sx={(theme) => ({
               p: 2,
               borderRadius: 2,
               border: "1px solid",
               borderColor: "divider",
-              backgroundColor: "rgba(29, 42, 39, 0.03)",
-            }}
+              backgroundColor: alpha(theme.palette.text.primary, 0.03),
+            })}
           >
             <Stack spacing={1}>
               <Typography variant="subtitle1">当前动作预览</Typography>
@@ -187,7 +188,7 @@ export default function RecoveryDialog({
                   : "当前动作暂未提供后果说明。"}
               </Typography>
               <Typography variant="body2">
-                默认模型：{preview?.default_model_id || defaultModelId || "未设置"}
+                任务创作模型：{preview?.creative_model_id || taskCreativeModelId || "未设置"}
               </Typography>
               <Typography variant="body2">
                 最近一次动作模型：{preview?.last_action_model_id || "未记录"}
@@ -227,12 +228,12 @@ export default function RecoveryDialog({
                 <Alert severity="warning">当前动作没有可用模型，请切换恢复动作或稍后再试。</Alert>
               )}
 
-              {!taskDefaultModelAvailable && filteredModels.length > 0 ? (
-                <Alert severity="warning">任务默认模型当前不可用，请手动选择恢复模型。</Alert>
+              {!taskCreativeModelAvailable && filteredModels.length > 0 ? (
+                <Alert severity="warning">任务创作模型当前不可用，请手动选择恢复模型。</Alert>
               ) : null}
 
               <Typography variant="caption" color="text.secondary">
-                默认优先采用任务默认模型；最近一次动作模型仅作为参考展示。
+                首次打开时可预填任务创作模型；模型失效后必须手动重新选择。
               </Typography>
             </Stack>
           </Box>

@@ -28,13 +28,13 @@ cp .env.example .env
 # 编辑 .env，填写 OPENAI_API_KEY
 
 # 启动后端
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn app.main:app --host localhost --port 8000
 ```
 
 验证后端启动：
 
 ```bash
-curl http://127.0.0.1:8000/api/health
+curl http://localhost:8000/api/health
 # 预期返回：{"status":"ok"}
 ```
 
@@ -47,7 +47,7 @@ cd apps/web
 npm ci
 
 # 配置前端 API 地址（如需修改）
-# 当前默认会连接 http://127.0.0.1:8000
+# 当前默认会连接 http://localhost:8000
 # 如需修改，编辑 .env.local 并设置 NEXT_PUBLIC_API_BASE_URL
 
 # 启动前端开发服务器
@@ -80,7 +80,7 @@ npm run build
 ```
 
 默认行为：
-- 后端启动到 `127.0.0.1:8000`
+- 后端启动到 `localhost:8000`
 - 使用 `~/.cloudflared/config.yml`
 - 自动读取其中的 `tunnel` ID 并执行 `cloudflared tunnel run`
 
@@ -94,10 +94,10 @@ npm run build
 
 ```bash
 # 健康检查
-curl http://127.0.0.1:8000/api/health
+curl http://localhost:8000/api/health
 
 # 查看模型列表（14 个模型）
-curl http://127.0.0.1:8000/api/models | python3 -c "
+curl http://localhost:8000/api/models | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print(f'模型数量: {len(d[\"data\"])}')
@@ -106,7 +106,7 @@ for m in d['data']:
 "
 
 # 查看 Dashboard
-curl http://127.0.0.1:8000/api/dashboard | python3 -c "
+curl http://localhost:8000/api/dashboard | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print(f'默认模型: {d[\"model_summary\"][\"default_model\"]}')
@@ -114,12 +114,12 @@ print(f'待处理: {d[\"continue_total\"]}, 运行中: {d[\"running_total\"]}, �
 "
 
 # 切换默认模型
-curl -X PATCH http://127.0.0.1:8000/api/settings/default-model \
+curl -X PATCH http://localhost:8000/api/settings/default-model \
   -H 'Content-Type: application/json' \
   -d '{"model_id":"gpt-5.3-codex"}'
 
 # 归档列表（分页）
-curl "http://127.0.0.1:8000/api/archive?page=1&page_size=5" | python3 -c "
+curl "http://localhost:8000/api/archive?page=1&page_size=5" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print(f'总数: {d[\"total\"]}, 当前页: {d[\"page\"]}, 每页: {d[\"page_size\"]}, 总页数: {d[\"total_pages\"]}')

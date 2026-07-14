@@ -44,11 +44,9 @@ class DynamicReviewBridge:
     def __init__(
         self,
         gateway_client: OpenAICompatibleGatewayClient,
-        default_model: str = "MiniMax-M2.7-highspeed",
         max_workers: int = 4,
     ) -> None:
         self._gateway_client = gateway_client
-        self._default_model = default_model
         self._max_workers = max_workers
 
     def review(self, payload: ReviewPayload, policy: AutoReviewPolicy) -> ReviewDecision:
@@ -58,17 +56,22 @@ class DynamicReviewBridge:
         接口签名与 AutoReviewManager.review() 完全一致。
         """
         review_type = payload.type
-        logger.info("动态审核开始: review_type=%s, model=%s", review_type, policy.auditor_model or self._default_model)
+        model = str(policy.auditor_model or "").strip()
+        if not model:
+            return ReviewDecision(
+                approved=False,
+                comment="自动审核缺少显式模型，请重新选择当前在线模型后再试。",
+                reasoning="动态审核调用前未提供模型。",
+                auto_escalated=True,
+                overall_score=0.0,
+            )
+        logger.info("动态审核开始: review_type=%s, model=%s", review_type, model)
         task_description = self._build_task_description(payload)
         task_context = self._build_task_context(payload, policy)
-
-        # 根据审核类型选择模型
-        model = policy.auditor_model or self._default_model
 
         try:
             orchestrator = TaskOrchestrator(
                 gateway_client=self._gateway_client,
-                default_model=model,
                 max_workers=self._max_workers,
             )
 

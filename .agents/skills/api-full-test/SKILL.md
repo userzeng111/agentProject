@@ -24,7 +24,7 @@ description: Use when needing a comprehensive API endpoint smoke test after back
 - 出现"接口 404/400/500""页面打不开""SPA 回退失效"等问题
 
 ## 使用方式
-确保后端已启动（默认 `http://127.0.0.1:8000`），然后运行：
+确保后端已启动（默认 `http://localhost:8000`），然后运行：
 
 ```bash
 python3 .agents/skills/api-full-test/scripts/run_full_test.py
@@ -34,8 +34,28 @@ python3 .agents/skills/api-full-test/scripts/run_full_test.py
 
 ```bash
 python3 .agents/skills/api-full-test/scripts/run_full_test.py \
-  --backend-url http://127.0.0.1:8000
+  --backend-url http://localhost:8000
 ```
+
+如需额外检查部署域名 CORS，可重复传入：
+
+```bash
+python3 .agents/skills/api-full-test/scripts/run_full_test.py \
+  --backend-url http://localhost:8000 \
+  --frontend-url http://localhost:3000 \
+  --cors-origin https://example.com
+```
+
+本地 `.env` 没有有效模型网关 Key 时，可显式允许聊天补全网关失败降级为警告：
+
+```bash
+python3 .agents/skills/api-full-test/scripts/run_full_test.py \
+  --backend-url http://localhost:8000 \
+  --frontend-url http://localhost:3000 \
+  --allow-gateway-unavailable
+```
+
+部署门禁不要启用 `--allow-gateway-unavailable`；部署环境必须让聊天补全真实通过。
 
 ## 测试覆盖
 
@@ -94,7 +114,7 @@ python3 .agents/skills/api-full-test/scripts/run_full_test.py \
 
 ## 结果判断
 - `[OK]` — 通过
-- `[WARN]` — 警告（如 review/result 对未到阶段任务返回 400，属于预期行为）
+- `[WARN]` — 警告（如 review/result 对未到阶段任务返回 400、没有可切换的网关模型；只有显式传入 `--allow-gateway-unavailable` 时，本地上游模型 Key 不可用才会记为警告）
 - `[FAIL]` — 失败，需排查
 - 最终输出通过/警告/失败统计
 

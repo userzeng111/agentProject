@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from app.domain.models import ChapterDraft, ChapterPlan, ReviewDecision, StoryPlan
 from app.graph.main_graph import build_graph
+from tests.fakes import FakeVerifiedGatewayModelCatalog
 
 
 class FakePacket:
@@ -237,6 +238,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": False,
@@ -280,6 +282,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": True,
@@ -322,6 +325,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": True,
@@ -344,6 +348,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
         graph = build_graph(
             engine,
             context_manager=FakeContextManager(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
         )
         initial_state = self._initial_state()
         initial_state["input_payload"]["target_words"] = 1500
@@ -375,6 +380,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": True,
@@ -420,6 +426,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": True,
@@ -464,6 +471,7 @@ class GraphAutoReviewEscalationTests(unittest.TestCase):
             graph = build_graph(
                 engine,
                 context_manager=FakeContextManager(),
+                model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
                 auto_review=True,
                 auto_review_policy={
                     "allow_self_revisions": True,

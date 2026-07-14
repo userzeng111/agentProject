@@ -7,11 +7,11 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import build_router
 from app.application.task_service import TaskService
-from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
 from app.style_profiles.service import StyleProfileService
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class StyleProfileServiceTests(unittest.TestCase):
@@ -98,12 +98,12 @@ instances:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             app = FastAPI()

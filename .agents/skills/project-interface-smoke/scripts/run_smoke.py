@@ -33,8 +33,8 @@ def check_ok(name: str, status: int, expected: int = 200) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="当前仓库前后端接口与页面冒烟检查")
-    parser.add_argument("--frontend-url", default="http://127.0.0.1:3000", help="前端地址")
-    parser.add_argument("--backend-url", default="http://127.0.0.1:8000", help="后端地址")
+    parser.add_argument("--frontend-url", default="http://localhost:3000", help="前端地址")
+    parser.add_argument("--backend-url", default="http://localhost:8000", help="后端地址")
     parser.add_argument("--timeout", type=float, default=20.0, help="单次请求超时时间（秒）")
     args = parser.parse_args()
 

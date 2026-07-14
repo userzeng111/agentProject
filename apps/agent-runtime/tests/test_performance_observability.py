@@ -3,17 +3,33 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import contextvars
 from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.application.task_service.core import TaskServiceCoreMixin
 from app.domain.models import TaskCreateRequest
 from app.llm.gateway_client import OpenAICompatibleGatewayClient
-from app.observability.context import RequestContext, request_id_var, task_id_var
-from app.observability.performance import performance_span
+from app.observability.context import (
+    RequestContext,
+    clear_request_flow,
+    get_request_flow,
+    push_request_flow,
+    request_id_var,
+    task_id_var,
+)
+from app.observability.middleware import TracingMiddleware
+from app.observability.performance import (
+    is_perf_log_enabled,
+    log_performance,
+    performance_span,
+    set_perf_log_enabled,
+)
 from app.rag.config import RagConfig
 from app.rag.rebuild_service import IndexedDocument, NovelCorpusRebuildService
 from app.rag.service import RagHit, RagService
@@ -41,11 +57,39 @@ class _FakeStreamResponse:
         return b""
 
 
+class _FakeMixedUsageStreamResponse:
+    status_code = 200
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def iter_lines(self):
+        yield 'data: {"choices":[{"delta":{"content":"甲"},"finish_reason":null}],"model":"test-model"}'
+        yield (
+            'data: {"choices":[{"delta":{},"finish_reason":"stop",'
+            '"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}],"model":"test-model"}'
+        )
+        yield "data: [DONE]"
+
+    def read(self) -> bytes:
+        return b""
+
+
 class _FakeClient:
     is_closed = False
 
     def stream(self, *args: Any, **kwargs: Any) -> _FakeStreamResponse:
         return _FakeStreamResponse()
+
+
+class _FakeMixedUsageClient:
+    is_closed = False
+
+    def stream(self, *args: Any, **kwargs: Any) -> _FakeMixedUsageStreamResponse:
+        return _FakeMixedUsageStreamResponse()
 
 
 class _StubSearchBackend:
@@ -71,10 +115,77 @@ def _messages(caplog: pytest.LogCaptureFixture) -> str:
     return "\n".join(record.getMessage() for record in caplog.records)
 
 
+@pytest.fixture(autouse=True)
+def _restore_perf_log_enabled():
+    previous = is_perf_log_enabled()
+    set_perf_log_enabled(True)
+    try:
+        yield
+    finally:
+        set_perf_log_enabled(previous)
+
+
+def test_performance_logs_are_disabled_by_default(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("tests.performance_disabled")
+    set_perf_log_enabled(False)
+
+    with caplog.at_level(logging.DEBUG, logger="tests.performance_disabled"):
+        log_performance(logger, "disabled_operation", item_id="abc")
+        with performance_span(logger, "disabled_span", item_id="abc"):
+            pass
+
+    assert "disabled_operation" not in _messages(caplog)
+    assert "disabled_span" not in _messages(caplog)
+
+
+def test_request_flow_is_isolated_after_clear() -> None:
+    clear_request_flow()
+    push_request_flow("GET")
+    assert get_request_flow() == "GET"
+
+    clear_request_flow()
+    assert get_request_flow() == ""
+
+    push_request_flow("POST")
+    assert get_request_flow() == "POST"
+
+
+def test_request_flow_contexts_do_not_share_mutable_default() -> None:
+    first_context = contextvars.Context()
+    second_context = contextvars.Context()
+
+    first_context.run(push_request_flow, "first")
+    second_context.run(push_request_flow, "second")
+
+    assert first_context.run(get_request_flow) == "first"
+    assert second_context.run(get_request_flow) == "second"
+
+
+def test_tracing_middleware_logs_flow_and_restores_outer_flow(caplog: pytest.LogCaptureFixture) -> None:
+    app = FastAPI()
+    app.add_middleware(TracingMiddleware)
+
+    @app.get("/unit-flow")
+    def unit_flow():
+        push_request_flow("handler.unit_flow")
+        return {"flow": get_request_flow()}
+
+    clear_request_flow()
+    push_request_flow("outer")
+
+    with caplog.at_level(logging.INFO, logger="app.observability.middleware"):
+        response = TestClient(app).get("/unit-flow")
+
+    assert response.status_code == 200
+    assert response.json()["flow"] == "GET→handler.unit_flow"
+    assert get_request_flow() == "outer"
+    assert "flow=GET→handler.unit_flow" in _messages(caplog)
+
+
 def test_performance_span_logs_success_and_failure(caplog: pytest.LogCaptureFixture) -> None:
     logger = logging.getLogger("tests.performance_span")
 
-    with caplog.at_level(logging.INFO, logger="tests.performance_span"):
+    with caplog.at_level(logging.DEBUG, logger="tests.performance_span"):
         with performance_span(logger, "unit_operation", item_id="abc"):
             pass
 
@@ -99,7 +210,7 @@ def test_performance_span_logs_success_and_failure(caplog: pytest.LogCaptureFixt
 def test_db_session_logs_total_commit_and_rollback(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     init_db(tmp_path / "data.db")
 
-    with caplog.at_level(logging.INFO, logger="app.storage.database"):
+    with caplog.at_level(logging.DEBUG, logger="app.storage.database"):
         with get_session() as session:
             session.execute(text("SELECT 1")).fetchall()
             session.commit()
@@ -109,7 +220,7 @@ def test_db_session_logs_total_commit_and_rollback(tmp_path: Path, caplog: pytes
     assert "db_session_total" in messages
 
     caplog.clear()
-    with caplog.at_level(logging.INFO, logger="app.storage.database"):
+    with caplog.at_level(logging.DEBUG, logger="app.storage.database"):
         with pytest.raises(RuntimeError):
             with get_session():
                 raise RuntimeError("触发回滚")
@@ -124,7 +235,7 @@ def test_task_store_logs_save_and_file_io(tmp_path: Path, caplog: pytest.LogCapt
     store = TaskLogStore(root_dir=str(tmp_path / "tasklog"))
     payload = TaskCreateRequest(prompt="测试性能日志", genre="玄幻", style="冷静")
 
-    with caplog.at_level(logging.INFO, logger="app.storage.task_store"):
+    with caplog.at_level(logging.DEBUG, logger="app.storage.task_store"):
         task = store.create_task(payload)
         store.append_event(task.id, stage="unit", message="追加事件", event_type="unit.event")
 
@@ -151,7 +262,7 @@ def test_background_task_inherits_request_context_and_logs_lifecycle(caplog: pyt
         seen["task_id"] = task_id_var.get()
         done.set()
 
-    with caplog.at_level(logging.INFO, logger="app.application.task_service.core"):
+    with caplog.at_level(logging.DEBUG, logger="app.application.task_service.core"):
         with RequestContext(request_id="req-perf", task_id="outer-task"):
             service._start_background("task-perf", target)
         assert done.wait(timeout=2)
@@ -177,14 +288,45 @@ def test_llm_stream_sync_logs_chunk_metrics(caplog: pytest.LogCaptureFixture) ->
     )
     client._client = _FakeClient()
 
-    with caplog.at_level(logging.INFO, logger="app.llm.gateway_client"):
-        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}]))
+    with caplog.at_level(logging.DEBUG, logger="app.llm.gateway_client"):
+        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}], model="test-model"))
 
     assert [chunk.content for chunk in chunks if chunk.content] == ["甲"]
     messages = _messages(caplog)
     assert "llm_stream_sync_first_token" in messages
+    assert "llm_stream_sync_usage" in messages
+    assert "usage_source_path=usage" in messages
+    assert "completion_tokens=2" in messages
     assert "llm_stream_sync_metrics" in messages
     assert "chunk_count=2" in messages
+    assert "usage_chunk_count=1" in messages
+    assert "finish_reason=stop" in messages
+
+
+def test_llm_stream_sync_logs_usage_when_finish_reason_chunk_contains_usage(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client = OpenAICompatibleGatewayClient(
+        base_url="http://example.com",
+        api_key="test-key",
+        model="test-model",
+    )
+    client._client = _FakeMixedUsageClient()
+
+    with caplog.at_level(logging.DEBUG, logger="app.llm.gateway_client"):
+        chunks = list(client.complete_stream_sync([{"role": "user", "content": "测试"}], model="test-model"))
+
+    usage_chunks = [chunk for chunk in chunks if chunk.usage]
+    assert len(usage_chunks) == 1
+    assert usage_chunks[0].finish_reason == "stop"
+    assert usage_chunks[0].usage["total_tokens"] == 5
+    messages = _messages(caplog)
+    assert "llm_stream_sync_usage" in messages
+    assert "usage_source_path=choices[0].usage" in messages
+    assert "prompt_tokens=3" in messages
+    assert "completion_tokens=2" in messages
+    assert "total_tokens=5" in messages
+    assert "usage_chunk_count=1" in messages
     assert "finish_reason=stop" in messages
 
 
@@ -196,10 +338,11 @@ def test_llm_stream_sync_logs_stage_and_exchange_label(caplog: pytest.LogCapture
     )
     client._client = _FakeClient()
 
-    with caplog.at_level(logging.INFO, logger="app.llm.gateway_client"):
+    with caplog.at_level(logging.DEBUG, logger="app.llm.gateway_client"):
         list(
             client.complete_stream_sync(
                 [{"role": "user", "content": "测试"}],
+                model="test-model",
                 _obs_stage="planning",
                 _obs_exchange_label="outline",
             )
@@ -218,7 +361,7 @@ def test_rag_search_logs_phases(caplog: pytest.LogCaptureFixture) -> None:
         ),
     )
 
-    with caplog.at_level(logging.INFO, logger="app.rag.service"):
+    with caplog.at_level(logging.DEBUG, logger="app.rag.service"):
         result = service.search("检索词")
 
     assert result.selected_contexts == ["命中内容"]
@@ -243,7 +386,7 @@ def test_rag_rebuild_logs_phases(tmp_path: Path, caplog: pytest.LogCaptureFixtur
     )
     service = NovelCorpusRebuildService(config=config, builder=_FakeNovelCorpusBuilder())
 
-    with caplog.at_level(logging.INFO, logger="app.rag.rebuild_service"):
+    with caplog.at_level(logging.DEBUG, logger="app.rag.rebuild_service"):
         result = service.rebuild()
 
     assert result["success"] is True

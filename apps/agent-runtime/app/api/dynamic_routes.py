@@ -26,7 +26,7 @@ class DynamicOrchestrationRequest(BaseModel):
     task_type: str = Field(..., description="任务类型（如 outline_review, chapter_review, custom）")
     task_description: str = Field(..., description="任务描述")
     task_context: dict[str, Any] = Field(default_factory=dict, description="任务上下文变量")
-    model: str | None = Field(default=None, description="使用的模型（默认系统配置）")
+    model: str | None = Field(default=None, description="本次请求显式选择的模型")
     max_workers: int = Field(default=4, ge=1, le=16, description="最大并行 Agent 数")
 
 
@@ -48,7 +48,7 @@ class DynamicOrchestrationResponse(BaseModel):
     error: str | None = None
 
 
-def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRouter:
+def build_dynamic_router(gateway_client=None) -> APIRouter:
     """构建动态编排 API 路由。"""
     router = APIRouter(prefix="/dynamic", tags=["动态 Agent 编排"])
 
@@ -76,11 +76,19 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
                 status_code=503,
                 detail="模型网关未配置，请检查 .env 中的 LLM_BASE_URL 与 LLM_API_KEY。",
             )
+        model_id = str(request.model or "").strip()
+        if not model_id:
+            raise HTTPException(status_code=400, detail="请显式选择当前供应商返回的模型后再执行动态编排。")
+        validator = getattr(gateway_client, "ensure_model_available", None)
+        if callable(validator):
+            try:
+                validator(model_id, force_refresh=True)
+            except GatewayClientError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
             orchestrator = TaskOrchestrator(
                 gateway_client=gateway_client,
-                default_model=default_model,
                 max_workers=request.max_workers,
             )
 
@@ -90,7 +98,7 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
                 task_type=request.task_type,
                 task_description=request.task_description,
                 task_context=request.task_context,
-                model=request.model,
+                model=model_id,
             )
 
             # 构建响应
@@ -162,12 +170,20 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
         """
         if gateway_client is None:
             raise HTTPException(status_code=503, detail="模型网关未配置。")
+        model_id = str(request.model or "").strip()
+        if not model_id:
+            raise HTTPException(status_code=400, detail="请显式选择当前供应商返回的模型后再执行动态编排。")
+        validator = getattr(gateway_client, "ensure_model_available", None)
+        if callable(validator):
+            try:
+                validator(model_id, force_refresh=True)
+            except GatewayClientError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         try:
             # 动态编排
             orchestrator = TaskOrchestrator(
                 gateway_client=gateway_client,
-                default_model=default_model,
                 max_workers=request.max_workers,
             )
 
@@ -176,7 +192,7 @@ def build_dynamic_router(gateway_client=None, default_model: str = "") -> APIRou
                 task_type=request.task_type,
                 task_description=request.task_description,
                 task_context=request.task_context,
-                model=request.model,
+                model=model_id,
             )
 
             return {

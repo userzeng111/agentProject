@@ -80,8 +80,9 @@ class AgentRegistry:
     def clear(self) -> None:
         """清空注册表。"""
         with self._lock:
+            before = len(self._agents)
             self._agents.clear()
-            logger.info("注册表已清空")
+            logger.info("注册表已清空 agent_count_before=%d", before)
 
     def summary(self) -> dict[str, Any]:
         """返回注册表摘要信息。"""

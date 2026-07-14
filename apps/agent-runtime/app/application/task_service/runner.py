@@ -20,21 +20,15 @@ from app.llm.story_engine import (
     set_progress_callback,
 )
 from app.observability.performance import performance_span
+from app.observability.context import push_request_flow
 
 logger = get_logger(__name__)
-
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
 
 
 class TaskServiceRunnerMixin:
 
     def _run_task_sync(self, task_id: str, action_model_id: str | None = None) -> TaskRecord:
+        push_request_flow("runner.run_task_sync")
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         try:
@@ -93,6 +87,7 @@ class TaskServiceRunnerMixin:
             self._leave_active_run(task_id)
 
     def _resume_task_sync(self, task_id: str, approved: bool, comment: str, action_model_id: str | None = None) -> TaskRecord:
+        push_request_flow("runner.resume_task_sync")
         if not self._enter_active_run(task_id):
             return self.store.get(task_id)
         try:
@@ -143,6 +138,20 @@ class TaskServiceRunnerMixin:
                             Command(resume={"approved": approved, "comment": comment}),
                             config=self._config(task_id),
                         )
+                    # 循环解析后续中断（如 chapter_gate_review 后紧跟的 review_chapter_pair）
+                    max_interrupt_rounds = 10
+                    interrupt_round = 0
+                    while "__interrupt__" in result and interrupt_round < max_interrupt_rounds:
+                        interrupt_round += 1
+                        logger.info(
+                            "检测到后续中断，自动解析第 %d 轮，task_id=%s",
+                            interrupt_round,
+                            task_id,
+                        )
+                        result = self.workflow_engine.resume(
+                            Command(resume={"approved": approved, "comment": comment}),
+                            config=self._config(task_id),
+                        )
                 finally:
                     reset_progress_callback(progress_token)
                     reset_exchange_callback(exchange_token)
@@ -168,7 +177,7 @@ class TaskServiceRunnerMixin:
             message = str(event.get("message") or "任务进度已更新。")
             payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
             progress = self._progress_value(task_id, event_type, payload)
-            status = TaskStatus.DRAFTING if stage == "drafting" else None
+            status = self._status_for_progress_stage(stage)
             if event_type == "model.thinking":
                 self.store.broadcast_event(
                     task_id,
@@ -244,6 +253,20 @@ class TaskServiceRunnerMixin:
 
         return callback
 
+    @staticmethod
+    def _status_for_progress_stage(stage: str) -> TaskStatus | None:
+        if stage == "drafting":
+            return TaskStatus.DRAFTING
+        if stage == "waiting_outline_review":
+            return TaskStatus.WAITING_OUTLINE_REVIEW
+        if stage == "waiting_chapter_review":
+            return TaskStatus.WAITING_CHAPTER_REVIEW
+        if stage == "waiting_verification_review":
+            return TaskStatus.WAITING_VERIFICATION_REVIEW
+        if stage == "assembling":
+            return TaskStatus.ASSEMBLING
+        return None
+
     def _build_exchange_callback(self, task_id: str):
         def callback(event: dict[str, Any]) -> None:
             if self._is_stop_requested(task_id) or self.store.get(task_id).status is TaskStatus.CANCELLED:
@@ -268,7 +291,7 @@ class TaskServiceRunnerMixin:
                     "task_id": task_id,
                     "stage": stage,
                     "exchange_label": exchange_label,
-                    "model": str(event.get("model") or self.engine.settings.default_chat_model),
+                    "model": str(event.get("model") or ""),
                     "finish_reason": event.get("finish_reason"),
                     "parse_error": str(event.get("parse_error") or ""),
                     "raw_response_preview": raw_preview,
@@ -328,7 +351,7 @@ class TaskServiceRunnerMixin:
             cache_key = event.get("cache_key")
             prompt_diagnostics = event.get("prompt_diagnostics") if isinstance(event.get("prompt_diagnostics"), dict) else {}
             parse_duration_ms = event.get("parse_duration_ms")
-            model_name = str(event.get("model") or self.engine.settings.default_chat_model)
+            model_name = str(event.get("model") or "")
             timing_details = event.get("timing_details") if isinstance(event.get("timing_details"), list) else []
             message = (
                 f"{stage} 阶段已命中模型响应缓存：{exchange_label}"
@@ -363,6 +386,10 @@ class TaskServiceRunnerMixin:
         total = len(task.story_plan.chapter_plan) if task.story_plan is not None else 0
         chapter_number = payload.get("chapter_number")
         if not isinstance(chapter_number, int) or total <= 0:
+            if event_type.startswith("outline.chapter_plan_batch."):
+                return max(task.progress, 45)
+            if event_type.startswith("outline.review."):
+                return max(task.progress, 50)
             return max(task.progress, 60) if event_type.startswith("chapter.") else None
         base_progress = 55
         span = 35

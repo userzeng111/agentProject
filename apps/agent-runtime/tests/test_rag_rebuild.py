@@ -7,12 +7,12 @@ from fastapi.testclient import TestClient
 
 from app.api.routes import build_router
 from app.application.task_service import TaskService
-from app.llm.model_catalog import ModelCatalogService
 from app.llm.story_engine import StoryEngine
 from app.rag.config import RagConfig
 from app.rag.rebuild_service import IndexedDocument, NovelCorpusRebuildService
 from app.settings.config import Settings
 from app.storage.task_store import TaskLogStore
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FakeNovelCorpusBuilder:
@@ -108,16 +108,68 @@ class RagRebuildTests(unittest.TestCase):
             self.assertEqual(documents[0].metadata["chunk_index"], 0)
             self.assertEqual(documents[-1].metadata["chunk_index"], 2)
 
+    def test_get_status_warns_when_status_file_is_corrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            example_root = root / "exampleIndexData"
+            archive_root = root / "tasklog" / "archive"
+            example_root.mkdir(parents=True, exist_ok=True)
+            archive_root.mkdir(parents=True, exist_ok=True)
+            (example_root / "斗罗大陆.txt").write_text("斗罗大陆内容", encoding="utf-8")
+
+            config = RagConfig(
+                enabled=True,
+                example_root=example_root,
+                archive_root=archive_root,
+                artifacts_root=root / "Data" / "rag" / "novel_corpus",
+                gguf_path=root / "models" / "bge.gguf",
+            )
+            config.library_dir.mkdir(parents=True, exist_ok=True)
+            config.status_path.write_text("{bad json", encoding="utf-8")
+            service = NovelCorpusRebuildService(config=config, builder=FakeNovelCorpusBuilder())
+
+            with self.assertLogs("app.rag.rebuild_service", level="WARNING") as logs:
+                status = service.get_status()
+
+            self.assertIsNone(status["last_result"])
+            self.assertIn("读取 RAG 重建状态失败", "\n".join(logs.output))
+
+    def test_get_status_warns_when_status_file_is_not_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            example_root = root / "exampleIndexData"
+            archive_root = root / "tasklog" / "archive"
+            example_root.mkdir(parents=True, exist_ok=True)
+            archive_root.mkdir(parents=True, exist_ok=True)
+            (example_root / "斗罗大陆.txt").write_text("斗罗大陆内容", encoding="utf-8")
+
+            config = RagConfig(
+                enabled=True,
+                example_root=example_root,
+                archive_root=archive_root,
+                artifacts_root=root / "Data" / "rag" / "novel_corpus",
+                gguf_path=root / "models" / "bge.gguf",
+            )
+            config.library_dir.mkdir(parents=True, exist_ok=True)
+            config.status_path.write_text("[]", encoding="utf-8")
+            service = NovelCorpusRebuildService(config=config, builder=FakeNovelCorpusBuilder())
+
+            with self.assertLogs("app.rag.rebuild_service", level="WARNING") as logs:
+                status = service.get_status()
+
+            self.assertIsNone(status["last_result"])
+            self.assertIn("RAG 重建状态格式不正确", "\n".join(logs.output))
+
     def test_settings_routes_expose_rag_status_and_rebuild(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(
                 LLM_API_KEY="",
-                DEFAULT_CHAT_MODEL="gpt-5.4",
+                DEFAULT_CHAT_MODEL="",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             task_service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             app = FastAPI()

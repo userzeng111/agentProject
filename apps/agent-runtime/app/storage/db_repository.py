@@ -419,18 +419,35 @@ def create_chapter_plan_batch(
 ) -> NovelChapterPlanBatchModel:
     now = utc_now()
     with get_session() as session:
-        row = NovelChapterPlanBatchModel(
-            task_id=task_id,
-            batch_no=batch_no,
-            start_chapter=start_chapter,
-            end_chapter=end_chapter,
-            requested_count=requested_count,
-            effective_count=effective_count,
-            status=status,
-            created_at=now,
-            updated_at=now,
+        row = (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id, batch_no=batch_no)
+            .first()
         )
-        session.add(row)
+        if row is None:
+            row = NovelChapterPlanBatchModel(
+                task_id=task_id,
+                batch_no=batch_no,
+                start_chapter=start_chapter,
+                end_chapter=end_chapter,
+                requested_count=requested_count,
+                effective_count=effective_count,
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+        else:
+            row.start_chapter = start_chapter
+            row.end_chapter = end_chapter
+            row.requested_count = requested_count
+            row.effective_count = effective_count
+            row.status = status
+            row.updated_at = now
+            if status != "approved":
+                row.approved_at = None
+            if status != "rejected":
+                row.rejected_at = None
         session.commit()
         session.refresh(row)
         return row
@@ -504,6 +521,47 @@ def get_chapter_plan_batch_summary(task_id: str) -> dict[str, Any] | None:
             "approved_count": approved_count,
             "batch_size": batch_size,
             "total_count": total_count,
+        }
+
+
+def get_chapter_plan_batch_workspace_summary(task_id: str) -> dict[str, Any] | None:
+    with get_session() as session:
+        batches = (
+            session.query(NovelChapterPlanBatchModel)
+            .filter_by(task_id=task_id)
+            .order_by(NovelChapterPlanBatchModel.batch_no.asc())
+            .all()
+        )
+        if not batches:
+            return None
+
+        outline_total = (
+            session.query(NovelOutlineChapterModel.chapter_number)
+            .filter_by(task_id=task_id)
+            .order_by(NovelOutlineChapterModel.chapter_number.desc())
+            .first()
+        )
+        requested_counts = [batch.requested_count for batch in batches if batch.requested_count > 0]
+        batch_size = max(set(requested_counts), key=requested_counts.count) if requested_counts else 20
+        approved_count = sum(batch.effective_count for batch in batches if batch.status == "approved")
+        total_count = max(batch.end_chapter for batch in batches)
+        if outline_total is not None:
+            total_count = max(total_count, int(outline_total[0]))
+        current_batch = next(
+            (
+                batch
+                for batch in reversed(batches)
+                if batch.status in {"planned", "waiting_review", "rejected"}
+            ),
+            batches[-1],
+        )
+        return {
+            "phase": "chapter_batches",
+            "approved_count": approved_count,
+            "batch_size": batch_size,
+            "total_count": total_count,
+            "current_batch_no": current_batch.batch_no,
+            "current_status": current_batch.status,
         }
 
 

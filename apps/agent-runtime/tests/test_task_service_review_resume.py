@@ -14,20 +14,23 @@ from langgraph.types import Command
 
 from app.application.task_service import TaskService
 from app.domain.models import ChapterDraft, ChapterPlan, OutlineBatchInfo, ReviewPayload, StoryPlan, TaskCreateRequest, TaskMode, TaskStatus
-from app.llm.model_catalog import ModelCatalogService
 from app.settings.config import Settings
 from app.storage.database import init_db
 from app.storage.task_store import TaskLogStore
 from app.storage.db_repository import create_batch, update_project_status
 
 
-from tests.fakes import FakeGatewayClient
+from tests.fakes import FakeGatewayClient, build_verified_gateway_model_catalog
 
 
 class FakeEngine:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.gateway_client = FakeGatewayClient()
+        self.gateway_client.list_models = lambda: [
+            {"id": "gpt-5.4", "object": "model", "owned_by": "openai"},
+            {"id": "glm-5.1", "object": "model", "owned_by": "zhipu"},
+        ]
         self.progress_callback = None
         self.generated_chapter_calls: list[dict] = []
         self.verification_calls: list[list[dict]] = []
@@ -131,9 +134,110 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         )
         store = TaskLogStore(root_dir=str(Path(tmp_dir.name) / "tasklog"))
         engine = FakeEngine(settings)
-        model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+        model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
         service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
         return tmp_dir, store, service
+
+    def test_graph_state_values_warns_when_get_state_fails(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+
+        class FailingWorkflowEngine:
+            def get_state(self, config):
+                raise RuntimeError("boom")
+
+        service.workflow_engine = FailingWorkflowEngine()
+
+        with self.assertLogs("app.application.task_service.core", level="WARNING") as logs:
+            values = service._graph_state_values(task.id)
+
+        self.assertEqual(values, {})
+        output = "\n".join(logs.output)
+        self.assertIn("读取工作流 checkpoint 状态失败", output)
+        self.assertIn(task.id, output)
+
+    def test_rehydrate_existing_checkpoint_rejects_offline_fixed_auto_review_models(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="恢复 checkpoint 前必须校验固定审核模型",
+                model_id="gpt-5.4",
+                auto_review=True,
+            )
+        )
+
+        class FakeGraph:
+            def get_state(self, config):
+                return SimpleNamespace(
+                    values={
+                        "input_payload": {"model_id": "gpt-5.4"},
+                        "auto_review": True,
+                        "auto_review_policy": {
+                            "auto_review_model_mode": "fixed",
+                            "auditor_model": "retired-auditor-model",
+                            "synthesis_model": "glm-5.1",
+                        },
+                    }
+                )
+
+            def update_state(self, config, values, as_node=None):
+                return config
+
+        service.workflow_engine = FakeGraph()
+        service._chapter_pair_resume_state_is_stale = lambda task, values: False
+
+        with self.assertRaisesRegex(ValueError, "retired-auditor-model.*不在当前供应商模型目录"):
+            service._rehydrate_resume_state_if_needed(task)
+
+    def test_rehydrate_existing_checkpoint_updates_follow_policy_to_explicit_action_model(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="恢复 checkpoint 时跟随审核模型应同步本次动作模型",
+                model_id="gpt-5.4",
+                auto_review=True,
+            )
+        )
+
+        class FakeGraph:
+            def __init__(self) -> None:
+                self.values = {
+                    "input_payload": {"model_id": "gpt-5.4"},
+                    "auto_review": True,
+                    "auto_review_policy": {
+                        "auto_review_model_mode": "follow_creative",
+                        "auditor_model": "gpt-5.4",
+                        "synthesis_model": "gpt-5.4",
+                    },
+                }
+
+            def get_state(self, config):
+                return SimpleNamespace(values=self.values)
+
+            def update_state(self, config, values, as_node=None):
+                self.values.update(values)
+                return config
+
+        fake_graph = FakeGraph()
+        service.workflow_engine = fake_graph
+        service._chapter_pair_resume_state_is_stale = lambda task, values: False
+
+        service._rehydrate_resume_state_if_needed(task, action_model_id="glm-5.1")
+
+        self.assertEqual(fake_graph.values["input_payload"]["model_id"], "glm-5.1")
+        self.assertEqual(fake_graph.values["auto_review_policy"]["auditor_model"], "glm-5.1")
+        self.assertEqual(fake_graph.values["auto_review_policy"]["synthesis_model"], "glm-5.1")
 
     def _write_outline_history(
         self,
@@ -950,6 +1054,50 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "当前任务没有待恢复的审核节点"):
             service.resume_task(task.id, approved=False, comment="")
+
+    def test_resume_task_rejects_active_run_before_mutating_waiting_review_state(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="恐怖短篇",
+            logline="主角在夜里听见诡异敲门声。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=2,
+            chapter_plan=[
+                ChapterPlan(number=1, title="第一章", goal="听见异响"),
+                ChapterPlan(number=2, title="第二章", goal="发现真相"),
+            ],
+        )
+        review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核大纲。",
+            story_plan=story_plan,
+        )
+        waiting = store.set_waiting_review(task.id, review, story_plan)
+        original_event_count = len(waiting.events)
+        service._active_runs.add(task.id)
+
+        with self.assertRaisesRegex(ValueError, "任务正在运行中"):
+            service.resume_task(task.id, approved=True, comment="通过")
+
+        current = store.get(task.id)
+        self.assertEqual(current.status, TaskStatus.WAITING_OUTLINE_REVIEW)
+        self.assertEqual(current.current_stage, "waiting_outline_review")
+        self.assertEqual(current.current_unit, "outline")
+        self.assertIsNone(current.pending_review.outline_batch if current.pending_review else None)
+        self.assertEqual(current.last_action_kind, "")
+        self.assertEqual(current.last_action_model_id, "")
+        self.assertEqual(len(current.events), original_event_count)
 
     def test_review_history_exposes_rejected_and_repairing_events(self) -> None:
         tmp_dir, store, service = self._build_service()

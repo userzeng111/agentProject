@@ -5,14 +5,15 @@ import { isNovelTaskModelSupported, selectNovelTaskModels } from "./model-option
 
 const models = [
   { id: "registry-only", metadata: { source: "registry" } },
-  { id: "new-gateway-model", metadata: { source: "gateway" } },
-  { id: "known-gateway-model", metadata: { source: "gateway+registry" } },
+  { id: "unverified-gateway-model", metadata: { source: "gateway", compatibility: "unverified" } },
+  { id: "verified-gateway-model", metadata: { source: "gateway+registry", compatibility: "verified" } },
 ];
 
-test("AI 对话可用的 gateway 新模型可直接用于小说任务", () => {
-  assert.equal(isNovelTaskModelSupported(models[1]), true);
+test("小说任务只允许当前供应商目录中已完成兼容性验证的模型", () => {
+  assert.equal(isNovelTaskModelSupported(models[1]), false);
+  assert.equal(isNovelTaskModelSupported(models[2]), true);
   assert.deepEqual(
     selectNovelTaskModels(models).map((item) => item.id),
-    ["new-gateway-model", "known-gateway-model"],
+    ["verified-gateway-model"],
   );
 });

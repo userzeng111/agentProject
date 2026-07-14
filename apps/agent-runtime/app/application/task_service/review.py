@@ -13,14 +13,6 @@ from app.storage import db_repository
 
 logger = get_logger(__name__)
 
-_STAGE_LABELS: dict[str, str] = {
-    TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
-    TaskStatus.READY_FOR_BATCH.value: "可继续创作",
-    TaskStatus.WAITING_CHAPTER_REVIEW.value: "待章节审核",
-    TaskStatus.WAITING_VERIFICATION_REVIEW.value: "待验证审核",
-    TaskStatus.PLANNING.value: "重新进入规划",
-}
-
 
 class TaskServiceReviewMixin:
 
@@ -31,6 +23,9 @@ class TaskServiceReviewMixin:
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }
         task = self.store.get(task_id)
+        with self._run_lock:
+            if task_id in self._active_runs:
+                raise ValueError("任务正在运行中，请勿重复提交。")
         task = self._reconcile_pending_review_with_novel_project(task)
         if task.status not in valid_statuses or task.pending_review is None:
             task = self.recover_task(task_id, model_id=model_id)

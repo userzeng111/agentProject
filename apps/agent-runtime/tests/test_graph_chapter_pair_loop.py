@@ -10,7 +10,7 @@ from langgraph.types import Command
 
 from app.domain.models import ChapterPlan, StoryPlan
 from app.graph.main_graph import build_default_callbacks, build_graph, build_normalized_spec
-from tests.fakes import FakeContextManager, FakeStoryEngine
+from tests.fakes import FakeContextManager, FakeStoryEngine, FakeVerifiedGatewayModelCatalog
 
 
 class FakeMismatchedPlanEngine(FakeStoryEngine):
@@ -76,6 +76,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
         )
         graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-five-chapters"}}
@@ -130,6 +131,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
         )
         graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-style-remix-batches"}}
@@ -185,6 +187,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
+            model_catalog=FakeVerifiedGatewayModelCatalog(("gpt-5.4",)),
         )
         graph = build_graph(callbacks=callbacks)
         config = {"configurable": {"thread_id": "task-mismatched-plan-count"}}

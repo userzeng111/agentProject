@@ -4,9 +4,11 @@ except ImportError:
     from datetime import timezone
     UTC = timezone.utc
 
+import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.application.task_service import TaskService
 from app.llm.gateway_client import GatewayClientError, OpenAICompatibleGatewayClient
@@ -19,6 +21,7 @@ from app.storage.database import get_session
 from app.storage.db_models import TaskIndexModel
 from app.storage.task_store import TaskLogStore
 from app.domain.models import CreativeMode, NovelSize, TaskCreateRequest
+from tests.fakes import build_verified_gateway_model_catalog
 
 
 class FailingGatewayClient:
@@ -63,6 +66,43 @@ class TimeoutCaptureGatewayClient(OpenAICompatibleGatewayClient):
 
 
 class SettingsAndGatewayFailFastTests(unittest.TestCase):
+    def test_settings_do_not_define_runtime_model_defaults(self) -> None:
+        settings = Settings(_env_file=None)
+
+        self.assertEqual(settings.default_chat_model, "")
+        self.assertEqual(settings.auto_review_auditor_model, "")
+        self.assertEqual(settings.auto_review_synthesis_model, "")
+
+    def test_removed_task_model_requires_explicit_replacement(self) -> None:
+        class CurrentGateway:
+            def list_models(self):
+                return [{"id": "current-provider-model", "object": "model", "owned_by": "provider"}]
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                _env_file=None,
+                LLM_API_KEY="",
+                DEFAULT_CHAT_MODEL="",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = StoryEngine(settings)
+            engine.gateway_client = CurrentGateway()
+            catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=catalog)
+            task = store.create_task(
+                TaskCreateRequest(
+                    prompt="恢复一个模型已下线的任务",
+                    creative_mode=CreativeMode.ORIGINAL,
+                    novel_size=NovelSize.SHORT,
+                    chapter_word_min=1800,
+                    model_id="removed-provider-model",
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "不在当前供应商模型目录"):
+                service._resolve_task_model_id(task)
+
     def test_gateway_normalizes_root_base_url_for_openai_protocol(self) -> None:
         client = OpenAICompatibleGatewayClient(
             base_url="https://gateway.example.com",
@@ -71,13 +111,14 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             default_protocol="openai",
         )
 
+        # 不再自动追加 /v1，用户配置完整路径
         self.assertEqual(
             client._build_url("/chat/completions", "openai"),
-            "https://gateway.example.com/v1/chat/completions",
+            "https://gateway.example.com/chat/completions",
         )
         self.assertEqual(
             client._build_url("/models", "openai"),
-            "https://gateway.example.com/v1/models",
+            "https://gateway.example.com/models",
         )
 
     def test_gateway_does_not_duplicate_v1_base_url(self) -> None:
@@ -115,9 +156,10 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             anthropic_version="2023-06-01",
         )
 
+        # 不再自动追加 /v1，用户配置完整路径
         self.assertEqual(
             client._build_url("/messages", "anthropic"),
-            "https://gateway.example.com/v1/messages",
+            "https://gateway.example.com/messages",
         )
         headers = client._headers_for_protocol("anthropic")
         self.assertEqual(headers["x-api-key"], "test-key")
@@ -145,6 +187,39 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
 
         self.assertIsInstance(client._get_adapter("K2.6"), AnthropicAdapter)
         self.assertIsInstance(client._get_adapter("mimo-v2.5-pro"), OpenAIAdapter)
+
+    def test_gateway_protocol_override_resolver_failure_logs_warning_and_uses_default_protocol(self) -> None:
+        def raise_resolver():
+            raise RuntimeError("runtime overrides broken")
+
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="mimo-v2.5-pro",
+            default_protocol="openai",
+            protocol_overrides_resolver=raise_resolver,
+        )
+
+        with self.assertLogs("backend.gateway", level="WARNING") as logs:
+            protocol = client._resolve_protocol("K2.7")
+
+        self.assertEqual(protocol, "openai")
+        self.assertTrue(any("读取动态模型协议覆盖失败" in message for message in logs.output))
+
+    def test_prompt_cache_settings_failure_logs_warning_and_disables_prompt_cache(self) -> None:
+        client = OpenAICompatibleGatewayClient(
+            base_url="https://gateway.example.com",
+            api_key="test-key",
+            model="claude-sonnet-4-6",
+            default_protocol="anthropic",
+        )
+
+        with patch("app.settings.config.get_settings", side_effect=RuntimeError("settings unavailable")):
+            with self.assertLogs("backend.gateway", level="WARNING") as logs:
+                kwargs = client._provider_prompt_cache_kwargs(AnthropicAdapter())
+
+        self.assertEqual(kwargs, {})
+        self.assertTrue(any("读取 provider prompt cache 设置失败" in message for message in logs.output))
 
     def test_settings_accept_anthropic_key_alias_without_forcing_protocol(self) -> None:
         settings = Settings(
@@ -205,13 +280,14 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
 
     def test_build_story_plan_raises_when_gateway_not_configured(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            engine = StoryEngine(
-                Settings(
-                    _env_file=None,
-                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                    default_chat_model="glm-5.1",
-                )
+            settings = Settings(
+                _env_file=None,
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                default_chat_model="",
+                LLM_API_KEY="",
+                LLM_BASE_URL="",
             )
+            engine = StoryEngine(settings)
 
             with self.assertRaisesRegex(GatewayClientError, "模型网关"):
                 engine.build_story_plan(
@@ -233,12 +309,12 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FailingGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -272,7 +348,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="mimo-v2.5-pro",
+                default_chat_model="",
                 LLM_DIAGNOSTIC_RAW_RESPONSE_MAX_CHARS=12,
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
@@ -283,7 +359,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
                     return [{"id": "mimo-v2.5-pro", "object": "model", "owned_by": "mimo"}]
 
             engine.gateway_client = GatewayWithMimo()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
             task = store.create_task(
                 TaskCreateRequest(
@@ -331,12 +407,12 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
             engine.gateway_client = FailingGatewayClient()
-            model_catalog = ModelCatalogService(settings=settings, gateway_client=engine.gateway_client)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
             service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
 
             task = service.create_task(
@@ -368,7 +444,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 OPENAI_API_KEY="test-key",
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="gpt-5.4",
+                default_chat_model="",
             )
             store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
             engine = StoryEngine(settings)
@@ -432,7 +508,7 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             settings = Settings(
                 _env_file=None,
                 tasklog_root=str(Path(tmp_dir) / "tasklog"),
-                default_chat_model="glm-5.1",
+                default_chat_model="",
                 LLM_API_KEY="test-key",
                 LLM_TIMEOUT_CONNECT="10.0",
                 LLM_TIMEOUT_READ="500.0",
@@ -446,6 +522,17 @@ class SettingsAndGatewayFailFastTests(unittest.TestCase):
             self.assertEqual(engine.gateway_client._timeout.read, 500.0)
             self.assertEqual(engine.gateway_client._timeout.write, 20.0)
             self.assertEqual(engine.gateway_client._timeout.pool, 25.0)
+
+
+def test_settings_warns_and_returns_empty_overrides_when_protocol_override_json_is_invalid(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        settings = Settings(
+            _env_file=None,
+            MODEL_PROTOCOL_OVERRIDES="{ broken json",
+        )
+
+    assert settings.model_protocol_overrides == {}
+    assert any("MODEL_PROTOCOL_OVERRIDES" in record.message for record in caplog.records)
 
 
 if __name__ == "__main__":
