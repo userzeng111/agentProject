@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：合并当前分支到 rebuild
+  路径：`worklog/archive/版本管理/20260714-01-合并当前分支到rebuild.md`
+  摘要：将 `uxuiFix` 的 UI/UX 重构合并到 `rebuild`，使用独立 worktree 自动完成且无冲突。
+
 - 标题：UI/UX 体验重塑后续阶段
   路径：`worklog/archive/UI优化/20260629-02-UIUX体验重塑后续阶段.md`
   摘要：完成项目内规范路由、核心视图、创建/聊天/设置、响应式与无障碍重构，并通过前端及接口回归验证。
