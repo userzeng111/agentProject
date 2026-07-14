@@ -1,5 +1,9 @@
 # 历史问题索引
 
+- 标题：删除 uxuiFix 分支
+  路径：`worklog/archive/版本管理/20260714-02-删除uxuiFix分支.md`
+  摘要：确认 `uxuiFix` 已合入 `rebuild` 后删除本地分支，保留远端分支和原工作区未提交改动。
+
 - 标题：合并当前分支到 rebuild
   路径：`worklog/archive/版本管理/20260714-01-合并当前分支到rebuild.md`
   摘要：将 `uxuiFix` 的 UI/UX 重构合并到 `rebuild`，使用独立 worktree 自动完成且无冲突。
