@@ -17,6 +17,7 @@ import {
   Select,
   Stack,
   Typography,
+  alpha,
 } from "@mui/material";
 
 import { ModelOption, RecoveryContractFields, RecoveryMode, RecoveryPreview } from "@/lib/types";
@@ -127,15 +128,15 @@ export default function RecoveryDialog({
                 return (
                   <Box
                     key={action}
-                    sx={{
+                    sx={(theme) => ({
                       px: 1.5,
                       py: 1,
                       borderRadius: 2,
                       border: "1px solid",
                       borderColor: selectedAction === action ? "primary.main" : "divider",
-                      backgroundColor: selectedAction === action ? "rgba(39, 100, 81, 0.05)" : "transparent",
+                      backgroundColor: selectedAction === action ? alpha(theme.palette.primary.main, 0.05) : "transparent",
                       mb: 1,
-                    }}
+                    })}
                   >
                     <FormControlLabel
                       value={action}
@@ -156,13 +157,13 @@ export default function RecoveryDialog({
           </FormControl>
 
           <Box
-            sx={{
+            sx={(theme) => ({
               p: 2,
               borderRadius: 2,
               border: "1px solid",
               borderColor: "divider",
-              backgroundColor: "rgba(29, 42, 39, 0.03)",
-            }}
+              backgroundColor: alpha(theme.palette.text.primary, 0.03),
+            })}
           >
             <Stack spacing={1}>
               <Typography variant="subtitle1">当前动作预览</Typography>

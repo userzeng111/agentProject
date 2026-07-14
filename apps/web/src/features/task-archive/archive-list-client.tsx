@@ -16,7 +16,7 @@ import {
 } from "@mui/material";
 import { getArchiveList } from "@/lib/api";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { archiveDetailHref } from "@/lib/task-routes";
+import { projectViewHref } from "@/lib/task-routes";
 import { ArchiveTaskSummary } from "@/lib/types";
 
 const PAGE_SIZE = 10;
@@ -97,10 +97,10 @@ export default function ArchiveListClient() {
           </Button>
         </Stack>
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" role="alert">{error}</Alert> : null}
 
         {loading ? (
-          <Stack spacing={2}>
+          <Stack spacing={2} role="status" aria-live="polite">
             {[1, 2, 3].map((i) => (
               <Card key={i}>
                 <CardContent>
@@ -144,7 +144,7 @@ export default function ArchiveListClient() {
                           </Stack>
                           <Button
                             component={Link}
-                            href={archiveDetailHref(item.task_id)}
+                            href={projectViewHref(item.task_id, "archive")}
                             variant="outlined"
                             size="small"
                             sx={{ flexShrink: 0 }}

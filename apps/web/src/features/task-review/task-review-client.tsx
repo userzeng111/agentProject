@@ -13,6 +13,7 @@ import {
   Chip,
   Collapse,
   Container,
+  alpha,
   Divider,
   IconButton,
   List,
@@ -45,7 +46,7 @@ import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import { derivePrimaryRecoveryAction, filterRecoveryModels, resolveRecoveryPreview } from "@/features/task-recovery/recovery-state.mjs";
 import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
-import { resultHref, workspaceHref } from "@/lib/task-routes";
+import { projectViewHref, workspaceHref } from "@/lib/task-routes";
 import { AgentTraceItem, ModelOption, ModelRefreshState, RecoveryMode, ReviewResponse, VerificationIssue } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { ProjectShell } from "@/components/project-shell";
@@ -90,6 +91,7 @@ function ValidationErrorAlert({ message, modelId }: { message: string; modelId: 
   return (
     <Alert
       severity="error"
+      role="alert"
       action={
         href ? (
           <Button component={Link} href={href} color="inherit" size="small">
@@ -292,10 +294,12 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
               size="small"
               variant="outlined"
             />
-            <Tooltip title={expanded ? "收起详情" : "展开详情"}>
+            <Tooltip title={expanded === "all" ? "收起详情" : "展开详情"}>
               <IconButton
+                aria-label={expanded === "all" ? "收起详情" : "展开详情"}
+                aria-expanded={expanded === "all"}
                 size="small"
-                onClick={() => setExpanded(expanded ? null : "all")}
+                onClick={() => setExpanded(expanded === "all" ? null : "all")}
               >
                 <ExpandMoreIcon
                   sx={{
@@ -328,6 +332,10 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
             <Box key={agent.agent_id || `${agent.role || "agent"}-${index}`} sx={{ mb: 1 }}>
               {/* Agent 行 */}
               <Box
+                component="button"
+                type="button"
+                aria-expanded={isExpanded}
+                aria-controls={`agent-content-${index}`}
                 sx={{
                   display: "flex",
                   alignItems: "center",
@@ -337,7 +345,17 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                   borderRadius: 1,
                   bgcolor: "background.default",
                   cursor: "pointer",
+                  border: 0,
+                  width: "100%",
+                  font: "inherit",
+                  textAlign: "left",
+                  color: "inherit",
                   "&:hover": { bgcolor: "action.hover" },
+                  "&:focus-visible": {
+                    outline: "2px solid",
+                    outlineColor: "primary.main",
+                    outlineOffset: 2,
+                  },
                 }}
                 onClick={() => setExpanded(isExpanded ? null : `agent-${index}`)}
               >
@@ -377,7 +395,11 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                     variant="outlined"
                   />
                 )}
-                <IconButton size="small">
+                <Box
+                  component="span"
+                  aria-hidden="true"
+                  sx={{ display: "inline-flex", alignItems: "center", justifyContent: "center", p: 0.5 }}
+                >
                   <ExpandMoreIcon
                     sx={{
                       fontSize: 18,
@@ -385,12 +407,12 @@ function AgentTracePanel({ trace }: { trace: AgentTraceItem[] }) {
                       transition: "0.2s",
                     }}
                   />
-                </IconButton>
+                </Box>
               </Box>
 
               {/* 展开详情 */}
               <Collapse in={isExpanded}>
-                <Box sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
+                <Box id={`agent-content-${index}`} sx={{ pl: 4, pr: 2, pb: 1.5, mt: 0.5 }}>
                   {/* 维度标签 */}
                   <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap sx={{ mb: 1 }}>
                     {hasStructuredExecution && (
@@ -568,13 +590,13 @@ function ReviewActionModelSelector({
 
   return (
     <Box
-      sx={{
+      sx={(theme) => ({
         p: 2,
         borderRadius: 2,
         border: "1px solid",
         borderColor: "divider",
-        backgroundColor: "rgba(39, 100, 81, 0.03)",
-      }}
+        backgroundColor: alpha(theme.palette.primary.main, 0.03),
+      })}
     >
       <Stack spacing={1.5}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
@@ -641,7 +663,7 @@ function MasterOutlineSection({ storyPlan, readOnly }: { storyPlan: { working_ti
               大纲总纲
             </Typography>
             {readOnly ? <Chip label="已锁定" size="small" color="success" icon={<CheckIcon fontSize="small" />} /> : null}
-            <IconButton onClick={() => setExpanded((v) => !v)} size="small">
+            <IconButton aria-label={expanded ? "收起大纲总纲" : "展开大纲总纲"} aria-expanded={expanded} onClick={() => setExpanded((v) => !v)} size="small">
               <ExpandMoreIcon sx={{ transform: expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }} />
             </IconButton>
           </Stack>
@@ -1533,7 +1555,7 @@ export default function TaskReviewClient({ taskId }: { taskId?: string }) {
       const nextTask = await resumeTask(resolvedTaskId, approved, comment, resolvedActionModelId || undefined);
       setError("");
       if (nextTask.status === "completed") {
-        router.push(resultHref(resolvedTaskId));
+        router.push(projectViewHref(resolvedTaskId, "result"));
       } else if (approved && nextTask.status === "ready_for_batch") {
         router.push(workspaceHref(resolvedTaskId));
       } else if (

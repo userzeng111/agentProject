@@ -28,15 +28,14 @@ import {
   TextField,
   Tooltip,
   Typography,
+  alpha,
 } from "@mui/material";
 import {
   Psychology as ThinkIcon,
   ExpandMore as ExpandIcon,
   ExpandLess as CollapseIcon,
-  Delete as DeleteIcon,
-  Cancel as CancelIcon,
 } from "@mui/icons-material";
-import { cancelTask, continueTask, deleteTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
+import { archiveTask, cancelTask, continueTask, deleteTask, getApiBase, getCurrentChapters, getModelCatalog, getWorkspace, normalizeModelOptions, recoverTask, runTask } from "@/lib/api";
 import RecoveryDialog from "@/features/task-recovery/recovery-dialog";
 import ChapterProgressPanel from "@/features/task-run/chapter-progress-panel";
 import {
@@ -62,7 +61,10 @@ import { ProjectShell } from "@/components/project-shell";
 import { StageNav } from "@/components/stage-nav";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { resultHref, reviewHref } from "@/lib/task-routes";
+import { projectViewHref } from "@/lib/task-routes";
+import { resolveProjectActions } from "@/features/project/project-action-availability.mjs";
+import WorkspaceActionBar from "@/features/project/workspace-action-bar";
+import { ConnectionBadge } from "@/features/project/live-event-log";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
 import {
   ContextStatus,
@@ -107,27 +109,6 @@ const supervisorStatusMap: Record<
   completed: { label: "已完成", color: "success" },
   failed: { label: "失败", color: "error" },
 };
-
-function getDeletePrompt(status: TaskStatus): string {
-  switch (status) {
-    case "waiting_chapter_review":
-    case "waiting_verification_review":
-      return "该任务已有章节生成，删除后将丢失所有已生成内容。确认删除？";
-    case "waiting_outline_review":
-      return "该任务大纲已生成，删除后将丢失大纲内容。确认删除？";
-    case "created":
-    case "sources_ingested":
-      return "该任务尚未开始编写，确认删除？";
-    case "failed":
-      return "该任务执行失败，确认删除？";
-    case "cancelled":
-      return "该任务已取消，删除后将丢失所有已生成内容且不可恢复。确认删除？";
-    case "ready_for_batch":
-      return "该任务已有部分进度，删除后将丢失已生成内容。确认删除？";
-    default:
-      return "确认删除该任务？此操作不可恢复。";
-  }
-}
 
 const streamPathCandidates = (taskId: string) => [
   `/api/tasks/${taskId}/events/stream`,
@@ -366,6 +347,7 @@ function ValidationErrorAlert({ message, modelId }: { message: string; modelId: 
   return (
     <Alert
       severity="error"
+      role="alert"
       action={
         href ? (
           <Button component={Link} href={href} color="inherit" size="small">
@@ -408,6 +390,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const [tab2Expanded, setTab2Expanded] = useState(true);
   const [tab3Expanded, setTab3Expanded] = useState(true);
   const [tab4Expanded, setTab4Expanded] = useState(true);
+  const [graphExpanded, setGraphExpanded] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const continueRequestIdRef = useRef<string | null>(null);
   const currentActionModelIdRef = useRef("");
@@ -508,7 +491,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   const handleCancelTask = useCallback(async () => {
     if (!resolvedTaskId) return;
-    if (!window.confirm("确认取消该任务？取消后任务将停止运行。")) return;
+    // WorkspaceActionBar 的 ConfirmDialog 已提供确认，此处不再重复确认
     try {
       await cancelTask(resolvedTaskId);
       showSnackbar("任务已取消");
@@ -520,8 +503,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   const handleDeleteTask = useCallback(async () => {
     if (!resolvedTaskId || !workspace) return;
-    const prompt = getDeletePrompt(workspace.meta.status);
-    if (!window.confirm(prompt)) return;
+    // WorkspaceActionBar 的 ConfirmDialog 已提供确认，此处不再重复确认
     try {
       await deleteTask(resolvedTaskId);
       showSnackbar("任务已删除");
@@ -530,6 +512,23 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       showSnackbar(err instanceof Error ? err.message : "删除任务失败");
     }
   }, [resolvedTaskId, workspace, showSnackbar, router]);
+
+  const handleArchiveTask = useCallback(async () => {
+    if (!resolvedTaskId || running) return;
+    try {
+      setRunning(true);
+      await archiveTask(resolvedTaskId);
+      setError("");
+      showSnackbar("任务已归档");
+      router.push(projectViewHref(resolvedTaskId, "archive"));
+    } catch (archiveError) {
+      const message = archiveError instanceof Error ? archiveError.message : "归档任务失败";
+      setError(message);
+      showSnackbar(message);
+    } finally {
+      setRunning(false);
+    }
+  }, [resolvedTaskId, router, running, showSnackbar]);
 
   useEffect(() => {
     const nextDefault = workspace?.novel_progress?.default_batch_size;
@@ -957,7 +956,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   if (loading && !workspace) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-        <Box sx={{ py: 6 }}>
+        <Box sx={{ py: 6 }} role="status" aria-live="polite">
           <Typography>正在读取工作台...</Typography>
         </Box>
       </Container>
@@ -997,16 +996,12 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     getRecoveryOptions(workspace).find((option) => option.action === workspace.recommended_action)?.label ||
     formatRecoveryActionLabel(workspace.recommended_action);
 
-  const canReview = [
-    "waiting_outline_review",
-    "waiting_chapter_review",
-    "waiting_verification_review",
-  ].includes(workspace.meta.status);
+  const actions = resolveProjectActions(workspace.meta, {
+    running,
+    hasValidModel: hasValidActionModel,
+    outlinePhase: workspace.outline_phase,
+  });
 
-  const isOutlineBatchPhase = workspace.meta.status === "waiting_outline_review" && workspace.outline_phase === "chapter_batches";
-  const outlineBatchProgress = isOutlineBatchPhase
-    ? `章节计划设计中（已确认 ${workspace.outline_completed_count ?? 0} / ${workspace.outline_total_count ?? 0} 章）`
-    : null;
   const debugStreamPath = resolvedTaskId ? streamPathCandidates(resolvedTaskId)[0] : undefined;
   const manualActionValidationHref = getValidationLinkFromError(
     workspace.meta.error_message || "",
@@ -1078,7 +1073,38 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         </Alert>
       ) : null}
 
-      <WorkflowOverviewCard workspace={workspace} onSelectTab={setActiveTab} />
+      {/* 工作流图谱 —— 可折叠，默认收起 */}
+      <Card>
+        <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
+          <Stack spacing={2}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center">
+              <Typography
+                variant="subtitle1"
+                sx={{ fontFamily: "var(--font-serif-sc)", cursor: "pointer", userSelect: "none" }}
+                onClick={() => setGraphExpanded((prev) => !prev)}
+                role="button"
+                tabIndex={0}
+                aria-expanded={graphExpanded}
+                aria-controls="workflow-graph-content"
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setGraphExpanded((p) => !p); } }}
+              >
+                工作流图谱
+              </Typography>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Typography variant="caption" color="text.secondary">
+                  {workspace.meta.status} · 进度 {workspace.meta.progress ?? 0}%
+                </Typography>
+                <IconButton size="small" aria-label={graphExpanded ? "收起工作流图谱" : "展开工作流图谱"} onClick={() => setGraphExpanded((prev) => !prev)}>
+                  {graphExpanded ? <CollapseIcon /> : <ExpandIcon />}
+                </IconButton>
+              </Stack>
+            </Stack>
+            <Collapse in={graphExpanded} id="workflow-graph-content">
+              <WorkflowOverviewCard workspace={workspace} onSelectTab={setActiveTab} />
+            </Collapse>
+          </Stack>
+        </CardContent>
+      </Card>
 
       {/* 请求摘要卡片 */}
       <Card>
@@ -1090,89 +1116,27 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Typography>
               <Stack direction="row" spacing={1} alignItems="center">
                 <IconButton
+                  aria-label={summaryExpanded ? "收起请求摘要" : "展开请求摘要"}
+                  aria-expanded={summaryExpanded}
                   size="small"
                   onClick={() => setSummaryExpanded((prev) => !prev)}
                   sx={{ transform: summaryExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
                 >
                   <ExpandIcon />
                 </IconButton>
-                {["created", "sources_ingested"].includes(workspace.meta.status) && (
-                  <Button variant="contained" disabled={running || !hasValidActionModel} onClick={handleRun} size="small">
-                    {running ? "启动中..." : "开始执行"}
-                  </Button>
-                )}
-                {primaryRecoveryAction && (
-                  <Button
-                    variant="contained"
-                    disabled={running}
-                    onClick={handleOpenRecoveryDialog}
-                    size="small"
-                  >
-                    {running ? "提交中..." : primaryRecoveryAction.label}
-                  </Button>
-                )}
-                {workspace.meta.status === "ready_for_batch" && (
-                  <Button variant="contained" disabled={running || !hasValidActionModel} onClick={handleContinueDraft} size="small">
-                    {running ? "生成中..." : "继续创作"}
-                  </Button>
-                )}
-                {canReview && (
-                  <Button component={Link} href={reviewHref(workspace.meta.task_id)} variant="contained" size="small">
-                    {isOutlineBatchPhase ? "进入章节计划审核" : "进入审核"}
-                  </Button>
-                )}
-                {isOutlineBatchPhase && outlineBatchProgress && (
-                  <Chip label={outlineBatchProgress} size="small" color="info" variant="outlined" />
-                )}
-                {workspace.meta.status === "completed" && (
-                  <Button component={Link} href={resultHref(workspace.meta.task_id)} variant="contained" size="small">
-                    查看结果
-                  </Button>
-                )}
-                <Button variant="outlined" onClick={() => void refreshWorkspace()} size="small">
-                  刷新
-                </Button>
-                {["planning", "drafting", "assembling", "waiting_manual_action"].includes(workspace.meta.status) && (
-                  <Button
-                    variant="outlined"
-                    color="warning"
-                    size="small"
-                    startIcon={<CancelIcon />}
-                    onClick={handleCancelTask}
-                  >
-                    取消任务
-                  </Button>
-                )}
-                {workspace.meta.status === "cancelled" && primaryRecoveryAction && (
-                  <Button
-                    variant="contained"
-                    disabled={running}
-                    onClick={handleOpenRecoveryDialog}
-                    size="small"
-                  >
-                    {running ? "提交中..." : "恢复任务"}
-                  </Button>
-                )}
-                {workspace.meta.status === "cancelled" && !primaryRecoveryAction && (
-                  <Button
-                    variant="outlined"
-                    disabled={running}
-                    onClick={handleOpenRecoveryDialog}
-                    size="small"
-                  >
-                    查看恢复方案
-                  </Button>
-                )}
-                {workspace.meta.status !== "completed" && !["planning", "drafting", "assembling", "waiting_manual_action", "cancelled"].includes(workspace.meta.status) && (
-                  <Button variant="outlined" color="error" size="small" startIcon={<DeleteIcon />} onClick={handleDeleteTask}>
-                    删除任务
-                  </Button>
-                )}
-                {workspace.meta.status === "cancelled" && (
-                  <Button variant="outlined" color="warning" size="small" startIcon={<DeleteIcon />} onClick={handleDeleteTask}>
-                    删除任务
-                  </Button>
-                )}
+                <WorkspaceActionBar
+                  actions={actions}
+                  onRun={["created", "sources_ingested"].includes(workspace.meta.status) ? handleRun : undefined}
+                  onContinue={workspace.meta.status === "ready_for_batch" ? handleContinueDraft : undefined}
+                  onRecoverOpen={handleOpenRecoveryDialog}
+                  onCancel={handleCancelTask}
+                  onDelete={handleDeleteTask}
+                  onArchive={handleArchiveTask}
+                  onRefresh={() => void refreshWorkspace()}
+                  reviewHref={projectViewHref(workspace.meta.task_id, "review")}
+                  resultHref={projectViewHref(workspace.meta.task_id, "result")}
+                  isSubmitting={running}
+                />
               </Stack>
             </Stack>
             <Collapse in={summaryExpanded}>
@@ -1185,7 +1149,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(255, 152, 0, 0.06)",
+                  backgroundColor: (theme) => alpha(theme.palette.warning.main, 0.06),
                 }}
               >
                 <Stack spacing={1}>
@@ -1209,13 +1173,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               </Box>
             ) : null}
             <Box
-              sx={{
+              sx={(theme) => ({
                 p: 2,
                 borderRadius: 2,
                 border: "1px solid",
                 borderColor: "divider",
-                backgroundColor: "rgba(39, 100, 81, 0.03)",
-              }}
+                backgroundColor: alpha(theme.palette.primary.main, 0.03),
+              })}
             >
               <Stack spacing={1.5}>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
@@ -1309,13 +1273,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
             {workspace.meta.status === "ready_for_batch" && novelProgress && (
               <Box
-                sx={{
+                sx={(theme) => ({
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(39, 100, 81, 0.03)",
-                }}
+                  backgroundColor: alpha(theme.palette.primary.main, 0.03),
+                })}
               >
                 <Stack spacing={2}>
                   <Typography variant="subtitle1">继续创作</Typography>
@@ -1340,13 +1304,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             )}
 
             <Box
-              sx={{
+              sx={(theme) => ({
                 p: 2,
                 borderRadius: 2,
                 border: "1px solid",
                 borderColor: "divider",
-                backgroundColor: "rgba(29, 42, 39, 0.03)",
-              }}
+                backgroundColor: alpha(theme.palette.text.primary, 0.03),
+              })}
             >
               <Stack spacing={1.5}>
                 <Typography variant="subtitle1">上下文状态</Typography>
@@ -1403,7 +1367,12 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
               allowScrollButtonsMobile
               aria-label="任务运行详情标签页"
             >
-              <Tab label={`实时日志 (${systemStages.length})`} />
+              <Tab label={<Stack direction="row" spacing={0.5} alignItems="center">实时日志 ({systemStages.length})<ConnectionBadge status={
+                !streamState || streamState === "未连接事件流" ? "disconnected"
+                : streamState.includes("重连") ? "reconnecting"
+                : streamState.includes("失败") || streamState.includes("错误") ? "error"
+                : "connected"
+              } /></Stack>} />
               <Tab label={`章节进度 (${chapterProgress.length})`} />
               <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
               <Tab label="任务详情" />
@@ -1412,6 +1381,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             {activeTab === 0 && (
               <Tooltip title={logTabExpanded ? "收起日志" : "展开日志"}>
                 <IconButton
+                  aria-label={logTabExpanded ? "收起日志" : "展开日志"}
+                  aria-expanded={logTabExpanded}
                   size="small"
                   onClick={() => setLogTabExpanded((prev) => !prev)}
                   sx={{ mr: 1, transform: logTabExpanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
@@ -1423,6 +1394,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             {activeTab === 1 && (
               <Tooltip title={tab1Expanded ? "收起章节进度" : "展开章节进度"}>
                 <IconButton
+                  aria-label={tab1Expanded ? "收起章节进度" : "展开章节进度"}
+                  aria-expanded={tab1Expanded}
                   size="small"
                   onClick={() => setTab1Expanded((prev) => !prev)}
                   sx={{ mr: 1, transform: tab1Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
@@ -1434,6 +1407,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             {activeTab === 2 && (
               <Tooltip title={tab2Expanded ? "收起 Supervisor" : "展开 Supervisor"}>
                 <IconButton
+                  aria-label={tab2Expanded ? "收起Supervisor规划" : "展开Supervisor规划"}
+                  aria-expanded={tab2Expanded}
                   size="small"
                   onClick={() => setTab2Expanded((prev) => !prev)}
                   sx={{ mr: 1, transform: tab2Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
@@ -1445,6 +1420,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             {activeTab === 3 && (
               <Tooltip title={tab3Expanded ? "收起任务详情" : "展开任务详情"}>
                 <IconButton
+                  aria-label={tab3Expanded ? "收起任务详情" : "展开任务详情"}
+                  aria-expanded={tab3Expanded}
                   size="small"
                   onClick={() => setTab3Expanded((prev) => !prev)}
                   sx={{ mr: 1, transform: tab3Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
@@ -1456,6 +1433,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
             {activeTab === 4 && (
               <Tooltip title={tab4Expanded ? "收起调试" : "展开调试"}>
                 <IconButton
+                  aria-label={tab4Expanded ? "收起调试" : "展开调试"}
+                  aria-expanded={tab4Expanded}
                   size="small"
                   onClick={() => setTab4Expanded((prev) => !prev)}
                   sx={{ mr: 1, transform: tab4Expanded ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.2s" }}
@@ -1485,27 +1464,37 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                     return (
                       <Box
                         key={key}
-                        sx={{
+                        sx={(theme) => ({
                           mb: 1.5,
                           borderRadius: 2,
                           border: "1px solid",
                           borderColor: isRunning ? "primary.main" : "divider",
-                          bgcolor: isRunning ? "rgba(39, 100, 81, 0.03)" : "background.paper",
+                          bgcolor: isRunning ? alpha(theme.palette.primary.main, 0.03) : "background.paper",
                           overflow: "hidden",
-                        }}
+                        })}
                       >
                         <Box
+                          component="button"
+                          type="button"
                           onClick={() => setExpandedThinking((prev) => ({ ...prev, [key]: !prev[key] }))}
-                          sx={{
+                          aria-expanded={isOpen}
+                          aria-controls={`thinking-content-${key}`}
+                          sx={(theme) => ({
                             display: "flex",
                             alignItems: "center",
                             gap: 1,
                             px: 2,
                             py: 1,
                             cursor: "pointer",
-                            "&:hover": { bgcolor: "rgba(0,0,0,0.02)" },
+                            border: 0,
+                            width: "100%",
+                            font: "inherit",
+                            textAlign: "left",
+                            color: "inherit",
+                            bgcolor: "transparent",
+                            "&:hover": { bgcolor: alpha(theme.palette.text.primary, 0.02) },
                             userSelect: "none",
-                          }}
+                          })}
                         >
                           <ThinkIcon sx={{ fontSize: 18, color: isRunning ? "primary.main" : "text.secondary" }} />
                           <Typography variant="body2" sx={{ flex: 1, fontWeight: isRunning ? 600 : 400 }}>
@@ -1527,6 +1516,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                         </Box>
                         <Collapse in={isOpen}>
                           <Box
+                            id={`thinking-content-${key}`}
                             sx={{
                               px: 2,
                               py: 1.5,
@@ -1538,8 +1528,8 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                               wordBreak: "break-word",
                               lineHeight: 1.7,
                               fontFamily: "monospace",
-                              bgcolor: "rgba(39, 100, 81, 0.02)",
-                              borderTop: "1px dashed rgba(39, 100, 81, 0.1)",
+                              bgcolor: (theme) => alpha(theme.palette.primary.main, 0.02),
+                              borderTop: (theme) => `1px dashed ${alpha(theme.palette.primary.main, 0.1)}`,
                             }}
                           >
                             {group.content}
@@ -1592,14 +1582,14 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                       <div key={item.id}>
                         <ListItem disableGutters alignItems="flex-start">
                           <Avatar
-                            sx={{
+                            sx={(theme) => ({
                               width: 32,
                               height: 32,
                               mr: 1.5,
-                              bgcolor: "rgba(39, 100, 81, 0.12)",
+                              bgcolor: alpha(theme.palette.primary.main, 0.12),
                               color: "primary.main",
                               fontSize: 14,
-                            }}
+                            })}
                           >
                             摘
                           </Avatar>

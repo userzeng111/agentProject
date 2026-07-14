@@ -8,14 +8,14 @@ test.describe("真实浏览器任务生命周期", () => {
 
     try {
       await mockCommonApiRoutes(page);
-      await page.goto("/new", { waitUntil: "commit" });
+      await page.goto("/new/", { waitUntil: "commit" });
       await expect(page.getByRole("heading", { name: /创建小说任务/ })).toBeVisible();
 
-      await expect(page.getByRole("combobox", { name: /^创作模型/ })).toBeVisible();
-      await page.getByRole("combobox", { name: /^创作模型/ }).click();
+      await expect(page.getByRole("combobox", { name: "任务创作模型", exact: true })).toBeVisible();
+      await page.getByRole("combobox", { name: "任务创作模型", exact: true }).click();
       await page.getByRole("option", { name: /GPT 5\.4/ }).click();
       await page.getByLabel("目标总章节数").fill("4");
-      await page.getByLabel("创意提示词").fill("Playwright 真实浏览器链路测试：写一个海港灯塔里的短篇悬疑。");
+      await page.getByRole("textbox", { name: "创意提示词", exact: true }).fill("Playwright 真实浏览器链路测试：写一个海港灯塔里的短篇悬疑。");
       await page.getByLabel("题材").fill("悬疑");
       await page.getByLabel("风格").fill("冷静克制");
       await page.getByLabel("标题倾向").fill("灯塔证词");
@@ -48,7 +48,7 @@ test.describe("真实浏览器任务生命周期", () => {
         expect(dialog.message()).toContain("确认删除");
         await dialog.accept();
       });
-      await page.getByRole("button", { name: /删除任务/ }).click();
+      await page.getByRole("button", { name: /删除/ }).click();
       await expect(page).toHaveURL(/\/$/, { timeout: 15_000 });
 
       await expect

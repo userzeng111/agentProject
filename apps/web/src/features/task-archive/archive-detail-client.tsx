@@ -24,7 +24,7 @@ import {
 } from "@mui/material";
 import { fetchTextRef, getArchiveDetail } from "@/lib/api";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
-import { resultHref } from "@/lib/task-routes";
+import { projectViewHref } from "@/lib/task-routes";
 import { ArchiveDetailResponse, ResultChapterItem, StoryPlan, WorkspaceEvent } from "@/lib/types";
 import { NovelReader } from "@/components/novel-reader";
 import { ProjectShell } from "@/components/project-shell";
@@ -449,7 +449,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
   if (loading && !detail) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-        <Box sx={{ py: 6 }}>
+        <Box sx={{ py: 6 }} role="status" aria-live="polite">
           <Typography>正在读取归档详情...</Typography>
         </Box>
       </Container>
@@ -460,7 +460,7 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
     return (
       <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
         <Stack spacing={2} sx={{ py: 6 }}>
-          <Alert severity="error">{error || "读取归档详情失败"}</Alert>
+          <Alert severity="error" role="alert">{error || "读取归档详情失败"}</Alert>
           <Box>
             <Button variant="outlined" onClick={() => void load()}>
               重新加载
@@ -498,14 +498,14 @@ export default function ArchiveDetailClient({ taskId }: { taskId?: string }) {
           <Button component={Link} href="/archive" variant="outlined" size="small">
             返回列表
           </Button>
-          <Button component={Link} href={resultHref(resolvedTaskId)} variant="text" size="small">
+          <Button component={Link} href={projectViewHref(resolvedTaskId, "result")} variant="text" size="small">
             结果页视图
           </Button>
         </Stack>
       }
     >
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" role="alert">{error}</Alert> : null}
 
         {/* Tab 导航 */}
         <Box sx={{ borderBottom: 1, borderColor: "divider" }}>

@@ -57,7 +57,7 @@ test.describe("a27c48b 调试中心回归监控", () => {
       );
       expectNoSensitiveKeysOrText(workspace.rag_status, "rag_status");
 
-      await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
+      await page.goto(`/p/${taskId}/`, { waitUntil: "commit" });
       await expect(page.getByRole("tab", { name: /调试/ })).toBeVisible();
       await page.getByRole("tab", { name: /调试/ }).click();
       await expect(page.getByRole("heading", { name: "诊断结论" })).toBeVisible();

@@ -11,15 +11,17 @@ import {
   Container,
   useTheme,
   useMediaQuery,
+  alpha,
 } from "@mui/material";
 import { Create as CreateIcon, Home as HomeIcon, Archive as ArchiveIcon, SmartToy as ChatIcon, Settings as SettingsIcon } from "@mui/icons-material";
+import { homeHref, newProjectHref, archiveListHref, chatHref, settingsHref } from "@/lib/task-routes";
 
 const NAV_LINKS = [
-  { label: "首页", href: "/", icon: <HomeIcon fontSize="small" /> },
-  { label: "AI 对话", href: "/chat", icon: <ChatIcon fontSize="small" /> },
-  { label: "创建任务", href: "/new", icon: <CreateIcon fontSize="small" /> },
-  { label: "归档", href: "/archive", icon: <ArchiveIcon fontSize="small" /> },
-  { label: "设置", href: "/settings", icon: <SettingsIcon fontSize="small" /> },
+  { label: "首页", href: homeHref(), icon: <HomeIcon fontSize="small" /> },
+  { label: "AI 对话", href: chatHref(), icon: <ChatIcon fontSize="small" /> },
+  { label: "创建任务", href: newProjectHref(), icon: <CreateIcon fontSize="small" /> },
+  { label: "归档", href: archiveListHref(), icon: <ArchiveIcon fontSize="small" /> },
+  { label: "设置", href: settingsHref(), icon: <SettingsIcon fontSize="small" /> },
 ];
 
 export function AppHeader() {
@@ -34,15 +36,15 @@ export function AppHeader() {
       sx={(theme) => ({
         background:
           theme.palette.mode === "dark"
-            ? "rgba(15, 20, 18, 0.84)"
-            : "rgba(255, 250, 242, 0.80)",
+            ? alpha(theme.palette.background.default, 0.84)
+            : alpha(theme.palette.background.paper, 0.80),
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
         borderBottom: "1px solid",
         borderColor:
           theme.palette.mode === "dark"
-            ? "rgba(168, 160, 149, 0.18)"
-            : "rgba(29, 42, 39, 0.08)",
+            ? alpha(theme.palette.text.secondary, 0.18)
+            : alpha(theme.palette.text.primary, 0.08),
         boxShadow: "none",
         color: "text.primary",
       })}
@@ -117,9 +119,7 @@ export function AppHeader() {
                     color: isActive ? "primary.main" : "text.secondary",
                     fontWeight: isActive ? 600 : 400,
                     backgroundColor: isActive
-                      ? theme.palette.mode === "dark"
-                        ? "rgba(79, 209, 168, 0.13)"
-                        : "rgba(39, 100, 81, 0.08)"
+                      ? alpha(theme.palette.primary.main, theme.palette.mode === "dark" ? 0.13 : 0.08)
                       : "transparent",
                     borderRadius: 2,
                     px: isMobile ? 0.5 : 2,
@@ -132,12 +132,8 @@ export function AppHeader() {
                       : undefined,
                     "&:hover": {
                       backgroundColor: isActive
-                        ? theme.palette.mode === "dark"
-                          ? "rgba(79, 209, 168, 0.18)"
-                          : "rgba(39, 100, 81, 0.12)"
-                        : theme.palette.mode === "dark"
-                          ? "rgba(242, 238, 232, 0.08)"
-                          : "rgba(29, 42, 39, 0.05)",
+                        ? alpha(theme.palette.primary.main, theme.palette.mode === "dark" ? 0.18 : 0.12)
+                        : alpha(theme.palette.text.primary, theme.palette.mode === "dark" ? 0.08 : 0.05),
                     },
                   })}
                 >

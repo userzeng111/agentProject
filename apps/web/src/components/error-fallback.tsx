@@ -4,6 +4,7 @@ import {
   Button,
   Stack,
   Container,
+  alpha,
 } from "@mui/material";
 import { ErrorOutline as ErrorIcon } from "@mui/icons-material";
 
@@ -64,15 +65,16 @@ export function ErrorFallback({ error, onRetry, title }: ErrorFallbackProps) {
           {/* 错误详情 */}
           {error.message && (
             <Box
-              sx={{
+              sx={(theme) => ({
                 width: "100%",
                 px: 2.5,
                 py: 1.5,
                 background: "error.light",
                 borderRadius: 2,
-                border: "1px solid rgba(180, 74, 63, 0.12)",
+                border: "1px solid",
+                borderColor: alpha(theme.palette.error.main, 0.12),
                 textAlign: "left",
-              }}
+              })}
             >
               <Typography
                 variant="body2"

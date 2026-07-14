@@ -224,6 +224,94 @@ test.describe("聊天与设置页面", () => {
     await expect(page.getByText(/tokens/)).toBeVisible();
   });
 
+  test("流式期间点击当前会话不会覆盖新消息或旧存档", async ({ page }) => {
+    const conversationId = "conv_streaming_current_fixture";
+    await page.addInitScript(({ id }) => {
+      const now = Date.now();
+      localStorage.setItem(
+        "chat_conversations",
+        JSON.stringify({
+          [id]: {
+            id,
+            title: "流式回归会话",
+            messages: [
+              { role: "user", content: "旧问题", createdAt: now - 2_000 },
+              { role: "assistant", content: "旧回复", createdAt: now - 1_000 },
+            ],
+            createdAt: now - 2_000,
+            updatedAt: now - 1_000,
+            model: "gpt-5.4",
+          },
+        }),
+      );
+      localStorage.setItem("chat_active_conversation", id);
+    }, { id: conversationId });
+
+    await mockCommonApiRoutes(page);
+    let signalRequestStarted = () => {};
+    const requestStarted = new Promise<void>((resolve) => {
+      signalRequestStarted = resolve;
+    });
+    let releaseResponse = () => {};
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    await page.route("**/api/chat/stream", async (route) => {
+      signalRequestStarted();
+      await responseGate;
+      await route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body: [
+          'event: chat.chunk\ndata: {"content":"新回复","usage":{"total_tokens":8}}\n\n',
+          'event: chat.done\ndata: {"finish_reason":"stop"}\n\n',
+        ].join(""),
+      });
+    });
+
+    const modelsReady = waitForModelCatalog(page);
+    await page.goto("/chat", { waitUntil: "commit" });
+    await modelsReady;
+    await expect(page.getByRole("combobox", { name: "聊天模型" })).toContainText("gpt-5.4");
+
+    const input = page.getByRole("textbox", { name: "输入消息，按回车发送..." });
+    await input.fill("新问题");
+    await input.press("Enter");
+    await requestStarted;
+
+    try {
+      await page
+        .getByRole("list", { name: "会话列表" })
+        .getByRole("button", { name: /旧问题/ })
+        .click();
+      await expect(page.getByText("新问题", { exact: true })).toBeVisible();
+      await expect(page.getByText("旧回复", { exact: true })).toBeVisible();
+    } finally {
+      releaseResponse();
+    }
+
+    await expect(page.getByText("新回复", { exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const activeId = localStorage.getItem("chat_active_conversation");
+          const conversations = JSON.parse(localStorage.getItem("chat_conversations") || "{}") as Record<
+            string,
+            { messages?: Array<{ role: string; content: string }> }
+          >;
+          return activeId
+            ? (conversations[activeId]?.messages ?? []).map(({ role, content }) => ({ role, content }))
+            : [];
+        }),
+      )
+      .toEqual([
+        { role: "user", content: "旧问题" },
+        { role: "assistant", content: "旧回复" },
+        { role: "user", content: "新问题" },
+        { role: "assistant", content: "新回复" },
+      ]);
+  });
+
   test("聊天页移动端长文本不溢出且思考过程支持键盘展开", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await mockCommonApiRoutes(page);

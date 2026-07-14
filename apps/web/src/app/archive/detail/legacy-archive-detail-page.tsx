@@ -4,17 +4,16 @@ import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { legacyProjectHref } from "@/lib/task-routes";
 
-export default function LegacyTasksPage() {
+export default function LegacyArchiveDetailPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    const href = legacyProjectHref("/tasks/", searchParams);
+    const href = legacyProjectHref("/archive/detail/", searchParams);
     if (href) {
       router.replace(href);
     } else {
-      // 无 ID 时跳转到首页作品库
-      router.replace("/");
+      router.replace("/archive/");
     }
   }, [router, searchParams]);
 

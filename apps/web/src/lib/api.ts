@@ -29,6 +29,37 @@ interface RequestOptions {
   logContext?: RequestLogContext;
 }
 
+interface ApiRequestErrorOptions {
+  status: number | null;
+  path: string;
+  requestId: string;
+  detail: string;
+  retryable: boolean;
+}
+
+export class ApiRequestError extends Error {
+  readonly status: number | null;
+  readonly path: string;
+  readonly requestId: string;
+  readonly detail: string;
+  readonly retryable: boolean;
+
+  constructor({ status, path, requestId, detail, retryable }: ApiRequestErrorOptions) {
+    super(detail);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.path = path;
+    this.requestId = requestId;
+    this.detail = detail;
+    this.retryable = retryable;
+  }
+}
+
+function isRetryableHttpStatus(method: string, status: number) {
+  if (method !== "GET") return false;
+  return status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
 function logRequestStart(path: string, method: string, logContext?: RequestLogContext) {
   console.info("http.request.start", {
     method,
@@ -87,16 +118,23 @@ async function request<T>(path: string, init?: RequestInit, options?: RequestOpt
           response = await makeRequest();
         } catch (retryErr) {
           console.error(`请求重试后仍失败: ${url}`, retryErr instanceof Error ? retryErr.message : String(retryErr));
-          throw new Error(retryErr instanceof Error ? retryErr.message : "请求失败");
+          throw retryErr;
         }
       } else {
         console.error(`请求失败（写操作不重试）: ${url}`, err instanceof Error ? err.message : String(err));
-        throw new Error(err instanceof Error ? err.message : "请求失败");
+        throw err;
       }
     }
   } catch (err) {
     logRequestEnd(path, method, Date.now() - startedAt, null, "", options?.logContext);
-    throw err;
+    const detail = err instanceof Error ? err.message : "请求失败";
+    throw new ApiRequestError({
+      status: null,
+      path,
+      requestId: "",
+      detail,
+      retryable: canRetry,
+    });
   }
 
   const httpStatus = response.status;
@@ -105,14 +143,20 @@ async function request<T>(path: string, init?: RequestInit, options?: RequestOpt
   if (!response.ok) {
     let errorMessage = "请求失败";
     try {
-      const data = await response.json();
+      const data = await response.clone().json();
       errorMessage = typeof data?.detail === "string" ? data.detail : JSON.stringify(data);
     } catch {
       const text = await response.text();
       errorMessage = text ? text.slice(0, 500) : `HTTP ${response.status}`;
     }
     logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);
-    throw new Error(errorMessage);
+    throw new ApiRequestError({
+      status: httpStatus,
+      path,
+      requestId,
+      detail: errorMessage,
+      retryable: isRetryableHttpStatus(method, httpStatus),
+    });
   }
 
   logRequestEnd(path, method, Date.now() - startedAt, httpStatus, requestId, options?.logContext);

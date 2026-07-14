@@ -18,7 +18,9 @@ import {
   Stack,
   Switch,
   TextField,
+  Tooltip,
   Typography,
+  alpha,
 } from "@mui/material";
 import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
 import { createTask, getModelCatalog, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
@@ -352,6 +354,19 @@ export default function CreateTaskClient() {
     Boolean(hasValidReviewModel) &&
     Number(payload.target_chapter_count || 0) > 0 &&
     (!requiresStyleProfile || Boolean(selectedStyleProfile));
+  const disabledReason = !canSubmit
+    ? !payload.prompt.trim()
+      ? "请填写创意提示词"
+      : !hasValidSelectedModel || !isNovelTaskModelSupported(selectedModel)
+        ? "请选择经过小说工作流兼容性验证的创作模型"
+        : !hasValidReviewModel
+          ? "审核模型配置不完整"
+          : Number(payload.target_chapter_count || 0) <= 0
+            ? "目标总章节数必须大于 0"
+            : requiresStyleProfile && !selectedStyleProfile
+              ? "请选择创作风格"
+              : "请完成所有必填项"
+    : "";
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -484,6 +499,7 @@ export default function CreateTaskClient() {
       {error ? (
         <Alert
           severity="error"
+          role="alert"
           action={
             validationErrorHref ? (
               <Button component={Link} href={validationErrorHref} color="inherit" size="small">
@@ -555,6 +571,7 @@ export default function CreateTaskClient() {
                 <TextField
                   select
                   label="任务创作模型"
+                  inputProps={{ "data-testid": "model-select" }}
                   value={hasValidSelectedModel ? payload.model_id : ""}
                   onChange={updateField("model_id")}
                   helperText={
@@ -595,13 +612,13 @@ export default function CreateTaskClient() {
 
             {!modelsLoading && selectedModel && (
               <Box
-                sx={{
+                sx={(theme) => ({
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(29, 42, 39, 0.03)",
-                }}
+                  backgroundColor: alpha(theme.palette.text.primary, 0.03),
+                })}
               >
                 <Stack spacing={1.5}>
                   <Stack
@@ -668,13 +685,13 @@ export default function CreateTaskClient() {
 
             {requiresStyleProfile ? (
               <Box
-                sx={{
+                sx={(theme) => ({
                   p: 2,
                   borderRadius: 2,
                   border: "1px solid",
                   borderColor: "divider",
-                  backgroundColor: "rgba(39, 100, 81, 0.03)",
-                }}
+                  backgroundColor: alpha(theme.palette.primary.main, 0.03),
+                })}
               >
                 <Stack spacing={2}>
                   <Stack
@@ -736,13 +753,13 @@ export default function CreateTaskClient() {
 
                   {selectedStyleProfile ? (
                     <Box
-                      sx={{
+                      sx={(theme) => ({
                         p: 2,
                         borderRadius: 2,
                         border: "1px solid",
                         borderColor: "divider",
-                        backgroundColor: "rgba(29, 42, 39, 0.02)",
-                      }}
+                        backgroundColor: alpha(theme.palette.text.primary, 0.02),
+                      })}
                     >
                       <Stack spacing={1.25}>
                         <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
@@ -821,13 +838,13 @@ export default function CreateTaskClient() {
             </Box>
 
             <Box
-              sx={{
+              sx={(theme) => ({
                 p: 2,
                 borderRadius: 2,
                 border: "1px solid",
                 borderColor: "divider",
-                backgroundColor: "rgba(39, 100, 81, 0.03)",
-              }}
+                backgroundColor: alpha(theme.palette.primary.main, 0.03),
+              })}
             >
               <Stack direction="row" spacing={2} alignItems="center">
                 <FormControlLabel
@@ -903,9 +920,13 @@ export default function CreateTaskClient() {
             </Stack>
 
             <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
-                {submitting ? "正在创建..." : "创建并进入任务页"}
-              </Button>
+              <Tooltip title={disabledReason} placement="top">
+                <span>
+                  <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
+                    {submitting ? "正在创建..." : "创建并进入任务页"}
+                  </Button>
+                </span>
+              </Tooltip>
               <Button onClick={() => setPayload(resetPayload)} variant="text">
                 重置表单
               </Button>

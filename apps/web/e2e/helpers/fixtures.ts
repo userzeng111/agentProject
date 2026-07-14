@@ -273,7 +273,7 @@ export async function mockCommonApiRoutes(page: Page) {
             id: "gpt-5.4",
             display_name: "GPT 5.4",
             provider: "gateway",
-            metadata: { source: "gateway:list_models" },
+            metadata: { source: "gateway:list_models", compatibility: "verified" },
             capabilities: {
               features: ["novel"],
               context_window: { max_input_tokens: 8000, max_output_tokens: 4000 },

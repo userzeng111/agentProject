@@ -67,7 +67,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     const completedCard = page.getByTestId("project-card").filter({ hasText: "自动化测试-completed" });
     await expect(completedCard.getByRole("link", { name: "进入项目" })).toHaveAttribute(
       "href",
-      "/result/?id=task_completed_fixture",
+      "/p/task_completed_fixture/?view=result",
     );
 
     await page.getByRole("tab", { name: "失败 (1)" }).click();
@@ -126,12 +126,13 @@ test.describe("首页 Dashboard 与创建任务", () => {
       await route.fallback();
     });
 
-    await page.goto("/new", { waitUntil: "commit" });
+    await page.goto("/new/", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "创建小说任务" })).toBeVisible();
-    await page.getByRole("combobox", { name: /^创作模型$/ }).click();
+    const modelSelect = page.getByRole("combobox", { name: "任务创作模型", exact: true });
+    await modelSelect.click();
     await page.getByRole("option", { name: /GPT 5.4/ }).click();
-    await expect(page.getByRole("combobox", { name: /^创作模型/ })).toContainText("GPT 5.4");
-    await page.getByLabel("创意提示词").fill("写一个潮湿海港里的悬疑故事。");
+    await expect(page.getByTestId("model-select")).toHaveValue("gpt-5.4");
+    await page.getByRole("textbox", { name: "创意提示词", exact: true }).fill("写一个潮湿海港里的悬疑故事。");
     await page.getByLabel("题材").fill("悬疑");
     await page.getByLabel("风格").fill("克制");
     const submit = page.getByRole("button", { name: "创建并进入任务页" });
@@ -151,11 +152,12 @@ test.describe("首页 Dashboard 与创建任务", () => {
       });
     });
 
-    await page.goto("/new", { waitUntil: "commit" });
-    await page.getByRole("combobox", { name: /^创作模型$/ }).click();
+    await page.goto("/new/", { waitUntil: "commit" });
+    const modelSelect = page.getByRole("combobox", { name: "任务创作模型", exact: true });
+    await modelSelect.click();
     await page.getByRole("option", { name: /GPT 5.4/ }).click();
-    await expect(page.getByRole("combobox", { name: /^创作模型/ })).toContainText("GPT 5.4");
-    await page.getByLabel("创意提示词").fill("失败分支测试。");
+    await expect(page.getByTestId("model-select")).toHaveValue("gpt-5.4");
+    await page.getByRole("textbox", { name: "创意提示词", exact: true }).fill("失败分支测试。");
     const submit = page.getByRole("button", { name: "创建并进入任务页" });
     await expect(submit).toBeEnabled();
     await submit.click();

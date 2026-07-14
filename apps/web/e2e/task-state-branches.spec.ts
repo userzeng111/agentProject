@@ -48,7 +48,7 @@ test.describe("任务工作台状态分支", () => {
           : {}),
       });
       await mockTaskWorkspace(page, workspace);
-      await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+      await page.goto(`/p/${workspace.meta.task_id}/`, { waitUntil: "commit" });
 
       await expect(page.getByTestId("project-shell")).toBeVisible();
       await expect(page.getByTestId("stage-nav")).toBeVisible();
@@ -74,7 +74,7 @@ test.describe("任务工作台状态分支", () => {
     });
     await mockTaskWorkspace(page, workspace);
 
-    await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+    await page.goto(`/p/${workspace.meta.task_id}/`, { waitUntil: "commit" });
 
     await expect(page.getByTestId("project-shell")).toBeVisible();
     await expect(page.getByTestId("stage-nav")).toBeVisible();
@@ -95,8 +95,10 @@ test.describe("任务工作台状态分支", () => {
     });
     await mockTaskWorkspace(page, workspace);
 
-    await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+    await page.goto(`/p/${workspace.meta.task_id}/`, { waitUntil: "commit" });
 
+    // 展开工作流图谱（默认收起）
+    await page.getByRole("button", { name: "展开工作流图谱" }).click();
     const graphCard = page.getByTestId("workflow-overview-card");
     await expect(graphCard).toBeVisible();
     await expect(graphCard.locator(".react-flow").first()).toBeVisible();
@@ -167,7 +169,7 @@ test.describe("任务工作台状态分支", () => {
       },
     ]);
 
-    await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
+    await page.goto(`/p/${taskId}/`, { waitUntil: "commit" });
     await page.getByRole("tab", { name: /章节进度/ }).click();
 
     await expect(page.getByTestId("chapter-progress-panel")).toBeVisible();
@@ -201,7 +203,7 @@ test.describe("任务工作台状态分支", () => {
     });
     await mockTaskWorkspace(page, workspace);
 
-    await page.goto(`/p/${workspace.meta.task_id}`, { waitUntil: "commit" });
+    await page.goto(`/p/${workspace.meta.task_id}/`, { waitUntil: "commit" });
     await page.getByRole("tab", { name: /调试/ }).click();
     await expect(page.getByRole("heading", { name: "状态不一致" })).toBeVisible();
   });

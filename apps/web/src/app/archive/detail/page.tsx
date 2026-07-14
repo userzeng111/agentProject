@@ -1,10 +1,10 @@
 import { Suspense } from "react";
-import ArchiveDetailClient from "@/features/task-archive/archive-detail-client";
+import LegacyArchiveDetailPage from "./legacy-archive-detail-page";
 
 export default function ArchiveDetailPage() {
   return (
     <Suspense fallback={null}>
-      <ArchiveDetailClient />
+      <LegacyArchiveDetailPage />
     </Suspense>
   );
 }

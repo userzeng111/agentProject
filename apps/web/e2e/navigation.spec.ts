@@ -6,7 +6,7 @@ test.describe("真实后端页面导航", () => {
     await page.goto("/", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "小说工坊", level: 4 })).toBeVisible();
 
-    await page.goto("/new", { waitUntil: "commit" });
+    await page.goto("/new/", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: /创建小说任务/ })).toBeVisible();
 
     await page.goto("/archive", { waitUntil: "commit" });
@@ -24,7 +24,7 @@ test.describe("真实后端页面导航", () => {
     try {
       const task = await createDraftTask(request, "Playwright 页面导航");
       taskId = task.id;
-      await page.goto(`/p/${taskId}`, { waitUntil: "commit" });
+      await page.goto(`/p/${taskId}/`, { waitUntil: "commit" });
       await expect(page).toHaveURL(new RegExp(`/p/${taskId}/?$`));
       await expect
         .poll(async () => (await request.get(apiPath(`/api/tasks/${taskId}/workspace`))).status(), {
@@ -47,7 +47,7 @@ test.describe("真实后端页面导航", () => {
     test.skip(!archive.items?.length, "当前没有归档任务可验证详情页");
     const archiveItem = archive.items![0];
     const archiveId = archiveItem.task_id;
-    await page.goto(`/archive/detail/?id=${archiveId}`, { waitUntil: "commit" });
+    await page.goto(`/p/${archiveId}/?view=archive`, { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "归档详情" })).toBeVisible();
     await expect(page.getByText(archiveItem.title ?? archiveId, { exact: false }).first()).toBeVisible();
     await expect(page.getByRole("tab", { name: /概览|总览/ })).toBeVisible();

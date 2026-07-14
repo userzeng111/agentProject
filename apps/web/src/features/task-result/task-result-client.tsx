@@ -18,7 +18,7 @@ import {
   Typography,
 } from "@mui/material";
 import { archiveTask, fetchTextRef, getApiBase, getResult } from "@/lib/api";
-import { archiveDetailHref, workspaceHref } from "@/lib/task-routes";
+import { projectViewHref, workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
 import MarkdownContent from "@/components/markdown-content";
 import { NovelReader } from "@/components/novel-reader";
@@ -83,7 +83,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
     try {
       await archiveTask(resolvedTaskId);
       showSnackbar("任务已归档");
-      router.push(archiveDetailHref(resolvedTaskId));
+      router.push(projectViewHref(resolvedTaskId, "archive"));
     } catch (archiveError) {
       setError(archiveError instanceof Error ? archiveError.message : "归档失败");
       showSnackbar("归档失败");

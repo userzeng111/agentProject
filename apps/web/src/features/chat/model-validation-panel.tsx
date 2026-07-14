@@ -109,7 +109,7 @@ export default function ModelValidationPanel({
           </Stack>
         </Stack>
 
-        {running ? <LinearProgress /> : null}
+        {running ? <LinearProgress role="status" aria-label="模型验证进行中" /> : null}
 
         {state.status === "verified" ? (
           <Alert severity="success" sx={{ py: 0.5 }}>

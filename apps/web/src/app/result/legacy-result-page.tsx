@@ -2,14 +2,19 @@
 
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { legacyCreateHref } from "@/lib/task-routes";
+import { legacyProjectHref } from "@/lib/task-routes";
 
-export default function LegacyCreatePage() {
+export default function LegacyResultPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    router.replace(legacyCreateHref(searchParams));
+    const href = legacyProjectHref("/result/", searchParams);
+    if (href) {
+      router.replace(href);
+    } else {
+      router.replace("/");
+    }
   }, [router, searchParams]);
 
   return null;

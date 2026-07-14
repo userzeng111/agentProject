@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import ProjectWorkspaceClient from "../project-workspace-client";
+import ProjectPageClient from "@/features/project/project-page-client";
 
 export async function generateStaticParams() {
   return [{ projectId: "__placeholder__" }];
@@ -8,7 +8,7 @@ export async function generateStaticParams() {
 export default function ProjectWorkspacePage() {
   return (
     <Suspense fallback={null}>
-      <ProjectWorkspaceClient />
+      <ProjectPageClient />
     </Suspense>
   );
 }
