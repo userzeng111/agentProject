@@ -162,11 +162,8 @@ class TaskServiceQueriesMixin:
             TaskStatus.WAITING_VERIFICATION_REVIEW,
         }:
             self._ensure_novel_project_seeded(task)
-        # 保留最近事件，同时确保所有 chapter.* 事件不被截断
-        chapter_events = [e for e in task.events if e.event_type.startswith("chapter.")]
-        other_events = [e for e in task.events if not e.event_type.startswith("chapter.")]
-        recent_other_events = other_events[-100:]
-        recent_events = chapter_events + recent_other_events
+        # 按持久化时序返回最近事件，避免章节事件被重排而掩盖真实执行顺序。
+        recent_events = task.events[-200:]
         recovery_contract = self._build_recovery_contract(task, reconciliation=reconciliation)
         outline_batch = task.pending_review.outline_batch if task.pending_review else None
         outline_phase = outline_batch.phase if outline_batch else ""

@@ -12,7 +12,7 @@ from app.context.manager import ContextManager
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
 from app.llm.auto_reviewer import AutoReviewManager
 from app.llm.model_catalog import ModelCatalogService
-from app.llm.story_engine import StoryEngine
+from app.llm.story_engine import StoryEngine, get_progress_callback
 
 from app.graph.checkpointer import _create_checkpointer
 from app.graph.state import WorkflowState
@@ -62,6 +62,101 @@ from app.graph.routers.flow import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_WORKFLOW_NODE_STAGES = {
+    "normalize_request": "planning",
+    "prepare_outline_context": "planning",
+    "plan_story": "planning",
+    "plan_chapter_batch": "planning",
+    "review_outline": "planning",
+    "revise_outline": "planning",
+    "prepare_chapter_pair_context": "drafting",
+    "draft_chapter_pair": "drafting",
+    "chapter_gate_review": "drafting",
+    "review_chapter_pair": "drafting",
+    "revise_chapter_pair": "drafting",
+    "accumulate_chapters": "drafting",
+    "verify_full_story": "assembling",
+    "review_verification": "assembling",
+    "fix_verified_issues": "assembling",
+    "assemble_result": "assembling",
+    "cancel_task": "assembling",
+}
+
+
+def _workflow_error_summary(error: Exception) -> str:
+    """生成适合任务追踪展示的异常摘要，避免单条事件被超长错误占满。"""
+
+    summary = " ".join(str(error).split())
+    return summary[:500] if summary else type(error).__name__
+
+
+def _instrument_workflow_callback(node_name: str, callback: Callable[[WorkflowState], WorkflowState]):
+    """为每个工作流节点补充任务级开始、完成与失败事件。"""
+
+    stage = _WORKFLOW_NODE_STAGES[node_name]
+
+    def wrapped(state: WorkflowState) -> WorkflowState:
+        progress = get_progress_callback()
+        base_payload = {
+            "summary": f"工作流节点：{node_name}",
+            "display_level": "public",
+            "node": node_name,
+        }
+        if progress is not None:
+            progress(
+                {
+                    "event_type": "workflow.node.started",
+                    "stage": stage,
+                    "unit_id": node_name,
+                    "message": f"开始执行节点：{node_name}。",
+                    "payload": base_payload,
+                }
+            )
+        try:
+            result = callback(state)
+        except Exception as exc:
+            if progress is not None:
+                progress(
+                    {
+                        "event_type": "workflow.node.failed",
+                        "stage": stage,
+                        "unit_id": node_name,
+                        "message": f"节点执行失败：{node_name}。",
+                        "payload": {
+                            **base_payload,
+                            "error_type": type(exc).__name__,
+                            "error": _workflow_error_summary(exc),
+                        },
+                    }
+                )
+            raise
+        if progress is not None:
+            progress(
+                {
+                    "event_type": "workflow.node.completed",
+                    "stage": stage,
+                    "unit_id": node_name,
+                    "message": f"节点执行完成：{node_name}。",
+                    "payload": base_payload,
+                }
+            )
+        return result
+
+    return wrapped
+
+
+def _instrument_workflow_callbacks(callbacks):
+    """返回带任务级节点追踪事件的回调集合。"""
+    from app.workflow.callbacks import WorkflowCallbacks
+
+    return WorkflowCallbacks(
+        **{
+            name: _instrument_workflow_callback(name, getattr(callbacks, name))
+            for name in WorkflowCallbacks.__dataclass_fields__
+        }
+    )
 
 
 def _trace_round_count(trace: list[dict[str, Any]] | None) -> int:
@@ -251,7 +346,7 @@ def build_default_callbacks(
     def cancel_task(state: WorkflowState) -> WorkflowState:
         return _cancel_task_node(state)
 
-    return WorkflowCallbacks(
+    callbacks = WorkflowCallbacks(
         normalize_request=normalize_request,
         prepare_outline_context=prepare_outline_context,
         plan_story=plan_story,
@@ -270,6 +365,7 @@ def build_default_callbacks(
         assemble_result=assemble_result,
         cancel_task=cancel_task,
     )
+    return _instrument_workflow_callbacks(callbacks)
 
 
 def build_graph(

@@ -93,6 +93,11 @@ def prepare_chapter_pair_context(
     batch_index = state.get("batch_index", 0)
     story_plan = _normalize_story_plan(state.get("story_plan") or {})
     total_chapters = _planned_chapter_count(story_plan)
+    if total_chapters <= 0:
+        raise ValueError("尚未生成有效章节计划，不能开始正文起草。")
+    chapter_plan = story_plan.get("chapter_plan") or []
+    if len(chapter_plan) < total_chapters:
+        raise ValueError("已确认章节计划不完整，不能开始正文起草。")
     completed = state.get("completed_chapters") or []
     completed_count = len(completed)
     batch_size = _chapter_batch_size(
@@ -152,6 +157,9 @@ def draft_chapter_pair(
 ) -> WorkflowState:
     batch_index = state.get("batch_index", 0)
     completed_chapters = state.get("completed_chapters") or []
+    total_chapters = _planned_chapter_count(state.get("story_plan") or {})
+    if total_chapters <= 0 or batch_index >= total_chapters:
+        raise ValueError("当前没有可生成的正文章节。")
     chapter_pair = engine.generate_chapter_pair(
         state["normalized_spec"],
         state.get("story_plan") or {},
@@ -162,6 +170,8 @@ def draft_chapter_pair(
         model=state["normalized_spec"].get("model_id"),
         progress_callback=getattr(engine, "progress_callback", None),
     )
+    if not chapter_pair:
+        raise ValueError("章节生成未返回正文，不能进入后续审核。")
     return {
         "current_chapter_pair": [ch.model_dump() for ch in chapter_pair],
         "chapter_pair_revision_count": 0,

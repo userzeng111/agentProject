@@ -24,6 +24,28 @@ function latestEvent(events = []) {
   return [...events].sort((left, right) => toTime(right.created_at) - toTime(left.created_at))[0] || null;
 }
 
+/**
+ * 合并工作台快照与 SSE 实时事件。
+ * 快照不包含瞬态思考片段，因此在刷新后必须保留它们，避免思考过程闪烁或丢失。
+ */
+export function mergeWorkspaceEvents(snapshotEvents = [], realtimeEvents = [], limit = 240) {
+  const eventByKey = new Map();
+  for (const event of [...snapshotEvents, ...realtimeEvents]) {
+    if (!event || typeof event !== "object") continue;
+    const eventId = String(event.event_id || "").trim();
+    const fallbackKey = [
+      event.event_type || "",
+      event.created_at || "",
+      event.unit_id || "",
+      event.message || "",
+    ].join("|");
+    eventByKey.set(eventId || fallbackKey, event);
+  }
+  return Array.from(eventByKey.values())
+    .sort((left, right) => toTime(left.created_at) - toTime(right.created_at))
+    .slice(-Math.max(Number(limit) || 240, 1));
+}
+
 function statusTone(status) {
   if (status === "completed") return "success";
   if (status === "failed" || status === "cancelled") return "error";

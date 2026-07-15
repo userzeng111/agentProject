@@ -15,10 +15,9 @@ def route_after_outline_review(state: WorkflowState) -> str:
         if phase == "master":
             return "plan_chapter_batch"
         # chapter_batches 阶段：判断是否全部完成
-        batch_index = state.get("outline_batch_index", 0)
-        batch_size = state.get("outline_batch_size", 20)
-        total = state.get("outline_total_count", 0)
-        if batch_index + batch_size >= total:
+        completed_count = int(state.get("outline_completed_count", 0) or 0)
+        total = int(state.get("outline_total_count", 0) or 0)
+        if total > 0 and completed_count >= total:
             return "prepare_chapter_pair_context"
         return "plan_chapter_batch"
 

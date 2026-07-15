@@ -1,5 +1,6 @@
 import asyncio
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,36 @@ class TaskStoreContextTests(unittest.TestCase):
             self.assertIn("任务事件广播失败", output)
             self.assertIn(task.id, output)
             self.assertIn("unit.event", output)
+
+    def test_background_thread_delivery_wakes_event_stream_loop(self) -> None:
+        async def scenario() -> None:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+                task = store.create_task(
+                    TaskCreateRequest(
+                        mode=TaskMode.SHORT_STORY,
+                        prompt="后台线程事件投递",
+                        model_id="gpt-5.4",
+                    )
+                )
+                queue = store.subscribe(task.id)
+                worker = threading.Thread(
+                    target=lambda: store.broadcast_event(
+                        task.id,
+                        stage="planning",
+                        message="后台节点已开始。",
+                        event_type="workflow.node.started",
+                    ),
+                )
+                worker.start()
+                event = await asyncio.wait_for(queue.get(), timeout=1)
+                worker.join(timeout=1)
+                store.unsubscribe(task.id, queue)
+
+                self.assertEqual(event["event_type"], "workflow.node.started")
+                self.assertEqual(event["message"], "后台节点已开始。")
+
+        asyncio.run(scenario())
 
 
 if __name__ == "__main__":

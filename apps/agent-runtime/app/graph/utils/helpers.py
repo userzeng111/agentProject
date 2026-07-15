@@ -122,12 +122,9 @@ def _planned_chapter_count(story_plan: dict[str, Any] | None) -> int:
     if not isinstance(story_plan, dict):
         return 0
     chapter_plan = story_plan.get("chapter_plan")
-    if isinstance(chapter_plan, list):
-        return len(chapter_plan)
     planned = int(story_plan.get("planned_chapter_count") or 0)
-    if planned > 0:
-        return planned
-    return 0
+    chapter_count = len(chapter_plan) if isinstance(chapter_plan, list) else 0
+    return max(planned, chapter_count)
 
 
 def _normalize_story_plan(story_plan: dict[str, Any] | None) -> dict[str, Any]:
@@ -136,12 +133,8 @@ def _normalize_story_plan(story_plan: dict[str, Any] | None) -> dict[str, Any]:
     normalized = dict(story_plan)
     chapter_plan = normalized.get("chapter_plan")
     existing_planned = int(normalized.get("planned_chapter_count") or 0)
-    if isinstance(chapter_plan, list) and chapter_plan:
-        normalized["planned_chapter_count"] = len(chapter_plan)
-    elif existing_planned:
-        normalized["planned_chapter_count"] = existing_planned
-    else:
-        normalized["planned_chapter_count"] = 0
+    chapter_count = len(chapter_plan) if isinstance(chapter_plan, list) else 0
+    normalized["planned_chapter_count"] = max(existing_planned, chapter_count)
     return normalized
 
 

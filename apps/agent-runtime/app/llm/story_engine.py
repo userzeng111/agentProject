@@ -1113,6 +1113,8 @@ class StoryEngine(BaseAgent):
         model: str | None = None,
     ) -> list[dict[str, Any]]:
         """根据验证意见修复章节问题。"""
+        if not completed_chapters:
+            raise ValueError("没有可修复的正文章节。")
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_progress_callback = self.progress_callback or _progress_callback_var.get()
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
@@ -1267,14 +1269,14 @@ class StoryEngine(BaseAgent):
             chapter_number = self._safe_chapter_number(item.get("number"))
             if chapter_number is None:
                 continue
-            merged = dict(fixed_by_number.get(chapter_number, {"number": chapter_number}))
+            if chapter_number not in fixed_by_number:
+                logger.warning("issue-fixer 返回未知章节补丁，已忽略 chapter_number=%s", chapter_number)
+                continue
+            merged = dict(fixed_by_number[chapter_number])
             for field_name in ("title", "summary", "content"):
                 if field_name in item and item.get(field_name) is not None:
                     merged[field_name] = item.get(field_name)
             fixed_by_number[chapter_number] = merged
-            if chapter_number not in order:
-                order.append(chapter_number)
-
         return [fixed_by_number[number] for number in sorted(order)]
 
     def _issue_fix_patch_items(self, payload: Any) -> list[Any]:

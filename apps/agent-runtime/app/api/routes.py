@@ -56,8 +56,9 @@ def build_router(
         logger.exception("route_handler_unexpected_error exc_type=%s exc_msg=%s", type(exc).__name__, str(exc)[:200])
         return HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
-    def _sse_payload(event_name: str, payload: dict) -> str:
-        return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    def _sse_payload(event_name: str, payload: dict, event_id: str = "") -> str:
+        event_id_line = f"id: {event_id}\n" if event_id else ""
+        return f"{event_id_line}event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
     def _split_file_ref(ref: str) -> tuple[str, str]:
         parts = [item for item in ref.removeprefix("/").split("/") if item]
@@ -487,8 +488,9 @@ def build_router(
     @router.get("/tasks/{task_id}/events/stream")
     async def stream_task_events(task_id: str):
         try:
-            snapshot = task_service.build_sse_snapshot(task_id)
             queue = task_service.subscribe_task_events(task_id)
+            # 先订阅再读取快照，消除两者之间的事件丢失窗口。
+            snapshot = task_service.build_sse_snapshot(task_id)
         except Exception as exc:
             raise _handle_error(exc) from exc
 
@@ -520,7 +522,7 @@ def build_router(
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
-                    yield _sse_payload("task.event", payload)
+                    yield _sse_payload("task.event", payload, str(payload.get("event_id") or ""))
                     if _is_task_stream_done_event(payload.get("event_type", "")):
                         yield _sse_payload(
                             "task.done",

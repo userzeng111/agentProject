@@ -36,12 +36,14 @@ def _emit_outline_review_progress(
     callback(
         {
             "event_type": event_type,
-            "stage": "waiting_outline_review",
+            # 自动审核仍在工作流执行中，不能伪装成可由用户提交的人工审核态。
+            "stage": "planning",
             "unit_id": _outline_review_unit_id(state),
             "message": message,
             "payload": {
                 "summary": message,
                 "display_level": "public",
+                "workflow_step": "outline_auto_review",
                 "outline_phase": state.get("outline_phase", "master"),
                 **(payload or {}),
             },
@@ -66,7 +68,7 @@ def _finalize_chapter_plan_batch_review(
         or 0
     )
     current_batch = state.get("current_batch_chapter_plans") or []
-    effective_count = len(current_batch) or min(batch_size, max(total - batch_index, 0))
+    effective_count = len(current_batch)
     batch_no = (batch_index // batch_size) + 1
 
     try:
@@ -82,8 +84,33 @@ def _finalize_chapter_plan_batch_review(
     if not decision.approved:
         return {}
 
-    completed_count = min(total, batch_index + effective_count) if total > 0 else batch_index + effective_count
+    if total <= 0 or effective_count <= 0:
+        raise ValueError("章节计划批次为空，不能进入正文生成。")
+
+    expected_numbers = list(range(batch_index + 1, batch_index + effective_count + 1))
+    actual_numbers = [int(item.get("number") or 0) for item in current_batch if isinstance(item, dict)]
+    if actual_numbers != expected_numbers:
+        raise ValueError("章节计划批次编号不连续，不能进入正文生成。")
+
+    merged_story_plan = dict(story_plan)
+    existing_plans = {
+        int(item.get("number") or 0): item
+        for item in (merged_story_plan.get("chapter_plan") or [])
+        if isinstance(item, dict) and int(item.get("number") or 0) > 0
+    }
+    for item in current_batch:
+        if isinstance(item, dict):
+            existing_plans[int(item["number"])] = dict(item)
+    merged_story_plan["chapter_plan"] = [existing_plans[number] for number in sorted(existing_plans)]
+    merged_story_plan["planned_chapter_count"] = max(
+        int(merged_story_plan.get("planned_chapter_count") or 0),
+        total,
+        len(merged_story_plan["chapter_plan"]),
+    )
+
+    completed_count = min(total, batch_index + effective_count)
     return {
+        "story_plan": merged_story_plan,
         "outline_completed_count": completed_count,
         "outline_batch_retry_count": 0,
     }
@@ -160,6 +187,25 @@ def plan_story(
         model=state["normalized_spec"].get("model_id"),
     )
     plan_dict = _normalize_story_plan(story_plan.model_dump())
+    planned_count = int(plan_dict.get("planned_chapter_count") or 0)
+    if planned_count <= 0:
+        retry_plan = engine.build_story_plan(
+            state["normalized_spec"],
+            state.get("reference_text", ""),
+            context_packet=state.get("outline_context_packet"),
+            model=state["normalized_spec"].get("model_id"),
+            revision_comment=(
+                "上一版大纲缺少有效 planned_chapter_count。"
+                "请明确给出正整数的 planned_chapter_count，并保留所有既有世界观与人物设定。"
+            ),
+            original_plan=plan_dict,
+        )
+        plan_dict = _normalize_story_plan(retry_plan.model_dump())
+        planned_count = int(plan_dict.get("planned_chapter_count") or 0)
+    if planned_count <= 0:
+        raise ValueError(
+            f"大纲缺少有效章节总数：当前 {planned_count} 章。"
+        )
     if not generate_chapter_plan:
         plan_dict["chapter_plan"] = []
     return {
@@ -218,12 +264,13 @@ def plan_chapter_batch(
         callback(
             {
                 "event_type": "outline.chapter_plan_batch.started",
-                "stage": "waiting_outline_review",
+                "stage": "planning",
                 "unit_id": "outline-chapter-batches",
                 "message": f"开始规划第 {batch_no} 批章节计划。",
                 "payload": {
                     "summary": f"开始规划第 {batch_no} 批章节计划。",
                     "display_level": "public",
+                    "workflow_step": "chapter_plan_batch",
                     "outline_phase": "chapter_batches",
                     "batch_no": batch_no,
                     "start_chapter": batch_index + 1,
@@ -257,12 +304,13 @@ def plan_chapter_batch(
         callback(
             {
                 "event_type": "outline.chapter_plan_batch.completed",
-                "stage": "waiting_outline_review",
+                "stage": "planning",
                 "unit_id": "outline-chapter-batches",
                 "message": f"第 {batch_no} 批章节计划已生成，等待审核。",
                 "payload": {
                     "summary": f"第 {batch_no} 批章节计划已生成，等待审核。",
                     "display_level": "public",
+                    "workflow_step": "chapter_plan_batch",
                     "outline_phase": "chapter_batches",
                     "batch_no": batch_no,
                     "start_chapter": batch_index + 1,
@@ -411,7 +459,11 @@ def review_outline(
     review = interrupt_outline_review(state)
     approved = bool(review.get("approved")) if isinstance(review, dict) else bool(review)
     comment = review.get("comment", "") if isinstance(review, dict) else ""
-    return {"approved": approved, "review_comment": comment}
+    batch_updates = _finalize_chapter_plan_batch_review(
+        state,
+        ReviewDecision(approved=approved, comment=comment, reasoning="人工审核结果"),
+    )
+    return {"approved": approved, "review_comment": comment, **batch_updates}
 
 
 def revise_outline(

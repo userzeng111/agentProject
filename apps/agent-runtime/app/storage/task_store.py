@@ -7,6 +7,7 @@ import os
 import shutil
 import tempfile
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,14 @@ class TaskNotFoundError(Exception):
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class _TaskEventSubscriber:
+    """保存订阅事件流所在的事件循环，供后台工作线程安全投递。"""
+
+    queue: asyncio.Queue[dict[str, Any]]
+    loop: asyncio.AbstractEventLoop | None
+
+
 class TaskLogStore:
     def __init__(self, root_dir: str = "tasklog", tail_limit: int = 50) -> None:
         self.root_dir = Path(root_dir)
@@ -41,7 +50,7 @@ class TaskLogStore:
         self.specs_dir = self.root_dir / "specs"
         self.tail_limit = tail_limit
         self._tasks: dict[str, TaskRecord] = {}
-        self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
+        self._subscribers: dict[str, list[_TaskEventSubscriber | asyncio.Queue[dict[str, Any]]]] = {}
         self._lock = threading.Lock()
 
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -590,15 +599,28 @@ class TaskLogStore:
 
     def subscribe(self, task_id: str) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=256)
-        self._subscribers.setdefault(task_id, []).append(queue)
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            # 仅供同步测试和历史内部调用使用；生产 SSE 订阅始终绑定运行中的事件循环。
+            loop = None
+        subscriber = _TaskEventSubscriber(queue=queue, loop=loop)
+        with self._lock:
+            self._subscribers.setdefault(task_id, []).append(subscriber)
         return queue
 
     def unsubscribe(self, task_id: str, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        queues = self._subscribers.get(task_id, [])
-        if queue in queues:
-            queues.remove(queue)
-        if not queues:
-            self._subscribers.pop(task_id, None)
+        with self._lock:
+            subscribers = self._subscribers.get(task_id, [])
+            remaining = [
+                subscriber
+                for subscriber in subscribers
+                if (subscriber.queue if isinstance(subscriber, _TaskEventSubscriber) else subscriber) is not queue
+            ]
+            if remaining:
+                self._subscribers[task_id] = remaining
+            else:
+                self._subscribers.pop(task_id, None)
 
     def read_text(self, task_id: str, relative_path: str) -> str:
         return self._resolve_task_path(task_id, relative_path).read_text(encoding="utf-8")
@@ -647,8 +669,10 @@ class TaskLogStore:
 
     def _broadcast_event(self, task_id: str, event: TaskEvent) -> None:
         payload = event.model_dump(mode="json")
-        dead_queues: list[asyncio.Queue[dict[str, Any]]] = []
-        for queue in self._subscribers.get(task_id, []):
+        with self._lock:
+            subscribers = list(self._subscribers.get(task_id, []))
+
+        def deliver(queue: asyncio.Queue[dict[str, Any]]) -> None:
             try:
                 queue.put_nowait(payload)
             except asyncio.QueueFull:
@@ -657,7 +681,7 @@ class TaskLogStore:
                     task_id,
                     event.event_type,
                 )
-                dead_queues.append(queue)
+                self.unsubscribe(task_id, queue)
             except Exception:
                 logger.warning(
                     "任务事件广播失败 task_id=%s event_type=%s",
@@ -665,9 +689,21 @@ class TaskLogStore:
                     event.event_type,
                     exc_info=True,
                 )
-                dead_queues.append(queue)
-        for queue in dead_queues:
-            self.unsubscribe(task_id, queue)
+                self.unsubscribe(task_id, queue)
+
+        for subscriber in subscribers:
+            if isinstance(subscriber, _TaskEventSubscriber):
+                if subscriber.loop is None:
+                    deliver(subscriber.queue)
+                    continue
+                try:
+                    subscriber.loop.call_soon_threadsafe(deliver, subscriber.queue)
+                except RuntimeError:
+                    # 订阅请求已经结束，事件循环无法再接收投递。
+                    self.unsubscribe(task_id, subscriber.queue)
+                continue
+            # 兼容旧测试与历史调用方直接注入的队列。
+            deliver(subscriber)
 
     def _load_existing_tasks(self) -> None:
         loaded: dict[str, TaskRecord] = {}

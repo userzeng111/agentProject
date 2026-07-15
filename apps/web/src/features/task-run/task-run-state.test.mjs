@@ -7,10 +7,42 @@ import {
   buildThinkingGroups,
   buildWorkflowGraph,
   buildWorkflowOverview,
+  mergeWorkspaceEvents,
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
   resolveWorkspaceStageNav,
 } from "./task-run-state.mjs";
+
+test("mergeWorkspaceEvents 在快照刷新后保留实时思考片段并按事件 ID 去重", () => {
+  const events = mergeWorkspaceEvents(
+    [
+      {
+        event_id: "persisted-1",
+        event_type: "workflow.node.started",
+        created_at: "2026-07-15T10:00:00Z",
+        message: "开始节点",
+      },
+    ],
+    [
+      {
+        event_id: "thinking-1",
+        event_type: "model.thinking",
+        created_at: "2026-07-15T10:00:01Z",
+        message: "模型思考中",
+        payload: { reasoning_chunk: "分析" },
+      },
+      {
+        event_id: "persisted-1",
+        event_type: "workflow.node.started",
+        created_at: "2026-07-15T10:00:00Z",
+        message: "开始节点",
+      },
+    ],
+  );
+
+  assert.equal(events.length, 2);
+  assert.equal(events[1].event_id, "thinking-1");
+});
 
 test("buildChapterProgress 用 novel_progress 兜底显示已完成章节", () => {
   const items = buildChapterProgress([], {

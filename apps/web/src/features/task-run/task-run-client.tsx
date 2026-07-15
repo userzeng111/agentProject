@@ -47,6 +47,7 @@ import { formatModelRefreshStatus, resolveSelectionAfterRefresh } from "@/featur
 import {
   buildChapterProgress,
   buildThinkingGroups,
+  mergeWorkspaceEvents,
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
   resolveWorkspaceStageNav,
@@ -447,7 +448,13 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     setLoading(true);
     try {
       const nextWorkspace = await getWorkspace(resolvedTaskId);
-      setWorkspace(nextWorkspace);
+      setWorkspace((current) => ({
+        ...nextWorkspace,
+        recent_events: mergeWorkspaceEvents(
+          nextWorkspace.recent_events,
+          (current?.recent_events || []).filter((event) => event.event_type === "model.thinking"),
+        ),
+      }));
       setError("");
     } catch (refreshError) {
       setError(refreshError instanceof Error ? refreshError.message : "读取工作台失败");
@@ -485,6 +492,17 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           auto_review_model_mode: task.auto_review_model_mode || current.meta.auto_review_model_mode,
           review_model_id: task.review_model_id || current.meta.review_model_id,
         },
+      };
+    });
+  }, []);
+
+  const applyRealtimeTaskEvent = useCallback((event: WorkspaceEvent) => {
+    setWorkspace((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        recent_events: mergeWorkspaceEvents(current.recent_events, [event]),
+        active_trace_summary: event.message || current.active_trace_summary,
       };
     });
   }, []);
@@ -723,7 +741,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         if (refreshTimeout) return;
         refreshTimeout = setTimeout(() => {
           refreshTimeout = null;
-        }, 3000);
+        }, 250);
         void refreshWorkspace();
       };
       source.addEventListener("snapshot", handleRefresh);
@@ -731,6 +749,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         let manualTerminalState = "";
         try {
           const payload = JSON.parse((event as MessageEvent).data || "{}");
+          if (payload && typeof payload.event_type === "string" && typeof payload.message === "string") {
+            applyRealtimeTaskEvent(payload as WorkspaceEvent);
+          }
           manualTerminalState = resolveTerminalEventStreamState(payload?.event_type || "");
         } catch {
           manualTerminalState = "";
@@ -804,7 +825,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       source?.close();
       eventSourceRef.current = null;
     };
-  }, [resolvedTaskId, refreshWorkspace, workspace?.meta?.status]);
+  }, [resolvedTaskId, refreshWorkspace, workspace?.meta?.status, applyRealtimeTaskEvent]);
 
   // 全局前端错误捕获：窗口级错误与未处理 Promise 拒绝
   useEffect(() => {

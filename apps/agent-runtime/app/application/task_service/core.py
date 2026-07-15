@@ -498,6 +498,7 @@ class TaskServiceCoreMixin:
             draft_result=draft_result,
             normalized_spec=values.get("normalized_spec") if isinstance(values.get("normalized_spec"), dict) else {},
         )
+        self._validate_completed_draft_result(story_plan, draft_result)
         artifacts = self._build_artifacts(story_plan, draft_result)
         auto_review_trace = values.get("auto_review_trace") or []
         record = self.store.set_completed(task_id, story_plan, draft_result, artifacts)
@@ -523,7 +524,7 @@ class TaskServiceCoreMixin:
     ) -> DraftResult:
         planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
         if planned_total <= 0:
-            return draft_result
+            raise RuntimeError("正文完成前缺少有效章节计划。")
 
         current_chapters = self.get_current_chapters(task_id)
         if len(current_chapters) >= planned_total and len(current_chapters) > len(draft_result.chapters):
@@ -539,6 +540,21 @@ class TaskServiceCoreMixin:
                 f"正文结果章节数不足：当前 {len(draft_result.chapters)} 章，计划 {planned_total} 章。"
             )
         return draft_result
+
+    @staticmethod
+    def _validate_completed_draft_result(story_plan: StoryPlan, draft_result: DraftResult) -> None:
+        planned_total = int(story_plan.planned_chapter_count or len(story_plan.chapter_plan) or 0)
+        if planned_total <= 0:
+            raise RuntimeError("正文完成前缺少有效章节计划。")
+        if len(draft_result.chapters) != planned_total:
+            raise RuntimeError(
+                f"正文结果章节数不匹配：当前 {len(draft_result.chapters)} 章，计划 {planned_total} 章。"
+            )
+        for expected_number, chapter in enumerate(draft_result.chapters, start=1):
+            if chapter.number != expected_number:
+                raise RuntimeError("正文结果章节编号不连续，不能标记任务完成。")
+            if not chapter.content.strip():
+                raise RuntimeError(f"第 {expected_number} 章正文为空，不能标记任务完成。")
 
     def _build_draft_result_from_chapters(
         self,

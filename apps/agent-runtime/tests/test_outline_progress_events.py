@@ -37,6 +37,13 @@ def test_auto_outline_review_emits_progress_events() -> None:
                 },
                 "outline_revision_count": 0,
                 "outline_phase": "chapter_batches",
+                "outline_batch_index": 0,
+                "outline_batch_size": 20,
+                "outline_total_count": 2,
+                "current_batch_chapter_plans": [
+                    {"number": 1, "title": "初遇", "goal": "建立关系"},
+                    {"number": 2, "title": "靠近", "goal": "解决误会"},
+                ],
                 "auto_review_trace": [],
             },
             auto_review_executor_available=True,
@@ -61,7 +68,7 @@ def test_auto_outline_review_emits_progress_events() -> None:
         "outline.review.started",
         "outline.review.completed",
     ]
-    assert events[0]["stage"] == "waiting_outline_review"
+    assert events[0]["stage"] == "planning"
     assert events[0]["unit_id"] == "outline-chapter-batches"
     assert events[1]["payload"]["score"] == 86
     assert events[1]["payload"]["approved"] is True

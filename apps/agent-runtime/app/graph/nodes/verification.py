@@ -14,8 +14,11 @@ def verify_full_story(
     *,
     engine: Any,
 ) -> WorkflowState:
+    completed_chapters = state.get("completed_chapters") or []
+    if not completed_chapters:
+        raise ValueError("尚未生成任何正文，不能执行全文验证。")
     report = engine.verify_full_story(
-        completed_chapters=state.get("completed_chapters") or [],
+        completed_chapters=completed_chapters,
         story_plan=state.get("story_plan") or {},
         spec=state["normalized_spec"],
         reference_text=state.get("reference_text", ""),
@@ -125,12 +128,15 @@ def fix_verified_issues(
     *,
     engine: Any,
 ) -> WorkflowState:
+    completed_chapters = state.get("completed_chapters") or []
+    if not completed_chapters:
+        raise ValueError("没有可修复的正文，不能执行验证修订。")
     revision_count = state.get("verification_revision_count", 0) + 1
     if revision_count >= MAX_VERIFICATION_REVISIONS:
         return {"approved": True, "review_comment": state.get("review_comment", "")}
 
     fixed = engine.fix_verified_issues(
-        completed_chapters=state.get("completed_chapters") or [],
+        completed_chapters=completed_chapters,
         verification_report=state.get("verification_report") or {},
         review_comment=state.get("review_comment", ""),
         story_plan=state.get("story_plan") or {},

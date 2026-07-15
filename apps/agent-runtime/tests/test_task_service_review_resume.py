@@ -863,6 +863,30 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(stable_option.preview.target_stage_label, "恢复到第 4 章待生成")
         self.assertEqual(stable_option.preview.target_chapter_number, 4)
 
+    def test_active_background_run_never_exposes_recovery_actions(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="自动审核仍在执行中",
+                model_id="gpt-5.4",
+            )
+        )
+        task.status = TaskStatus.PLANNING
+        task.current_stage = "planning"
+        store.save(task)
+        service._active_runs.add(task.id)
+        self.addCleanup(service._active_runs.discard, task.id)
+
+        workspace = service.get_workspace(task.id)
+
+        self.assertEqual(workspace.allowed_actions, [])
+        self.assertEqual(workspace.recommended_action, "")
+        self.assertTrue(all(not item.available for item in workspace.recovery_options or []))
+        self.assertIn("正在后台执行", workspace.blocked_reason)
+
     def test_current_generating_chapter_number_falls_back_to_requested_start_when_no_new_chapter_event(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)

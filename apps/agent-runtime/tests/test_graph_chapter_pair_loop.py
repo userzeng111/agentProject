@@ -182,7 +182,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         seventh = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(seventh["__interrupt__"][0].value["type"], "verification_review")
 
-    def test_graph_uses_actual_chapter_plan_length_when_planned_count_is_larger(self) -> None:
+    def test_graph_blocks_drafting_when_chapter_plan_is_shorter_than_declared_count(self) -> None:
         engine = FakeMismatchedPlanEngine()
         callbacks = build_default_callbacks(
             engine,
@@ -216,23 +216,14 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         second = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
         self.assertEqual(second["__interrupt__"][0].value["type"], "outline_review")
 
-        # 章节计划批次审核通过
+        # 首批章节计划审核通过后，仍会继续补齐缺失章节计划，不能直接进入正文。
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 0)
+        self.assertEqual(third["__interrupt__"][0].value["type"], "outline_review")
+        self.assertEqual(third["__interrupt__"][0].value["outline_batch"]["batch_index"], 3)
+        self.assertEqual(third["__interrupt__"][0].value["outline_batch"]["current_batch_plans"], [])
 
-        fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
-        self.assertEqual(len(fourth["__interrupt__"][0].value["chapter_pair"]), 1)
-
-        fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fifth["__interrupt__"][0].value["type"], "verification_review")
-
-        final_result = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertNotIn("__interrupt__", final_result)
-        self.assertEqual(engine.generated_batch_indexes, [0, 2])
-        self.assertEqual(len(final_result["draft_result"]["chapters"]), 3)
+        with self.assertRaisesRegex(ValueError, "章节计划批次为空"):
+            graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
 
 
 if __name__ == "__main__":

@@ -380,6 +380,34 @@ class TaskServiceRecoveryMixin:
         *,
         reconciliation: dict[str, Any],
     ) -> dict[str, Any]:
+        with self._run_lock:
+            active_run = task.id in self._active_runs
+        if active_run:
+            unavailable_reason = "任务正在后台执行中，请等待当前步骤完成后再判断是否需要恢复。"
+            return {
+                "allowed_actions": [],
+                "recommended_action": "",
+                "blocked_reason": unavailable_reason,
+                "state_reconciled": bool(reconciliation.get("state_reconciled")),
+                "reconciliation_kind": str(reconciliation.get("reconciliation_kind") or ""),
+                "reconciliation_summary": str(reconciliation.get("reconciliation_summary") or ""),
+                "recovery_options": [
+                    RecoveryOption(
+                        action="recover_to_stable",
+                        label="回填最近稳定阶段",
+                        kind="primary",
+                        available=False,
+                        reason_unavailable=unavailable_reason,
+                    ),
+                    RecoveryOption(
+                        action="restart_from_input",
+                        label="按原始输入重新开始",
+                        kind="secondary",
+                        available=False,
+                        reason_unavailable=unavailable_reason,
+                    ),
+                ],
+            }
         stable_preview = self._preview_recover_to_stable(task)
         restart_preview = self._preview_restart_from_input(task)
 
