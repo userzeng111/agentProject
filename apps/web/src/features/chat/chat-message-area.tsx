@@ -1,7 +1,12 @@
 "use client";
 
-import { Box, Chip, Collapse, Stack, Typography } from "@mui/material";
-import { Psychology as ThinkIcon, SmartToy as BotIcon, Person as UserIcon } from "@mui/icons-material";
+import { Box, Button, Chip, Collapse, Stack, Typography } from "@mui/material";
+import {
+  ExpandMore as ExpandMoreIcon,
+  Psychology as ThinkIcon,
+  SmartToy as BotIcon,
+  Person as UserIcon,
+} from "@mui/icons-material";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -16,6 +21,22 @@ interface ChatMessage {
     runId?: string;
   };
 }
+
+const compactMetadataChipSx = {
+  alignSelf: "flex-start",
+  width: "fit-content",
+  height: "auto",
+  maxWidth: "100%",
+  fontSize: "0.72rem",
+  "& .MuiChip-label": {
+    display: "block",
+    py: 0.35,
+    whiteSpace: "normal",
+    overflowWrap: "anywhere",
+    wordBreak: "break-word",
+    lineHeight: 1.35,
+  },
+};
 
 export default function ChatMessageArea({
   messages,
@@ -46,9 +67,17 @@ export default function ChatMessageArea({
       aria-live="polite"
       aria-label="聊天消息"
     >
-      {messages.map((msg, index) => (
-        <Box key={index} sx={{ maxWidth: "100%", alignSelf: msg.role === "user" ? "flex-end" : "flex-start", minWidth: 0 }}>
-          <Stack spacing={0.5} sx={{ minWidth: 0 }}>
+      {messages.map((msg, index) => {
+        const isThinkingExpanded = expandedThinking[index] ?? false;
+        const thinkingButtonId = `chat-thinking-toggle-${index}`;
+        const thinkingContentId = `chat-thinking-content-${index}`;
+        const hasMetadata =
+          (msg.tokens != null && msg.tokens > 0) ||
+          (msg.validation_meta != null && msg.validation_meta.reasoningSignal !== undefined);
+
+        return (
+          <Box key={index} sx={{ maxWidth: "100%", alignSelf: msg.role === "user" ? "flex-end" : "flex-start", minWidth: 0 }}>
+            <Stack spacing={0.5} sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={0.5} alignItems="center">
               {msg.role === "assistant" ? (
                 <BotIcon sx={{ fontSize: 16, color: "primary.main" }} />
@@ -62,49 +91,96 @@ export default function ChatMessageArea({
             </Stack>
 
             {/* 思考链 */}
-            {msg.reasoning_content ? (
-              <Box>
-                <Stack
-                  direction="row"
-                  spacing={0.5}
-                  alignItems="center"
-                  onClick={() => onToggleThinking(index)}
-                  sx={{ cursor: "pointer", userSelect: "none", py: 0.25 }}
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={expandedThinking[index] ?? false}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggleThinking(index); } }}
-                >
-                  <ThinkIcon sx={{ fontSize: 14, color: "text.secondary" }} />
-                  <Typography variant="caption" color="text.secondary">
-                    {msg.isThinking ? "思考中..." : "思考过程"}
-                  </Typography>
-                </Stack>
-                <Collapse in={expandedThinking[index] ?? false}>
-                  <Typography
-                    variant="caption"
-                    color="text.secondary"
+              {msg.reasoning_content ? (
+                <Box sx={{ alignSelf: "flex-start", maxWidth: "100%", minWidth: 0 }}>
+                  <Button
+                    id={thinkingButtonId}
+                    type="button"
+                    size="small"
+                    variant="text"
+                    startIcon={<ThinkIcon sx={{ fontSize: 16 }} />}
+                    endIcon={
+                      <ExpandMoreIcon
+                        sx={{
+                          fontSize: 18,
+                          transform: isThinkingExpanded ? "rotate(180deg)" : "rotate(0deg)",
+                          transition: "transform 180ms ease",
+                        }}
+                      />
+                    }
+                    aria-expanded={isThinkingExpanded}
+                    aria-controls={thinkingContentId}
+                    aria-busy={msg.isThinking || undefined}
+                    data-testid="chat-thinking-toggle"
+                    onClick={() => onToggleThinking(index)}
                     sx={{
-                      display: "block",
-                      fontFamily: "monospace",
-                      whiteSpace: "pre-wrap",
+                      alignSelf: "flex-start",
+                      justifyContent: "flex-start",
+                      minWidth: 0,
+                      minHeight: { xs: 44, sm: 32 },
+                      maxWidth: "100%",
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: 1.25,
+                      border: "1px solid",
+                      borderColor: "divider",
+                      bgcolor: "background.paper",
+                      color: "text.secondary",
                       fontSize: "0.75rem",
-                      lineHeight: 1.6,
-                      p: 1,
-                      borderRadius: 1,
-                      bgcolor: "action.hover",
+                      lineHeight: 1.4,
+                      "&:hover": { bgcolor: "action.hover" },
+                      "&.Mui-focusVisible": {
+                        outline: "2px solid",
+                        outlineColor: "primary.main",
+                        outlineOffset: 2,
+                        bgcolor: "action.focus",
+                      },
                     }}
                   >
-                    {msg.reasoning_content}
-                  </Typography>
-                </Collapse>
-              </Box>
-            ) : null}
+                    {msg.isThinking ? "正在思考" : "思考过程"}
+                  </Button>
+                  <Collapse in={isThinkingExpanded} timeout={180}>
+                    <Box
+                      id={thinkingContentId}
+                      role="region"
+                      aria-labelledby={thinkingButtonId}
+                      data-testid="chat-thinking-content"
+                      sx={{
+                        mt: 0.5,
+                        maxWidth: "min(100%, 48rem)",
+                        minWidth: 0,
+                        p: { xs: 0.75, sm: 1 },
+                        border: "1px solid",
+                        borderColor: "divider",
+                        borderRadius: 1.5,
+                        bgcolor: "background.paper",
+                      }}
+                    >
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{
+                          display: "block",
+                          fontFamily: "monospace",
+                          whiteSpace: "pre-wrap",
+                          overflowWrap: "anywhere",
+                          wordBreak: "break-word",
+                          fontSize: { xs: "0.8125rem", sm: "0.75rem" },
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        {msg.reasoning_content}
+                      </Typography>
+                    </Box>
+                  </Collapse>
+                </Box>
+              ) : null}
 
             {/* 消息正文 */}
             {msg.content ? (
               <Typography
                 variant="body2"
+                data-testid="chat-message-content"
                 sx={{
                   whiteSpace: "pre-wrap",
                   overflowWrap: "anywhere",
@@ -123,25 +199,49 @@ export default function ChatMessageArea({
                 {msg.content}
               </Typography>
             ) : null}
-            {msg.tokens != null && msg.tokens > 0 && (
-              <Chip size="small" label={`${msg.tokens} tokens`} sx={{ mt: 0.5, fontSize: "0.7rem" }} />
-            )}
-            {msg.validation_meta && msg.validation_meta.reasoningSignal !== undefined ? (
-              <Chip
-                size="small"
-                color={msg.validation_meta.reasoningSignal ? "info" : "default"}
-                variant="outlined"
-                label={
-                  msg.validation_meta.reasoningSignal
-                    ? `推理信号元数据：累计 ${msg.validation_meta.reasoningChars ?? 0} 字符`
-                    : "推理信号元数据：暂未收到"
-                }
-                sx={{ mt: 0.5, fontSize: "0.7rem" }}
-              />
-            ) : null}
-          </Stack>
-        </Box>
-      ))}
+              {hasMetadata ? (
+                <Box
+                  data-testid="chat-message-metadata"
+                  sx={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "flex-start",
+                    alignSelf: "flex-start",
+                    gap: 0.5,
+                    mt: 0.5,
+                    width: "fit-content",
+                    maxWidth: "100%",
+                    minWidth: 0,
+                  }}
+                >
+                  {msg.tokens != null && msg.tokens > 0 ? (
+                    <Chip
+                      data-testid="chat-token-usage"
+                      size="small"
+                      label={`${msg.tokens} tokens`}
+                      sx={compactMetadataChipSx}
+                    />
+                  ) : null}
+                  {msg.validation_meta && msg.validation_meta.reasoningSignal !== undefined ? (
+                    <Chip
+                      data-testid="chat-validation-metadata"
+                      size="small"
+                      color={msg.validation_meta.reasoningSignal ? "info" : "default"}
+                      variant="outlined"
+                      label={
+                        msg.validation_meta.reasoningSignal
+                          ? `推理信号元数据：累计 ${msg.validation_meta.reasoningChars ?? 0} 字符`
+                          : "推理信号元数据：暂未收到"
+                      }
+                      sx={compactMetadataChipSx}
+                    />
+                  ) : null}
+                </Box>
+              ) : null}
+            </Stack>
+          </Box>
+        );
+      })}
       <div ref={messagesEndRef} />
     </Box>
   );

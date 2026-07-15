@@ -280,6 +280,10 @@ test.describe("聊天与设置页面", () => {
     await requestStarted;
 
     try {
+      const isMobile = await page.evaluate(() => window.matchMedia("(max-width: 599.95px)").matches);
+      if (isMobile) {
+        await page.getByRole("button", { name: "打开会话列表" }).click();
+      }
       await page
         .getByRole("list", { name: "会话列表" })
         .getByRole("button", { name: /旧问题/ })
@@ -336,6 +340,15 @@ test.describe("聊天与设置页面", () => {
     await page.getByRole("button", { name: "发送消息" }).click();
 
     await expect(page.getByText(`回复${longToken}`)).toBeVisible();
+    const tokenUsage = page.getByTestId("chat-token-usage");
+    const messageContent = page.getByTestId("chat-message-content").last();
+    await expect(tokenUsage).toHaveText("42 tokens");
+    const tokenWidth = await tokenUsage.boundingBox();
+    const messageWidth = await messageContent.boundingBox();
+    expect(tokenWidth, "token 用量应保持为紧凑元数据").not.toBeNull();
+    expect(messageWidth, "助手消息正文应可见").not.toBeNull();
+    expect(tokenWidth!.width, "token 用量不应撑满消息列").toBeLessThan(messageWidth!.width);
+
     const thinkingButton = page.getByRole("button", { name: /思考过程|正在思考/ });
     await expect(thinkingButton).toBeVisible();
     await expect(thinkingButton).toHaveAttribute("aria-expanded", "false");
@@ -408,36 +421,95 @@ test.describe("聊天与设置页面", () => {
     await expectNoHorizontalOverflow(page);
   });
 
-  test("设置页展示 RAG 状态并允许取消重建确认", async ({ page }) => {
+  test("设置页在增量不可用时引导显式全量重建", async ({ page }) => {
     await mockCommonApiRoutes(page);
+    let startRequests = 0;
+    await page.route("**/api/settings/rag/plans", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ mode: "incremental" });
+      await route.fulfill({
+        json: {
+          plan_id: "",
+          mode: "incremental",
+          state: "full_rebuild_required",
+          can_start: false,
+          reason_code: "manifest_missing",
+          reason: "现有索引缺少增量清单，请显式执行全量重建。",
+          confirmation: { required: false },
+        },
+      });
+    });
+    await page.route("**/api/settings/rag/jobs", async (route) => {
+      startRequests += 1;
+      await route.fulfill({ status: 500, json: { detail: "不应创建作业" } });
+    });
     await page.goto("/settings", { waitUntil: "commit" });
     await expect(page.getByText("小说 RAG 数据库")).toBeVisible();
     await expect(page.getByText(/数据库可用|尚未构建/)).toBeVisible();
-    page.once("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("确认全量扫描");
-      await dialog.dismiss();
-    });
-    await page.getByRole("button", { name: /全量重建索引/ }).click();
-    await expect(page.getByText("模型协议配置")).toBeVisible();
+    await page.getByTestId("rag-incremental-sync").click();
+    await expect(page.getByText("现有索引缺少增量清单，请显式执行全量重建。")).toBeVisible();
+    expect(startRequests).toBe(0);
   });
 
-  test("设置页允许确认重建索引并保存模型协议", async ({ page }) => {
+  test("设置页仅在确认全量重建后创建后台作业并保存模型协议", async ({ page }) => {
     await mockCommonApiRoutes(page);
     let rebuildRequests = 0;
     let protocolRequests = 0;
-    await page.route("**/api/settings/rag/rebuild", async (route) => {
-      rebuildRequests += 1;
+    await page.route("**/api/settings/rag/plans", async (route) => {
+      expect(route.request().postDataJSON()).toEqual({ mode: "full" });
       await route.fulfill({
         json: {
-          success: true,
-          message: "重建完成 fixture",
-          scanned_files: 2,
-          indexed_documents: 3,
-          output_dir: "/tmp/rag",
-          duration_ms: 12,
-          sources: ["fixture"],
-          warnings: [],
-          finished_at: "2026-06-24T00:00:00.000Z",
+          plan_id: "rag_plan_fixture",
+          mode: "full",
+          state: "ready",
+          can_start: true,
+          summary: { scanned_sources: 2, embedded_documents: 3 },
+          confirmation: { required: true, token: "confirm_fixture" },
+        },
+      });
+    });
+    await page.route("**/api/settings/rag/jobs/rag_job_fixture", async (route) => {
+      await route.fulfill({
+        json: {
+          job_id: "rag_job_fixture",
+          mode: "full",
+          status: "succeeded",
+          phase: "completed",
+          phase_label: "同步完成",
+          progress: 100,
+          result: {
+            success: true,
+            message: "同步完成 fixture",
+            scanned_files: 2,
+            indexed_documents: 3,
+            sync_mode: "full",
+            embedded_documents: 3,
+            reused_documents: 0,
+            output_dir: "/tmp/rag",
+            duration_ms: 12,
+            sources: ["fixture"],
+            warnings: [],
+            finished_at: "2026-06-24T00:00:00.000Z",
+          },
+        },
+      });
+    });
+    await page.route("**/api/settings/rag/jobs", async (route) => {
+      rebuildRequests += 1;
+      expect(route.request().postDataJSON()).toMatchObject({
+        plan_id: "rag_plan_fixture",
+        mode: "full",
+        confirmation_token: "confirm_fixture",
+      });
+      await route.fulfill({
+        status: 202,
+        json: {
+          job_id: "rag_job_fixture",
+          mode: "full",
+          status: "queued",
+          phase: "queued",
+          phase_label: "等待后台工作线程启动",
+          progress: 0,
+          poll_after_ms: 1,
         },
       });
     });
@@ -449,16 +521,42 @@ test.describe("聊天与设置页面", () => {
     });
 
     await page.goto("/settings", { waitUntil: "commit" });
-    page.once("dialog", async (dialog) => {
-      expect(dialog.message()).toContain("确认全量扫描");
-      await dialog.accept();
-    });
-    await page.getByRole("button", { name: /全量重建索引/ }).click();
-    await expect.poll(() => rebuildRequests, { message: "确认重建应请求 rebuild API" }).toBe(1);
+    await page.getByTestId("rag-full-rebuild").click();
+    await expect(page.getByRole("dialog", { name: "确认全量重建 RAG 索引？" })).toBeVisible();
+    expect(rebuildRequests).toBe(0);
+    await page.getByRole("button", { name: "确认全量重建" }).click();
+    await expect.poll(() => rebuildRequests, { message: "确认后应请求后台作业 API" }).toBe(1);
+    await expect(page.getByText("同步完成 fixture")).toBeVisible();
 
     await page.getByLabel("协议").click();
     await page.getByRole("option", { name: "Anthropic" }).click();
     await expect.poll(() => protocolRequests, { message: "协议选择应请求保存接口" }).toBe(1);
     await expect(page.getByText("已保存：gpt-5.4 → anthropic")).toBeVisible();
+  });
+
+  test("设置页全量作业创建失败时保留确认弹窗以便重试", async ({ page }) => {
+    await mockCommonApiRoutes(page);
+    await page.route("**/api/settings/rag/plans", async (route) => {
+      await route.fulfill({
+        json: {
+          plan_id: "rag_plan_retry_fixture",
+          mode: "full",
+          state: "ready",
+          can_start: true,
+          confirmation: { required: true, token: "confirm_retry_fixture" },
+        },
+      });
+    });
+    await page.route("**/api/settings/rag/jobs", async (route) => {
+      await route.fulfill({ status: 409, json: { detail: "已有 RAG 同步任务正在运行，请等待其完成。" } });
+    });
+
+    await page.goto("/settings", { waitUntil: "commit" });
+    await page.getByTestId("rag-full-rebuild").click();
+    const dialog = page.getByRole("dialog", { name: "确认全量重建 RAG 索引？" });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "确认全量重建" }).click();
+    await expect(page.getByText("已有 RAG 同步任务正在运行，请等待其完成。")).toBeVisible();
+    await expect(dialog).toBeVisible();
   });
 });

@@ -290,6 +290,10 @@ export async function mockCommonApiRoutes(page: Page) {
     await route.fulfill({ json: { model_id: "gpt-5.4", status: "unverified" } });
   });
   await page.route("**/api/settings/rag**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/settings/rag/jobs/current")) {
+      await route.fulfill({ json: null });
+      return;
+    }
     await route.fulfill({
       json: {
         available: true,

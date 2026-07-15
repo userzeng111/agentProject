@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Any
 
 from app.observability import get_logger
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from app.domain.models import ChatRequest, ContinueDraftRequest, RecoveryRequest, ResumeRequest, RollbackChapterPlanRequest, TaskActionRequest, TaskCreateRequest
 from app.storage.task_store import TaskNotFoundError
@@ -34,6 +35,7 @@ def build_router(
     chat_service=None,
     rag_service=None,
     rag_rebuild_service=None,
+    rag_sync_job_service=None,
     style_profile_service=None,
     novel_skill_service=None,
     settings=None,
@@ -196,22 +198,70 @@ def build_router(
 
     @router.post("/settings/rag/rebuild")
     def rebuild_rag_library():
-        if rag_rebuild_service is None:
-            raise HTTPException(status_code=503, detail="RAG 重建服务未配置。")
+        # 旧接口曾在请求线程内完整嵌入，常被浏览器 30 秒超时取消。明确下线，
+        # 防止遗留调用悄悄再次触发全量构建。
+        raise HTTPException(
+            status_code=410,
+            detail="RAG 同步接口已升级；请先 POST /settings/rag/plans，再 POST /settings/rag/jobs 并轮询作业状态。",
+        )
+
+    @router.post("/settings/rag/plans")
+    def create_rag_sync_plan(payload: dict[str, Any]):
+        if rag_sync_job_service is None:
+            raise HTTPException(status_code=503, detail="RAG 同步服务未配置。")
+        mode = str(payload.get("mode") or "").strip()
         try:
-            return rag_rebuild_service.rebuild()
-        except Exception:
-            logger.exception("RAG 重建失败 available=%s", rag_rebuild_service is not None)
-            return {
-                "success": False,
-                "message": "RAG 重建失败，请检查配置或稍后重试。",
-                "scanned_files": 0,
-                "indexed_documents": 0,
-                "output_dir": "",
-                "duration_ms": 0,
-                "sources": [],
-                "warnings": [],
-            }
+            return rag_sync_job_service.create_plan(mode)
+        except Exception as exc:
+            logger.exception("RAG 同步预检失败 mode=%s", mode)
+            raise _handle_error(exc) from exc
+
+    @router.post("/settings/rag/jobs")
+    def create_rag_sync_job(payload: dict[str, Any]):
+        if rag_sync_job_service is None:
+            raise HTTPException(status_code=503, detail="RAG 同步服务未配置。")
+        from app.rag.sync_jobs import (
+            RagSyncBusyError,
+            RagSyncConfirmationError,
+            RagSyncPlanNotFoundError,
+        )
+
+        mode = str(payload.get("mode") or "").strip()
+        plan_id = str(payload.get("plan_id") or "").strip()
+        idempotency_key = str(payload.get("idempotency_key") or "").strip()
+        confirmation_token = payload.get("confirmation_token")
+        if confirmation_token is not None:
+            confirmation_token = str(confirmation_token)
+        try:
+            job, created = rag_sync_job_service.create_job(
+                plan_id=plan_id,
+                mode=mode,
+                idempotency_key=idempotency_key,
+                confirmation_token=confirmation_token,
+            )
+        except RagSyncBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (RagSyncPlanNotFoundError, RagSyncConfirmationError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("创建 RAG 同步作业失败 mode=%s", mode)
+            raise _handle_error(exc) from exc
+        return JSONResponse(status_code=202 if created else 200, content=job)
+
+    @router.get("/settings/rag/jobs/current")
+    def get_current_rag_sync_job():
+        if rag_sync_job_service is None:
+            raise HTTPException(status_code=503, detail="RAG 同步服务未配置。")
+        return rag_sync_job_service.get_current_job()
+
+    @router.get("/settings/rag/jobs/{job_id}")
+    def get_rag_sync_job(job_id: str):
+        if rag_sync_job_service is None:
+            raise HTTPException(status_code=503, detail="RAG 同步服务未配置。")
+        job = rag_sync_job_service.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="RAG 同步任务不存在。")
+        return job
 
     @router.get("/style-profiles")
     def list_style_profiles():

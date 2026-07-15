@@ -194,7 +194,7 @@ test.describe("审核、结果、归档页面", () => {
     await page.waitForFunction(() => window.location.pathname === "/");
   });
 
-  test("结果页展示摘要、正文区、按章阅读器和章节索引", async ({ page }) => {
+  test("结果页展示摘要、按章阅读器和章节索引，不重复展示全文", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.addInitScript(() => {
       window.localStorage.setItem("theme-mode", "dark");
@@ -228,6 +228,7 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByTestId("stage-nav").locator('[data-stage-state="current"]')).toContainText("结果");
     await expect(page.getByRole("heading", { name: "生成结果" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "结果摘要" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "正文内容", exact: true })).toHaveCount(0);
     const reader = page.getByTestId("novel-reader");
     await expect(reader).toBeVisible();
     await expect(reader.getByTestId("novel-reader-content")).toContainText("第一章正文占位");
@@ -257,6 +258,10 @@ test.describe("审核、结果、归档页面", () => {
     await expect(page.getByRole("button", { name: "导出 MD" })).toBeVisible();
     await page.getByRole("button", { name: "复制全文" }).click();
     await expect(page.getByText(/已复制到剪贴板|复制失败/)).toBeVisible();
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出 MD" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe("结果测试任务.md");
     await expect(page.getByRole("heading", { name: "章节索引" })).toBeVisible();
   });
 

@@ -803,11 +803,72 @@ export interface RagSyncResult {
   message: string;
   scanned_files: number;
   indexed_documents: number;
+  sync_mode?: "full" | "incremental" | "noop";
+  embedded_documents?: number;
+  reused_documents?: number;
+  added_sources?: number;
+  changed_sources?: number;
+  deleted_sources?: number;
+  removed_documents?: number;
   output_dir: string;
   duration_ms: number;
   finished_at?: string;
   sources: string[];
   warnings: string[];
+}
+
+export type RagSyncMode = "incremental" | "full";
+
+export type RagSyncPlanState = "ready" | "noop" | "full_rebuild_required" | "invalid" | "expired";
+
+export interface RagSyncSummary {
+  scanned_sources?: number;
+  added_sources?: number;
+  changed_sources?: number;
+  deleted_sources?: number;
+  embedded_documents?: number;
+  reused_documents?: number;
+  removed_documents?: number;
+  indexed_documents?: number;
+}
+
+export interface RagSyncPlan {
+  plan_id: string;
+  mode: RagSyncMode;
+  state: RagSyncPlanState;
+  can_start: boolean;
+  reason_code?: string | null;
+  reason?: string | null;
+  expires_at?: string;
+  summary?: RagSyncSummary;
+  confirmation?: {
+    required?: boolean;
+    token?: string;
+    expires_at?: string;
+  };
+}
+
+export type RagSyncJobStatus = "queued" | "running" | "succeeded" | "failed" | "interrupted";
+
+export interface RagSyncJob {
+  job_id: string;
+  mode: RagSyncMode;
+  status: RagSyncJobStatus;
+  phase: string;
+  phase_label?: string;
+  progress?: number | {
+    completed?: number;
+    total?: number;
+  };
+  result?: RagSyncResult;
+  error?: {
+    code?: string;
+    message?: string;
+    phase?: string;
+  };
+  poll_after_ms?: number;
+  started_at?: string;
+  finished_at?: string;
 }
 
 export interface RagSettingsStatus {
@@ -817,4 +878,11 @@ export interface RagSettingsStatus {
   sqlite_path: string;
   sources: string[];
   last_result?: RagSyncResult | null;
+  active_sync_job?: RagSyncJob | null;
+  sync_capability?: {
+    incremental_ready?: boolean;
+    reason_code?: string | null;
+    reason?: string | null;
+    suggested_mode?: RagSyncMode;
+  };
 }

@@ -419,7 +419,7 @@ export default function CreateTaskClient() {
 
   const handleSubmit = async () => {
     if (!ragStatus?.available) {
-      setError("当前小说知识库尚未构建，请先前往设置页完成全量重建索引。");
+      setError("当前小说知识库尚未构建，请先前往设置页完成索引同步。");
       return;
     }
     if (!selectedModel || !isNovelTaskModelSupported(selectedModel)) {
@@ -492,7 +492,7 @@ export default function CreateTaskClient() {
             </Button>
           }
         >
-          当前小说知识库未构建，请先前往设置页完成全量重建索引，再开始创作。
+          当前小说知识库未构建，请先前往设置页完成索引同步，再开始创作。
         </Alert>
       ) : null}
 

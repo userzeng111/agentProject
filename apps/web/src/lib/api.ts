@@ -9,9 +9,11 @@ import {
   DashboardResponse,
   RecoverTaskPayload,
   ResultResponse,
+  RagSyncJob,
+  RagSyncMode,
+  RagSyncPlan,
   ReviewResponse,
   RagSettingsStatus,
-  RagSyncResult,
   StyleProfileListResponse,
   TaskActionPayload,
   TaskCreatePayload,
@@ -209,10 +211,31 @@ export function getRagSettings() {
   return request<RagSettingsStatus>("/api/settings/rag");
 }
 
-export function rebuildRagLibrary() {
-  return request<RagSyncResult>("/api/settings/rag/rebuild", {
+export function createRagSyncPlan(mode: RagSyncMode) {
+  return request<RagSyncPlan>("/api/settings/rag/plans", {
     method: "POST",
+    body: JSON.stringify({ mode }),
   });
+}
+
+export function startRagSyncJob(payload: {
+  plan_id: string;
+  mode: RagSyncMode;
+  idempotency_key: string;
+  confirmation_token?: string;
+}) {
+  return request<RagSyncJob>("/api/settings/rag/jobs", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getCurrentRagSyncJob() {
+  return request<RagSyncJob | null>("/api/settings/rag/jobs/current");
+}
+
+export function getRagSyncJob(jobId: string) {
+  return request<RagSyncJob>(`/api/settings/rag/jobs/${encodeURIComponent(jobId)}`);
 }
 
 export function uploadAsset(taskId: string, file: File) {

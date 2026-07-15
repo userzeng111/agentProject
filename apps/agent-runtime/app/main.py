@@ -19,6 +19,7 @@ from app.llm.story_engine import StoryEngine
 from app.novel_skills import NovelSkillService
 from app.observability import TracingMiddleware, init_logging
 from app.rag import NovelCorpusRebuildService, RagConfig, RagService
+from app.rag.sync_jobs import RagSyncJobService
 from app.services import ChatService
 from app.settings.config import get_settings
 from app.static_files import resolve_spa_static_file
@@ -150,6 +151,7 @@ model_catalog = ModelCatalogService(
 )
 rag_service = RagService(RagConfig.from_env())
 rag_rebuild_service = NovelCorpusRebuildService(RagConfig.from_env())
+rag_sync_job_service = RagSyncJobService(rag_rebuild_service)
 style_profile_service = StyleProfileService()
 novel_skill_service = NovelSkillService(style_profile_service=style_profile_service)
 auto_review_policy = {
@@ -188,6 +190,7 @@ async def close_gateway_clients() -> None:
     gateway_client = getattr(engine, "gateway_client", None)
     if gateway_client is not None and hasattr(gateway_client, "aclose"):
         await gateway_client.aclose()
+    rag_sync_job_service.close()
 
 # 请求追踪中间件（放在最外层，确保捕获所有请求）
 app.add_middleware(TracingMiddleware)
@@ -224,6 +227,7 @@ app.include_router(
         chat_service=chat_service,
         rag_service=rag_service,
         rag_rebuild_service=rag_rebuild_service,
+        rag_sync_job_service=rag_sync_job_service,
         novel_skill_service=novel_skill_service,
         style_profile_service=style_profile_service,
         settings=settings,

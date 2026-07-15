@@ -20,7 +20,6 @@ import {
 import { archiveTask, fetchTextRef, getApiBase, getResult } from "@/lib/api";
 import { projectViewHref, workspaceHref } from "@/lib/task-routes";
 import { ResultResponse } from "@/lib/types";
-import MarkdownContent from "@/components/markdown-content";
 import { NovelReader } from "@/components/novel-reader";
 import { ProjectShell } from "@/components/project-shell";
 import { StageNav } from "@/components/stage-nav";
@@ -168,6 +167,16 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
       ]}
       actions={
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+          {resultMarkdown ? (
+            <>
+              <Button size="small" variant="outlined" onClick={() => void handleCopy()}>
+                复制全文
+              </Button>
+              <Button size="small" variant="outlined" onClick={handleExportMd}>
+                导出 MD
+              </Button>
+            </>
+          ) : null}
           {canArchive ? (
             <Button variant="contained" size="small" disabled={archiving} onClick={() => void handleArchive()}>
               {archiving ? "归档中..." : "确认归档"}
@@ -194,34 +203,6 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
       </Card>
 
       {result.chapter_index.length ? <NovelReader chapters={result.chapter_index} /> : null}
-
-      {/* 正文内容 */}
-      <Card>
-        <CardContent>
-          <Stack spacing={2}>
-            <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="h5">正文内容</Typography>
-              {resultMarkdown ? (
-                <Stack direction="row" spacing={1}>
-                  <Button size="small" variant="outlined" onClick={() => void handleCopy()}>
-                    复制全文
-                  </Button>
-                  <Button size="small" variant="outlined" onClick={handleExportMd}>
-                    导出 MD
-                  </Button>
-                </Stack>
-              ) : null}
-            </Stack>
-            {resultMarkdown ? (
-              <MarkdownContent variant="article">
-                {resultMarkdown}
-              </MarkdownContent>
-            ) : (
-              <Alert severity="warning">当前任务还没有可展示的正文结果。</Alert>
-            )}
-          </Stack>
-        </CardContent>
-      </Card>
 
       {/* 章节索引 */}
       <Card>
