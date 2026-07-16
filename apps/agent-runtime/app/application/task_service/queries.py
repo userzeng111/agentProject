@@ -9,6 +9,7 @@ from app.domain.models import (
     ArchiveTaskDetailResponse,
     ArchiveTaskListResponse,
     ArtifactItem,
+    ChapterCatalogItem,
     ChapterPlan,
     DashboardResponse,
     DraftResult,
@@ -177,6 +178,7 @@ class TaskServiceQueriesMixin:
                 outline_total_count = int(outline_summary["total_count"])
         context_status = self._load_context_status(task.id)
         response_cache_status = self._load_response_cache_status(task)
+        novel_progress = self._novel_progress(task)
         return WorkspaceResponse(
             meta=self._to_summary(task),
             recent_events=recent_events,
@@ -189,7 +191,8 @@ class TaskServiceQueriesMixin:
             pending_review_summary=self._build_pending_review_summary(task),
             rag_status=self._build_rag_status(task, context_status),
             llm_report=self._build_llm_report(task),
-            novel_progress=self._novel_progress(task),
+            novel_progress=novel_progress,
+            chapter_catalog=self._chapter_catalog(task, novel_progress),
             sources=task.sources,
             supervisor_plan=task.supervisor_plan,
             agent_runs=task.agent_runs,
@@ -198,6 +201,26 @@ class TaskServiceQueriesMixin:
             outline_completed_count=outline_completed_count,
             outline_total_count=outline_total_count,
         )
+
+    def get_task_event_history(
+        self,
+        task_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """返回不包含任务正文和输入的任务执行事件分页。"""
+
+        items, next_cursor, total = self.store.list_event_history(
+            task_id,
+            cursor=cursor,
+            limit=limit,
+        )
+        return {
+            "items": [event.model_dump(mode="json") for event in items],
+            "next_cursor": next_cursor,
+            "total": total,
+        }
 
     def get_supervisor_plan(self, task_id: str) -> dict[str, Any]:
         task = self.store.get(task_id)
@@ -520,6 +543,70 @@ class TaskServiceQueriesMixin:
             "remaining_chapter_count": remaining,
             "default_batch_size": default_batch_size,
         }
+
+    def _chapter_catalog(self, task: TaskRecord, novel_progress: dict[str, Any]) -> list[ChapterCatalogItem]:
+        """构建稳定的完整章节目录，避免事件窗口滚动导致进度条目消失。"""
+        rows = db_repository.list_outline_chapters(task.id)
+        rows_by_number = {
+            int(row.chapter_number): row
+            for row in rows
+            if int(row.chapter_number or 0) > 0
+        }
+        plans_by_number = {
+            int(plan.number): plan
+            for plan in (task.story_plan.chapter_plan if task.story_plan else [])
+            if int(plan.number or 0) > 0
+        }
+
+        planned_count = int(novel_progress.get("planned_chapter_count") or 0)
+        target_count = int(novel_progress.get("target_chapter_count") or 0)
+        base_count = planned_count if planned_count > 0 else target_count
+        highest_known_number = max([*rows_by_number.keys(), *plans_by_number.keys(), 0])
+        total_count = max(base_count, highest_known_number)
+        if total_count <= 0:
+            return []
+
+        completed_count = max(int(novel_progress.get("completed_chapter_count") or 0), 0)
+        generating_number = int(novel_progress.get("current_generating_chapter_number") or 0)
+        catalog: list[ChapterCatalogItem] = []
+        for number in range(1, total_count + 1):
+            row = rows_by_number.get(number)
+            plan = plans_by_number.get(number)
+            row_status = str(getattr(row, "status", "") or "").strip()
+            artifact_state = str(getattr(row, "artifact_state", "") or "").strip()
+            file_size = int(getattr(row, "file_size", 0) or 0)
+            content_available = artifact_state == "present" and file_size > 0
+
+            if content_available or number <= completed_count:
+                status, progress = "completed", 100
+            elif generating_number == number:
+                status, progress = "drafting", 60
+            elif artifact_state == "file_missing" or row_status in {"rejected", "manual_action"}:
+                status, progress = "needs_attention", 0
+            elif row_status == "outline_planned":
+                status, progress = "outline_pending_review", 20
+            elif row_status == "drafted":
+                status, progress = "awaiting_chapter_review", 80
+            elif row is not None or plan is not None:
+                status, progress = "ready_to_draft", 40
+            else:
+                status, progress = "pending_outline", 0
+
+            catalog.append(
+                ChapterCatalogItem(
+                    number=number,
+                    title=str(getattr(row, "title", "") or getattr(plan, "title", "") or ""),
+                    goal=str(getattr(row, "goal", "") or getattr(plan, "goal", "") or ""),
+                    summary=str(getattr(row, "summary", "") or ""),
+                    status=status,
+                    progress=progress,
+                    outline_batch_no=getattr(row, "outline_batch_no", None) if row is not None else None,
+                    generation_batch_no=getattr(row, "batch_no", None) if row is not None else None,
+                    updated_at=getattr(row, "updated_at", None) if row is not None else None,
+                    content_available=content_available,
+                )
+            )
+        return catalog
 
     def _review_history(self, task: TaskRecord) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []

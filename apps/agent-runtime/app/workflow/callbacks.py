@@ -12,6 +12,10 @@ from typing import Callable
 from app.graph.state import WorkflowState
 
 
+def _noop_window_wait(_: WorkflowState) -> WorkflowState:
+    return {}
+
+
 @dataclass
 class WorkflowCallbacks:
     """工作流节点回调注册表。
@@ -37,6 +41,7 @@ class WorkflowCallbacks:
     fix_verified_issues: Callable[[WorkflowState], WorkflowState]
     assemble_result: Callable[[WorkflowState], WorkflowState]
     cancel_task: Callable[[WorkflowState], WorkflowState]
+    wait_for_window_drafts: Callable[[WorkflowState], WorkflowState] = _noop_window_wait
 
 
 # 兼容旧调用：允许通过关键字参数逐个传入

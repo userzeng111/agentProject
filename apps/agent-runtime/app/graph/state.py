@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, TypedDict
 
 
+OUTLINE_CHUNK_SIZE = 5
+OUTLINE_WINDOW_SIZE = 20
+
+
 class WorkflowState(TypedDict, total=False):
     task_id: str
     input_payload: dict[str, Any]
@@ -20,6 +24,7 @@ class WorkflowState(TypedDict, total=False):
     outline_total_count: int
     outline_completed_count: int
     outline_batch_retry_count: int
+    outline_windowed: bool
     current_batch_chapter_plans: list[dict[str, Any]]
     # 章节对
     batch_index: int

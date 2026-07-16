@@ -20,6 +20,7 @@ from app.graph.main_graph import (
     _outline_instruction,
     _resolve_model_profile,
 )
+from app.graph.state import OUTLINE_CHUNK_SIZE
 
 _STAGE_LABELS: dict[str, str] = {
     TaskStatus.WAITING_OUTLINE_REVIEW.value: "待大纲审核",
@@ -1241,6 +1242,7 @@ class TaskServiceRecoveryMixin:
                 seed["outline_batch_size"] = outline_batch.batch_size or 20
                 seed["outline_total_count"] = outline_batch.total_count or 0
                 seed["outline_batch_retry_count"] = outline_batch.retry_count or 0
+                seed["outline_windowed"] = seed["outline_batch_size"] == OUTLINE_CHUNK_SIZE
                 plans = outline_batch.current_batch_plans or []
                 seed["current_batch_chapter_plans"] = [
                     p.model_dump(mode="json") if hasattr(p, "model_dump") else p for p in plans
@@ -1255,6 +1257,7 @@ class TaskServiceRecoveryMixin:
                     seed["outline_batch_index"] = summary["approved_count"]
                     seed["outline_batch_size"] = summary["batch_size"]
                     seed["outline_total_count"] = summary["total_count"]
+                    seed["outline_windowed"] = summary["batch_size"] == OUTLINE_CHUNK_SIZE
 
             entry_point = "plan_chapter_batch" if seed.get("outline_phase") == "chapter_batches" else "plan_story"
             return seed, entry_point

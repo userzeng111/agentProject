@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Card,
@@ -67,6 +66,7 @@ import { resolveProjectActions } from "@/features/project/project-action-availab
 import WorkspaceActionBar from "@/features/project/workspace-action-bar";
 import { ConnectionBadge } from "@/features/project/live-event-log";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
+import { normalizeLibraryTab, resolveLibraryReturnHref } from "@/features/task-dashboard/task-card-state.mjs";
 import {
   ContextStatus,
   ModelCapabilities,
@@ -290,43 +290,6 @@ function formatCompressionLabel(capabilities?: ModelCapabilities, contextStatus?
   return "压缩：未声明";
 }
 
-function buildSummaryStream(events: WorkspaceEvent[], activeTraceSummary?: string) {
-  const traceEvents = events.filter(
-    (event) => event.event_type === "trace.summary" || typeof event.payload?.summary === "string",
-  );
-
-  if (traceEvents.length) {
-    return traceEvents.map((event) => ({
-      id: event.event_id,
-      title: String(event.payload?.title || event.payload?.summary || event.message || "过程摘要已更新"),
-      subtitle: [event.payload?.detail, `${event.stage} · ${formatEventTime(event.created_at)}`]
-        .filter(Boolean)
-        .join(" · "),
-    }));
-  }
-
-  const fallback = events
-    .filter((event) => !event.event_type.startsWith("chapter."))
-    .slice(-8)
-    .map((event) => ({
-      id: event.event_id,
-      title: event.message,
-      subtitle: `${event.stage} · ${formatEventTime(event.created_at)}`,
-    }));
-
-  if (!fallback.length && activeTraceSummary) {
-    return [
-      {
-        id: "active-trace-summary",
-        title: activeTraceSummary,
-        subtitle: "当前过程摘要",
-      },
-    ];
-  }
-
-  return fallback;
-}
-
 function countIncomingDependencies(workspace: WorkspaceResponse, subtaskId: string) {
   return workspace.supervisor_plan?.dependencies.filter((edge) => edge.downstream_subtask_id === subtaskId).length ?? 0;
 }
@@ -366,6 +329,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const resolvedTaskId = taskId || searchParams.get("id") || "";
+  const returnLibraryTab = normalizeLibraryTab(searchParams.get("library_tab"));
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [running, setRunning] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -452,7 +416,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         ...nextWorkspace,
         recent_events: mergeWorkspaceEvents(
           nextWorkspace.recent_events,
-          (current?.recent_events || []).filter((event) => event.event_type === "model.thinking"),
+          current?.recent_events || [],
         ),
       }));
       setError("");
@@ -525,11 +489,11 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
     try {
       await deleteTask(resolvedTaskId);
       showSnackbar("任务已删除");
-      router.push("/");
+      router.push(resolveLibraryReturnHref(returnLibraryTab));
     } catch (err) {
       showSnackbar(err instanceof Error ? err.message : "删除任务失败");
     }
-  }, [resolvedTaskId, workspace, showSnackbar, router]);
+  }, [resolvedTaskId, workspace, showSnackbar, router, returnLibraryTab]);
 
   const handleArchiveTask = useCallback(async () => {
     if (!resolvedTaskId || running) return;
@@ -764,7 +728,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           source?.close();
           return;
         }
-        handleRefresh();
       });
       source.addEventListener("task.done", (event) => {
         terminalEventReceived = true;
@@ -1001,8 +964,12 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
 
   const status = statusMap[workspace.meta.status] ?? statusMap.created;
   const systemStages = buildSystemStages(workspace.recent_events);
-  const chapterProgress = buildChapterProgress(workspace.recent_events, workspace.novel_progress);
-  const summaryStream = buildSummaryStream(workspace.recent_events, workspace.active_trace_summary);
+  const chapterProgress = buildChapterProgress(
+    workspace.recent_events,
+    workspace.novel_progress,
+    workspace.chapter_catalog,
+  );
+  const completedChapterCount = chapterProgress.filter((chapter) => chapter.status === "已完成").length;
   const contextStatus = resolveContextStatus(workspace);
   const responseCacheStatus = resolveResponseCacheStatus(workspace);
   const modelCapabilities = resolveModelCapabilities(workspace);
@@ -1286,12 +1253,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 variant="outlined"
               />
             </Stack>
-            {workspace.active_trace_summary && (
-              <Typography variant="body2" color="text.secondary">
-                执行摘要：{workspace.active_trace_summary}
-              </Typography>
-            )}
-
             {workspace.meta.status === "ready_for_batch" && novelProgress && (
               <Box
                 sx={(theme) => ({
@@ -1394,7 +1355,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                 : streamState.includes("失败") || streamState.includes("错误") ? "error"
                 : "connected"
               } /></Stack>} />
-              <Tab label={`章节进度 (${chapterProgress.length})`} />
+              <Tab label={`章节进度（${completedChapterCount}/${chapterProgress.length}）`} />
               <Tab label={`Supervisor (${workspace.supervisor_plan?.subtasks.length ?? 0})`} />
               <Tab label="任务详情" />
               <Tab label="调试" />
@@ -1594,38 +1555,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   )}
                 </List>
               </Box>
-              <Divider />
-              <Box>
-                <Typography variant="h6" sx={{ mb: 1.5 }}>过程摘要流</Typography>
-                <List dense>
-                  {summaryStream.length ? (
-                    summaryStream.map((item) => (
-                      <div key={item.id}>
-                        <ListItem disableGutters alignItems="flex-start">
-                          <Avatar
-                            sx={(theme) => ({
-                              width: 32,
-                              height: 32,
-                              mr: 1.5,
-                              bgcolor: alpha(theme.palette.primary.main, 0.12),
-                              color: "primary.main",
-                              fontSize: 14,
-                            })}
-                          >
-                            摘
-                          </Avatar>
-                          <ListItemText primary={item.title} secondary={item.subtitle} />
-                        </ListItem>
-                        <Divider component="li" />
-                      </div>
-                    ))
-                  ) : (
-                    <ListItem disableGutters>
-                      <ListItemText primary="暂无过程摘要" />
-                    </ListItem>
-                  )}
-                </List>
-              </Box>
             </Stack>
           </Collapse>
           )}
@@ -1793,6 +1722,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
           {activeTab === 4 && (
             <Collapse in={tab4Expanded}>
               <DebugPanel
+                taskId={resolvedTaskId}
                 workspace={workspace}
                 streamState={streamState}
                 streamPath={debugStreamPath}

@@ -120,6 +120,55 @@ class ApiContextIntegrationTests(unittest.TestCase):
         self.assertIn("capabilities", gpt_model)
         self.assertIn("context_window", gpt_model["capabilities"])
 
+    def test_task_event_history_returns_paginated_event_dtos_without_task_record(self) -> None:
+        task = self.task_service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="不得出现在历史事件响应中的任务输入",
+                model_id="gpt-5.4",
+            )
+        )
+        for number in range(1, 4):
+            self.store.append_event(
+                task.id,
+                stage="planning",
+                message=f"节点 {number} 已完成",
+                event_type="workflow.node.completed",
+                unit_id=f"node-{number}",
+                payload={"node": number},
+            )
+
+        first_response = self.client.get(f"/api/tasks/{task.id}/events/history", params={"limit": 2})
+
+        self.assertEqual(first_response.status_code, 200)
+        first_payload = first_response.json()
+        self.assertEqual(set(first_payload), {"items", "next_cursor", "total"})
+        self.assertEqual(first_payload["total"], 4)
+        self.assertEqual(len(first_payload["items"]), 2)
+        self.assertEqual(first_payload["items"][0]["event_type"], "task.created")
+        self.assertNotIn("input", first_payload)
+        self.assertNotIn("不得出现在历史事件响应中的任务输入", first_response.text)
+
+        second_response = self.client.get(
+            f"/api/tasks/{task.id}/events/history",
+            params={"limit": 2, "cursor": first_payload["next_cursor"]},
+        )
+
+        self.assertEqual(second_response.status_code, 200)
+        second_payload = second_response.json()
+        self.assertEqual(second_payload["next_cursor"], None)
+        self.assertEqual(
+            [item["message"] for item in first_payload["items"] + second_payload["items"]],
+            ["任务已创建，等待生成大纲。", "节点 1 已完成", "节点 2 已完成", "节点 3 已完成"],
+        )
+
+        invalid_cursor_response = self.client.get(
+            f"/api/tasks/{task.id}/events/history",
+            params={"cursor": "evt_unknown"},
+        )
+        self.assertEqual(invalid_cursor_response.status_code, 400)
+        self.assertIn("事件分页游标无效", invalid_cursor_response.json()["detail"])
+
     def test_protocol_settings_endpoint_returns_configured_default_protocol(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

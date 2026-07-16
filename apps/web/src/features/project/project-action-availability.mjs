@@ -12,7 +12,7 @@ const ASYNC_IN_FLIGHT = new Set(["planning", "drafting", "assembling"]);
 const DELETABLE_STATUSES = new Set([
   "created", "sources_ingested", "waiting_outline_review",
   "ready_for_batch", "waiting_chapter_review", "waiting_verification_review",
-  "failed", "cancelled",
+  "completed", "failed", "cancelled",
 ]);
 
 // 可取消状态
@@ -263,6 +263,7 @@ function resolveDeletePrompt(status) {
     failed: "该任务执行失败，确认删除？",
     cancelled: "确认删除该已取消的任务？",
     ready_for_batch: "该任务已有部分进度，删除后将丢失已生成内容。确认删除？",
+    completed: "该已完成任务将删除全部正文、章节和执行日志。此操作不可恢复，请确认删除？",
   };
   return prompts[status] || "确认删除该任务？此操作不可恢复。";
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import {
   Alert,
   Box,
@@ -13,6 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import { buildAgentDebugDiagnostics } from "@/features/task-run/debug-diagnostics.mjs";
+import { getTaskEventHistory } from "@/lib/api";
 import type { WorkspaceEvent, WorkspaceResponse } from "@/lib/types";
 
 type Tone = "default" | "success" | "warning" | "error";
@@ -25,6 +27,7 @@ interface StatusBlock {
 }
 
 interface DebugPanelProps {
+  taskId: string;
   workspace: WorkspaceResponse;
   streamState: string;
   streamPath?: string;
@@ -152,7 +155,10 @@ function renderEventSecondary(event: WorkspaceEvent) {
     .join("\n");
 }
 
+const HISTORY_PAGE_SIZE = 10;
+
 export default function DebugPanel({
+  taskId,
   workspace,
   streamState,
   streamPath,
@@ -175,6 +181,75 @@ export default function DebugPanel({
   const recentEvents = [...(workspace.recent_events || [])].slice(-8).reverse();
   const candidatePaths = streamPaths?.length ? streamPaths : streamPath ? [streamPath] : [];
   const recoveryAvailable = hasRecoveryEntry(workspace);
+  const [historyEvents, setHistoryEvents] = useState<WorkspaceEvent[]>([]);
+  const [historyNextCursor, setHistoryNextCursor] = useState<string | null>(null);
+  const [historyPageCursors, setHistoryPageCursors] = useState<Array<string | null>>([null]);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
+
+  useEffect(() => {
+    let disposed = false;
+    setHistoryEvents([]);
+    setHistoryNextCursor(null);
+    setHistoryPageCursors([null]);
+    setHistoryPage(0);
+    setHistoryTotal(0);
+    setHistoryError("");
+    setHistoryLoading(true);
+    void getTaskEventHistory(taskId, { limit: HISTORY_PAGE_SIZE })
+      .then((response) => {
+        if (disposed) return;
+        setHistoryEvents(response.items);
+        setHistoryNextCursor(response.next_cursor);
+        setHistoryTotal(response.total);
+      })
+      .catch((error) => {
+        if (!disposed) {
+          setHistoryError(error instanceof Error ? error.message : "读取历史任务执行日志失败");
+        }
+      })
+      .finally(() => {
+        if (!disposed) setHistoryLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [taskId]);
+
+  const loadHistoryPage = useCallback(async (cursor: string | null, page: number) => {
+    if (historyLoading) return;
+    setHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const response = await getTaskEventHistory(taskId, { cursor, limit: HISTORY_PAGE_SIZE });
+      setHistoryEvents(response.items);
+      setHistoryNextCursor(response.next_cursor);
+      setHistoryTotal(response.total);
+      setHistoryPageCursors((current) => {
+        const next = current.slice(0, page);
+        next[page] = cursor;
+        return next;
+      });
+      setHistoryPage(page);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "读取历史任务执行日志失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [historyLoading, taskId]);
+
+  const loadPreviousHistoryPage = useCallback(() => {
+    if (historyPage <= 0 || historyLoading) return;
+    const cursor = historyPageCursors[historyPage - 1] ?? null;
+    void loadHistoryPage(cursor, historyPage - 1);
+  }, [historyLoading, historyPage, historyPageCursors, loadHistoryPage]);
+
+  const loadNextHistoryPage = useCallback(() => {
+    if (!historyNextCursor || historyLoading) return;
+    void loadHistoryPage(historyNextCursor, historyPage + 1);
+  }, [historyLoading, historyNextCursor, historyPage, loadHistoryPage]);
 
   return (
     <Stack spacing={2.5}>
@@ -401,6 +476,51 @@ export default function DebugPanel({
             ) : (
               <ListItem disableGutters>
                 <ListItemText primary="暂无状态对账项目" />
+              </ListItem>
+            )}
+          </List>
+        </Stack>
+      </Box>
+
+      <Divider />
+
+      <Box>
+        {sectionTitle("历史任务执行日志", undefined)}
+        <Stack spacing={1.25} sx={{ mt: 1.5 }}>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Chip size="small" variant="outlined" label={`第 ${historyPage + 1} 页 · 每页 ${HISTORY_PAGE_SIZE} 条 · 共 ${historyTotal} 条`} />
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={historyLoading || historyPage <= 0}
+              onClick={loadPreviousHistoryPage}
+            >
+              上一页
+            </Button>
+            <Button
+              size="small"
+              variant="outlined"
+              disabled={historyLoading || !historyNextCursor}
+              onClick={loadNextHistoryPage}
+            >
+              下一页
+            </Button>
+          </Stack>
+          {historyError ? <Alert severity="error">{historyError}</Alert> : null}
+          <List dense aria-label="历史任务执行日志" sx={{ minWidth: 0 }}>
+            {historyEvents.length ? (
+              historyEvents.map((event) => (
+                <ListItem key={event.event_id} disableGutters divider alignItems="flex-start" sx={{ minWidth: 0 }}>
+                  <ListItemText
+                    primary={event.message || event.event_type || "未命名事件"}
+                    secondary={renderEventSecondary(event)}
+                    secondaryTypographyProps={{ sx: { whiteSpace: "pre-line", overflowWrap: "anywhere" } }}
+                  />
+                </ListItem>
+              ))
+            ) : (
+              <ListItem disableGutters>
+                <ListItemText primary={historyLoading ? "正在读取历史日志…" : "暂无历史任务执行日志"} />
               </ListItem>
             )}
           </List>

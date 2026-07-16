@@ -56,6 +56,7 @@ class NovelWorkflowEngine:
             "plan_chapter_batch",
             "review_outline",
             "revise_outline",
+            "wait_for_window_drafts",
             "prepare_chapter_pair_context",
             "draft_chapter_pair",
             "chapter_gate_review",
@@ -88,11 +89,13 @@ class NovelWorkflowEngine:
                 "prepare_chapter_pair_context": "prepare_chapter_pair_context",
                 "plan_chapter_batch": "plan_chapter_batch",
                 "revise_outline": "revise_outline",
+                "wait_for_window_drafts": "wait_for_window_drafts",
                 "cancel_task": "cancel_task",
             },
         )
         graph.add_edge("plan_chapter_batch", "review_outline")
         graph.add_edge("revise_outline", "review_outline")
+        graph.add_edge("wait_for_window_drafts", "plan_chapter_batch")
 
         # 章节对循环
         graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")

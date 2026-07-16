@@ -423,6 +423,38 @@ class TaskServiceCoreMixin:
                 )
                 return record
 
+            if review_type == "window_draft_ready":
+                if not story_plan_data:
+                    raise RuntimeError("章节规划窗口暂停前未生成可用大纲。")
+                story_plan = StoryPlan.model_validate(story_plan_data)
+                planned_until = len(story_plan.chapter_plan)
+                record = self.store.set_ready_for_batch(
+                    task_id,
+                    story_plan,
+                    message=f"章节计划已确认至第 {planned_until} 章，等待继续创作。",
+                )
+                self._ensure_novel_project_seeded(record)
+                project = get_novel_project(task_id)
+                completed_count = int(project.completed_chapter_count or 0) if project is not None else 0
+                update_project_status(
+                    task_id,
+                    status=TaskStatus.READY_FOR_BATCH.value,
+                    completed_chapter_count=completed_count,
+                    next_chapter_number=completed_count + 1,
+                    active_batch_no=None,
+                    active_continue_request_id="",
+                    current_generating_chapter_number=None,
+                )
+                record = self._safe_sync_supervisor_plan(task_id, fallback=record)
+                self._safe_emit_trace_summary(
+                    task_id,
+                    kind="outline",
+                    title="章节规划窗口已就绪",
+                    detail=f"已确认第 1-{planned_until} 章计划，等待正文生成。",
+                    unit_id="outline-window",
+                )
+                return record
+
             elif review_type == "chapter_pair_review":
                 current_chapter_pair = values.get("current_chapter_pair") or []
                 # 补全缺失字段，防止旧 checkpoint 数据不完整导致验证失败

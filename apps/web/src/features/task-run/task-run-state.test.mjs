@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   buildAgentDispatchGraph,
@@ -7,11 +9,18 @@ import {
   buildThinkingGroups,
   buildWorkflowGraph,
   buildWorkflowOverview,
+  groupChapterProgress,
   mergeWorkspaceEvents,
+  resolveChapterProgressPage,
   resolveEventStreamErrorTransition,
   resolveTerminalEventStreamState,
   resolveWorkspaceStageNav,
 } from "./task-run-state.mjs";
+
+const taskRunClientSource = readFileSync(
+  fileURLToPath(new URL("./task-run-client.tsx", import.meta.url)),
+  "utf8",
+);
 
 test("mergeWorkspaceEvents 在快照刷新后保留实时思考片段并按事件 ID 去重", () => {
   const events = mergeWorkspaceEvents(
@@ -42,6 +51,12 @@ test("mergeWorkspaceEvents 在快照刷新后保留实时思考片段并按事�
 
   assert.equal(events.length, 2);
   assert.equal(events[1].event_id, "thinking-1");
+});
+
+test("工作台移除与全量历史日志重复的过程摘要展示", () => {
+  assert.doesNotMatch(taskRunClientSource, /过程摘要流/);
+  assert.doesNotMatch(taskRunClientSource, /执行摘要：/);
+  assert.doesNotMatch(taskRunClientSource, /buildSummaryStream/);
 });
 
 test("buildChapterProgress 用 novel_progress 兜底显示已完成章节", () => {
@@ -100,6 +115,72 @@ test("buildChapterProgress 在等待验证时仍保留已完成章节", () => {
   assert.equal(items[0].title, "第一章");
   assert.equal(items[0].status, "已完成");
   assert.equal(items[0].progress, 100);
+});
+
+test("buildChapterProgress 以完整章节目录为基线，并补全尚未设计的章节", () => {
+  const items = buildChapterProgress(
+    [
+      {
+        event_type: "chapter.started",
+        created_at: "2026-07-16T10:00:00Z",
+        unit_id: "chapter-02",
+        payload: { chapter_number: 2, chapter_title: "实时生成章节" },
+      },
+    ],
+    { planned_chapter_count: 8, current_generating_chapter_number: 2 },
+    [
+      {
+        number: 1,
+        title: "稳定标题",
+        goal: "建立冲突",
+        status: "completed",
+        progress: 100,
+        content_available: true,
+      },
+      {
+        number: 2,
+        title: "第二章计划",
+        status: "ready_to_draft",
+        progress: 40,
+      },
+    ],
+  );
+
+  assert.equal(items.length, 8);
+  assert.equal(items[0].title, "稳定标题");
+  assert.equal(items[0].contentAvailable, true);
+  assert.equal(items[1].status, "正文生成中");
+  assert.equal(items[1].title, "实时生成章节");
+  assert.equal(items[7].status, "待大纲设计");
+});
+
+test("groupChapterProgress 每五章一组，末组保留剩余章节", () => {
+  const chapters = buildChapterProgress([], { planned_chapter_count: 48 });
+  const groups = groupChapterProgress(chapters, 5);
+
+  assert.equal(groups.length, 10);
+  assert.equal(groups[0].start, 1);
+  assert.equal(groups[0].end, 5);
+  assert.equal(groups[0].items.length, 5);
+  assert.equal(groups.at(-1).start, 46);
+  assert.equal(groups.at(-1).end, 48);
+  assert.equal(groups.at(-1).items.length, 3);
+});
+
+test("resolveChapterProgressPage 每页仅返回五章并将越界页收敛到尾页", () => {
+  const chapters = buildChapterProgress([], { planned_chapter_count: 13 });
+  const firstPage = resolveChapterProgressPage(chapters, 1, 5);
+  const lastPage = resolveChapterProgressPage(chapters, 99, 5);
+
+  assert.equal(firstPage.page, 1);
+  assert.equal(firstPage.totalPages, 3);
+  assert.equal(firstPage.start, 1);
+  assert.equal(firstPage.end, 5);
+  assert.equal(firstPage.items.length, 5);
+  assert.equal(lastPage.page, 3);
+  assert.equal(lastPage.start, 11);
+  assert.equal(lastPage.end, 13);
+  assert.equal(lastPage.items.length, 3);
 });
 
 test("resolveWorkspaceStageNav 把工作台状态映射到项目阶段导航", () => {

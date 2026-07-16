@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import threading
 import unittest
@@ -143,6 +144,48 @@ class TaskStoreContextTests(unittest.TestCase):
                 self.assertEqual(event["message"], "后台节点已开始。")
 
         asyncio.run(scenario())
+
+    def test_event_journal_recovers_uncheckpointed_events_and_pages_in_append_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root_dir = Path(tmp_dir) / "tasklog"
+            store = TaskLogStore(root_dir=str(root_dir))
+            task = store.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.SHORT_STORY,
+                    prompt="验证追加事件日志",
+                    model_id="gpt-5.4",
+                )
+            )
+            for number in range(1, 5):
+                store.append_event(
+                    task.id,
+                    stage="planning",
+                    message=f"事件 {number}",
+                    event_type="workflow.node.completed",
+                    unit_id=f"node-{number}",
+                )
+
+            journal_path = root_dir / "runs" / task.id / "events.jsonl"
+            journal_items = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(journal_items), 5)
+            self.assertEqual([item["message"] for item in journal_items[-4:]], ["事件 1", "事件 2", "事件 3", "事件 4"])
+
+            reloaded = TaskLogStore(root_dir=str(root_dir))
+            first_page, next_cursor, total = reloaded.list_event_history(task.id, limit=2)
+            second_page, final_cursor, second_total = reloaded.list_event_history(
+                task.id,
+                cursor=next_cursor,
+                limit=3,
+            )
+
+            self.assertEqual(total, 5)
+            self.assertEqual(second_total, 5)
+            self.assertIsNotNone(next_cursor)
+            self.assertIsNone(final_cursor)
+            self.assertEqual(
+                [event.message for event in first_page + second_page],
+                ["任务已创建，等待生成大纲。", "事件 1", "事件 2", "事件 3", "事件 4"],
+            )
 
 
 if __name__ == "__main__":

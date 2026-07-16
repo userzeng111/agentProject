@@ -5,7 +5,12 @@ from typing import Any
 from langgraph.types import interrupt
 
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
-from app.graph.state import WorkflowState, MAX_OUTLINE_REVISIONS
+from app.graph.state import (
+    MAX_OUTLINE_REVISIONS,
+    OUTLINE_CHUNK_SIZE,
+    OUTLINE_WINDOW_SIZE,
+    WorkflowState,
+)
 from app.graph.utils.helpers import (
     _resolve_model_profile,
     _build_references,
@@ -60,7 +65,7 @@ def _finalize_chapter_plan_batch_review(
 
     story_plan = state.get("story_plan") or {}
     batch_index = int(state.get("outline_batch_index", 0) or 0)
-    batch_size = int(state.get("outline_batch_size", 20) or 20)
+    batch_size = int(state.get("outline_batch_size", OUTLINE_CHUNK_SIZE) or OUTLINE_CHUNK_SIZE)
     total = int(
         state.get("outline_total_count")
         or story_plan.get("planned_chapter_count")
@@ -180,26 +185,65 @@ def plan_story(
     engine: Any,
     generate_chapter_plan: bool = True,
 ) -> WorkflowState:
-    story_plan = engine.build_story_plan(
-        state["normalized_spec"],
-        state.get("reference_text", ""),
-        context_packet=state.get("outline_context_packet"),
-        model=state["normalized_spec"].get("model_id"),
+    # 不能从调用是否抛出 TypeError 推断能力：部分旧引擎接受 **kwargs，
+    # 但仍会返回完整章节计划。只有显式声明能力的引擎才进入 5/20 分批协议。
+    supports_deferred_chapter_plan = bool(
+        getattr(engine, "supports_deferred_chapter_plan", False)
     )
+    request_kwargs = {
+        "context_packet": state.get("outline_context_packet"),
+        "model": state["normalized_spec"].get("model_id"),
+    }
+    if supports_deferred_chapter_plan:
+        request_kwargs["defer_chapter_plan"] = True
+
+    try:
+        story_plan = engine.build_story_plan(
+            state["normalized_spec"],
+            state.get("reference_text", ""),
+            **request_kwargs,
+        )
+    except TypeError as exc:
+        if not supports_deferred_chapter_plan or "defer_chapter_plan" not in str(exc):
+            raise
+        # 对能力声明与实现不一致的引擎安全回退为旧全量大纲协议。
+        supports_deferred_chapter_plan = False
+        story_plan = engine.build_story_plan(
+            state["normalized_spec"],
+            state.get("reference_text", ""),
+            context_packet=request_kwargs["context_packet"],
+            model=request_kwargs["model"],
+        )
     plan_dict = _normalize_story_plan(story_plan.model_dump())
     planned_count = int(plan_dict.get("planned_chapter_count") or 0)
     if planned_count <= 0:
-        retry_plan = engine.build_story_plan(
-            state["normalized_spec"],
-            state.get("reference_text", ""),
-            context_packet=state.get("outline_context_packet"),
-            model=state["normalized_spec"].get("model_id"),
-            revision_comment=(
+        retry_kwargs = {
+            "context_packet": state.get("outline_context_packet"),
+            "model": state["normalized_spec"].get("model_id"),
+            "revision_comment": (
                 "上一版大纲缺少有效 planned_chapter_count。"
                 "请明确给出正整数的 planned_chapter_count，并保留所有既有世界观与人物设定。"
             ),
-            original_plan=plan_dict,
-        )
+            "original_plan": plan_dict,
+        }
+        retry_request_kwargs = dict(retry_kwargs)
+        if supports_deferred_chapter_plan:
+            retry_request_kwargs["defer_chapter_plan"] = True
+        try:
+            retry_plan = engine.build_story_plan(
+                state["normalized_spec"],
+                state.get("reference_text", ""),
+                **retry_request_kwargs,
+            )
+        except TypeError as exc:
+            if not supports_deferred_chapter_plan or "defer_chapter_plan" not in str(exc):
+                raise
+            supports_deferred_chapter_plan = False
+            retry_plan = engine.build_story_plan(
+                state["normalized_spec"],
+                state.get("reference_text", ""),
+                **retry_kwargs,
+            )
         plan_dict = _normalize_story_plan(retry_plan.model_dump())
         planned_count = int(plan_dict.get("planned_chapter_count") or 0)
     if planned_count <= 0:
@@ -214,9 +258,13 @@ def plan_story(
         "outline_phase": "master",
         "outline_total_count": plan_dict.get("planned_chapter_count", 0),
         "outline_batch_index": 0,
-        "outline_batch_size": 20,
+        # 旧引擎已经返回完整章节计划，保留原有一次性审核语义；真实引擎才按 5 章分批。
+        "outline_batch_size": (
+            OUTLINE_CHUNK_SIZE if supports_deferred_chapter_plan else planned_count
+        ),
         "outline_completed_count": 0,
         "outline_batch_retry_count": 0,
+        "outline_windowed": supports_deferred_chapter_plan,
     }
 
 
@@ -224,13 +272,15 @@ def plan_chapter_batch(
     state: WorkflowState,
     *,
     engine: Any,
-    default_batch_size: int = 20,
+    default_batch_size: int = OUTLINE_CHUNK_SIZE,
 ) -> WorkflowState:
     story_plan_dict = state.get("story_plan") or {}
     # 使用已确认章节数作为下一批起始位置（兼容纯图执行无 checkpoint 同步场景）
     batch_index = state.get("outline_completed_count", 0)
-    batch_size = state.get("outline_batch_size", default_batch_size)
-    total = story_plan_dict.get("planned_chapter_count", 0)
+    batch_size = int(state.get("outline_batch_size", default_batch_size) or default_batch_size)
+    if state.get("outline_windowed"):
+        batch_size = OUTLINE_CHUNK_SIZE
+    total = int(story_plan_dict.get("planned_chapter_count", 0) or 0)
 
     effective_size = min(batch_size, max(total - batch_index, 0))
     if effective_size <= 0:
@@ -499,7 +549,7 @@ def interrupt_outline_review(state: WorkflowState, comment: str = ""):
         "completed_count": state.get("outline_completed_count", 0),
         "total_count": story_plan.get("planned_chapter_count", 0),
         "batch_index": state.get("outline_batch_index", 0),
-        "batch_size": state.get("outline_batch_size", 20),
+        "batch_size": state.get("outline_batch_size", OUTLINE_CHUNK_SIZE),
     }
     if phase == "chapter_batches":
         outline_batch["current_batch_plans"] = state.get("current_batch_chapter_plans", [])
@@ -518,3 +568,30 @@ def interrupt_outline_review(state: WorkflowState, comment: str = ""):
             "outline_batch": outline_batch,
         }
     )
+
+
+def wait_for_window_drafts(state: WorkflowState) -> WorkflowState:
+    """在当前 20 章规划窗口正文完成前暂停后续大纲规划。"""
+    story_plan = state.get("story_plan") or {}
+    planned_count = int(story_plan.get("planned_chapter_count", 0) or 0)
+    completed_count = int(state.get("outline_completed_count", 0) or 0)
+    window_end = min(
+        ((max(completed_count, 1) - 1) // OUTLINE_WINDOW_SIZE + 1) * OUTLINE_WINDOW_SIZE,
+        planned_count,
+    )
+    interrupt(
+        {
+            "type": "window_draft_ready",
+            "version": "v1",
+            "summary": f"章节计划已确认至第 {window_end} 章，等待本窗口正文全部完成。",
+            "story_plan": story_plan,
+            "outline_batch": {
+                "phase": "chapter_batches",
+                "completed_count": completed_count,
+                "total_count": planned_count,
+                "batch_index": state.get("outline_batch_index", 0),
+                "batch_size": state.get("outline_batch_size", OUTLINE_CHUNK_SIZE),
+            },
+        }
+    )
+    return {}

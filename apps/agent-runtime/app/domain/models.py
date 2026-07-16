@@ -500,6 +500,21 @@ class DashboardResponse(BaseModel):
     completed_total: int = 0
 
 
+class ChapterCatalogItem(BaseModel):
+    """工作台章节目录项，不携带正文内容。"""
+
+    number: int
+    title: str = ""
+    goal: str = ""
+    summary: str = ""
+    status: str = "pending_outline"
+    progress: int = 0
+    outline_batch_no: int | None = None
+    generation_batch_no: int | None = None
+    updated_at: datetime | None = None
+    content_available: bool = False
+
+
 class WorkspaceResponse(BaseModel):
     meta: TaskSummary
     recent_events: list[TaskEvent]
@@ -519,6 +534,7 @@ class WorkspaceResponse(BaseModel):
     rag_status: dict[str, Any] = Field(default_factory=dict)
     llm_report: dict[str, Any] = Field(default_factory=dict)
     novel_progress: dict[str, Any] = Field(default_factory=dict)
+    chapter_catalog: list[ChapterCatalogItem] = Field(default_factory=list)
     sources: list[SourceAsset] = Field(default_factory=list)
     supervisor_plan: SupervisorPlan | None = None
     agent_runs: list[AgentRunRecord] = Field(default_factory=list)

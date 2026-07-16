@@ -105,7 +105,18 @@ class TaskServiceRunnerMixin:
                     raise ValueError("当前任务没有待恢复的审核节点。")
                 if self._is_stop_requested(task_id):
                     return self.store.get(task_id)
-                if approved:
+                advancing_outline_window = task.current_unit == "outline-window"
+                if approved and advancing_outline_window:
+                    self.store.mark_stage(
+                        task_id,
+                        status=TaskStatus.PLANNING,
+                        stage="planning",
+                        progress=max(task.progress, 60),
+                        message="当前窗口正文已完成，正在生成下一窗口章节计划。",
+                        event_type="outline.window.generating",
+                        unit_id="outline-window",
+                    )
+                elif approved:
                     self.store.mark_stage(
                         task_id,
                         status=TaskStatus.DRAFTING,
@@ -125,8 +136,11 @@ class TaskServiceRunnerMixin:
                 progress_token = set_progress_callback(self._build_progress_callback(task_id))
                 exchange_token = set_exchange_callback(self._build_exchange_callback(task_id))
                 try:
-                    with performance_span(logger, "task_service_rehydrate_resume_state", task_id=task_id):
-                        rehydrated = self._rehydrate_resume_state_if_needed(task, action_model_id)
+                    if advancing_outline_window:
+                        rehydrated = True
+                    else:
+                        with performance_span(logger, "task_service_rehydrate_resume_state", task_id=task_id):
+                            rehydrated = self._rehydrate_resume_state_if_needed(task, action_model_id)
                     with performance_span(logger, "task_service_graph_state_values", task_id=task_id):
                         values = self._graph_state_values(task_id)
                     if values and not rehydrated:

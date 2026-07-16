@@ -17,6 +17,7 @@ import {
   StyleProfileListResponse,
   TaskActionPayload,
   TaskCreatePayload,
+  TaskEventHistoryResponse,
   TaskRecord,
   WorkspaceResponse,
 } from "@/lib/types";
@@ -311,6 +312,14 @@ export function getTask(taskId: string) {
 
 export function getWorkspace(taskId: string) {
   return request<WorkspaceResponse>(`/api/tasks/${taskId}/workspace`);
+}
+
+export function getTaskEventHistory(taskId: string, options?: { cursor?: string | null; limit?: number }) {
+  const params = new URLSearchParams();
+  if (options?.cursor) params.set("cursor", options.cursor);
+  if (options?.limit) params.set("limit", String(options.limit));
+  const query = params.toString();
+  return request<TaskEventHistoryResponse>(`/api/tasks/${taskId}/events/history${query ? `?${query}` : ""}`);
 }
 
 export function getReview(taskId: string) {

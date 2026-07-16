@@ -594,8 +594,42 @@ export function buildWorkflowOverview(workspace = {}) {
   };
 }
 
-export function buildChapterProgress(events = [], novelProgress = {}) {
+const CHAPTER_STATUS_LABELS = {
+  pending_outline: "待大纲设计",
+  outline_pending_review: "大纲待审核",
+  ready_to_draft: "待正文生成",
+  drafting: "正文生成中",
+  awaiting_chapter_review: "待章节审核",
+  completed: "已完成",
+  needs_attention: "待处理",
+};
+
+function chapterStatusLabel(status) {
+  return CHAPTER_STATUS_LABELS[status] || "待处理";
+}
+
+function chapterProgressFromCatalog(item) {
+  const number = toPositiveInteger(item?.number);
+  if (!number) return null;
+  return {
+    number,
+    title: String(item?.title || "").trim() || `第 ${number} 章`,
+    goal: String(item?.goal || "").trim(),
+    status: chapterStatusLabel(String(item?.status || "")),
+    progress: Math.max(0, Math.min(100, Number(item?.progress) || 0)),
+    summary: String(item?.summary || "").trim(),
+    updatedAt: item?.updated_at || "",
+    contentAvailable: Boolean(item?.content_available),
+  };
+}
+
+export function buildChapterProgress(events = [], novelProgress = {}, chapterCatalog = []) {
   const chapterMap = new Map();
+
+  for (const item of Array.isArray(chapterCatalog) ? chapterCatalog : []) {
+    const chapter = chapterProgressFromCatalog(item);
+    if (chapter) chapterMap.set(chapter.number, chapter);
+  }
 
   for (const event of events.filter((item) => String(item?.event_type || "").startsWith("chapter."))) {
     const chapterNumber = resolveChapterNumber(event);
@@ -603,13 +637,17 @@ export function buildChapterProgress(events = [], novelProgress = {}) {
     const current = chapterMap.get(chapterNumber);
     if (current && toTime(event.created_at) < toTime(current.updatedAt)) continue;
     const title = event.payload?.chapter_title || current?.title || event.unit_id || `第 ${chapterNumber} 章`;
+    const saved = event.event_type === "chapter.saved";
+    if (!saved && current?.status === "已完成") continue;
     chapterMap.set(chapterNumber, {
       number: chapterNumber,
       title,
-      status: event.event_type === "chapter.saved" ? "已完成" : "生成中",
-      progress: event.event_type === "chapter.saved" ? 100 : 56,
+      goal: current?.goal || "",
+      status: saved ? "已完成" : "正文生成中",
+      progress: saved ? 100 : Math.max(current?.progress || 0, 60),
       summary: event.payload?.chapter_summary || current?.summary,
       updatedAt: event.created_at,
+      contentAvailable: Boolean(current?.contentAvailable || saved),
     });
   }
 
@@ -620,28 +658,79 @@ export function buildChapterProgress(events = [], novelProgress = {}) {
       chapterMap.set(number, {
         number,
         title: current?.title || `第 ${number} 章`,
+        goal: current?.goal || "",
         status: "已完成",
         progress: 100,
         summary: current?.summary,
         updatedAt: current?.updatedAt || "",
+        contentAvailable: Boolean(current?.contentAvailable),
       });
     }
   }
 
   const generatingNumber = Number.parseInt(novelProgress?.current_generating_chapter_number ?? 0, 10);
-  if (Number.isFinite(generatingNumber) && generatingNumber > 0) {
+  if (Number.isFinite(generatingNumber) && generatingNumber > 0 && chapterMap.get(generatingNumber)?.status !== "已完成") {
     const current = chapterMap.get(generatingNumber);
     chapterMap.set(generatingNumber, {
       number: generatingNumber,
       title: current?.title || `第 ${generatingNumber} 章`,
-      status: "生成中",
-      progress: Math.max(current?.progress || 0, 56),
+      goal: current?.goal || "",
+      status: "正文生成中",
+      progress: Math.max(current?.progress || 0, 60),
       summary: current?.summary,
       updatedAt: current?.updatedAt || "",
+      contentAvailable: Boolean(current?.contentAvailable),
+    });
+  }
+
+  const declaredTotal = toPositiveInteger(novelProgress?.planned_chapter_count)
+    || toPositiveInteger(novelProgress?.target_chapter_count);
+  for (let number = 1; number <= declaredTotal; number += 1) {
+    if (chapterMap.has(number)) continue;
+    chapterMap.set(number, {
+      number,
+      title: `第 ${number} 章`,
+      goal: "",
+      status: "待大纲设计",
+      progress: 0,
+      summary: "等待上一批正文完成后设计。",
+      updatedAt: "",
+      contentAvailable: false,
     });
   }
 
   return Array.from(chapterMap.values()).sort((left, right) => left.number - right.number);
+}
+
+export function groupChapterProgress(chapters = [], groupSize = 5) {
+  const size = Math.max(toPositiveInteger(groupSize), 1);
+  const groups = [];
+  for (let index = 0; index < chapters.length; index += size) {
+    const items = chapters.slice(index, index + size);
+    if (!items.length) continue;
+    groups.push({
+      start: items[0].number,
+      end: items.at(-1).number,
+      completedCount: items.filter((item) => item.status === "已完成").length,
+      items,
+    });
+  }
+  return groups;
+}
+
+export function resolveChapterProgressPage(chapters = [], requestedPage = 1, pageSize = 5) {
+  const groups = groupChapterProgress(chapters, pageSize);
+  const totalPages = Math.max(groups.length, 1);
+  const page = Math.min(Math.max(toPositiveInteger(requestedPage) || 1, 1), totalPages);
+  const group = groups[page - 1];
+  return {
+    page,
+    totalPages,
+    start: group?.start ?? 0,
+    end: group?.end ?? 0,
+    completedCount: group?.completedCount ?? 0,
+    items: group?.items ?? [],
+  };
 }
 
 export function buildThinkingGroups(events = [], workspaceStatus, options = {}) {

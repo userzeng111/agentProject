@@ -1246,7 +1246,7 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(snapshot.pending_review.outline_batch.phase, "chapter_batches")
         self.assertEqual(len(background_calls), 1)
 
-        # 继续：批次审核通过后进入 ready_for_batch（全部完成，不启动后台）
+        # 兼容历史全量计划：空批次确认后直接进入可继续创作。
         background_calls.clear()
         snapshot = service.resume_task(task.id, approved=True, comment="批次通过")
         self.assertEqual(snapshot.status.value, "ready_for_batch")

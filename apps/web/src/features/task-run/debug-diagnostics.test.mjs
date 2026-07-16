@@ -36,6 +36,16 @@ test("运行中且无冲突时诊断为运行正常", () => {
   assert.equal(diagnostics.stateCheck.conflicts.length, 0);
 });
 
+test("调试面板历史日志固定每页十条，并使用前后翻页", () => {
+  assert.match(debugPanelSource, /const HISTORY_PAGE_SIZE = 10;/);
+  assert.match(debugPanelSource, /getTaskEventHistory\(taskId, \{ limit: HISTORY_PAGE_SIZE \}\)/);
+  assert.match(debugPanelSource, />\s*上一页\s*</);
+  assert.match(debugPanelSource, />\s*下一页\s*</);
+  assert.doesNotMatch(debugPanelSource, /加载更多/);
+  assert.doesNotMatch(debugPanelSource, /加载全部/);
+  assert.doesNotMatch(debugPanelSource, /mergeEventHistory/);
+});
+
 test("等待审核但待审核摘要明确不存在时状态不一致优先于可恢复异常", () => {
   const diagnostics = buildAgentDebugDiagnostics(
     workspace({

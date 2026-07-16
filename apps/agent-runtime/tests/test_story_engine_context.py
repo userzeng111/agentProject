@@ -322,6 +322,40 @@ class ConcurrentChapterGateway(StreamGatewayBase):
 
 
 class StoryEngineContextTests(unittest.TestCase):
+    def test_build_chapter_plan_batch_accepts_chapters_wrapper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = FakeGatewayClient()
+
+            def complete_chapter_batch(**_kwargs):
+                return {
+                    "chapters": [
+                        {"number": 1, "title": "序章", "goal": "建立冲突"},
+                        {"number": 2, "title": "转折", "goal": "扩大危机"},
+                    ],
+                }, []
+
+            engine._complete_stream_json_with_cache = complete_chapter_batch  # type: ignore[method-assign]
+            plans = engine.build_chapter_plan_batch(
+                spec={"model_id": "gpt-5.4"},
+                story_plan={"working_title": "测试作品", "logline": "测试梗概"},
+                batch_index=0,
+                batch_size=2,
+                confirmed_chapter_plans=[],
+                model="gpt-5.4",
+            )
+
+            self.assertEqual([(item.number, item.title, item.goal) for item in plans], [
+                (1, "序章", "建立冲突"),
+                (2, "转折", "扩大危机"),
+            ])
+
     def test_resolve_model_requires_explicit_model_even_when_setting_contains_legacy_value(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(

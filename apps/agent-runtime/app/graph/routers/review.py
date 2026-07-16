@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.graph.state import WorkflowState, MAX_OUTLINE_REVISIONS, MAX_CHAPTER_PAIR_REVISIONS
+from app.graph.state import (
+    MAX_CHAPTER_PAIR_REVISIONS,
+    MAX_OUTLINE_REVISIONS,
+    OUTLINE_WINDOW_SIZE,
+    WorkflowState,
+)
 
 MAX_BATCH_RETRIES = 3
 
@@ -17,6 +22,13 @@ def route_after_outline_review(state: WorkflowState) -> str:
         # chapter_batches 阶段：判断是否全部完成
         completed_count = int(state.get("outline_completed_count", 0) or 0)
         total = int(state.get("outline_total_count", 0) or 0)
+        if state.get("outline_windowed") and completed_count > 0:
+            window_end = min(
+                ((completed_count - 1) // OUTLINE_WINDOW_SIZE + 1) * OUTLINE_WINDOW_SIZE,
+                total,
+            )
+            if completed_count >= window_end:
+                return "wait_for_window_drafts"
         if total > 0 and completed_count >= total:
             return "prepare_chapter_pair_context"
         return "plan_chapter_batch"

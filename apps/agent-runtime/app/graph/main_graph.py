@@ -30,6 +30,7 @@ from app.graph.nodes.outline import (
     plan_chapter_batch as _plan_chapter_batch_node,
     review_outline as _review_outline_node,
     revise_outline as _revise_outline_node,
+    wait_for_window_drafts as _wait_for_window_drafts_node,
     interrupt_outline_review,
 )
 from app.graph.nodes.chapter import (
@@ -71,6 +72,7 @@ _WORKFLOW_NODE_STAGES = {
     "plan_chapter_batch": "planning",
     "review_outline": "planning",
     "revise_outline": "planning",
+    "wait_for_window_drafts": "planning",
     "prepare_chapter_pair_context": "drafting",
     "draft_chapter_pair": "drafting",
     "chapter_gate_review": "drafting",
@@ -290,6 +292,9 @@ def build_default_callbacks(
     def revise_outline(state: WorkflowState) -> WorkflowState:
         return _revise_outline_node(state, engine=engine)
 
+    def wait_for_window_drafts(state: WorkflowState) -> WorkflowState:
+        return _wait_for_window_drafts_node(state)
+
     def prepare_chapter_pair_context(state: WorkflowState) -> WorkflowState:
         return _prepare_chapter_pair_context_node(
             state,
@@ -353,6 +358,7 @@ def build_default_callbacks(
         plan_chapter_batch=plan_chapter_batch,
         review_outline=review_outline,
         revise_outline=revise_outline,
+        wait_for_window_drafts=wait_for_window_drafts,
         prepare_chapter_pair_context=prepare_chapter_pair_context,
         draft_chapter_pair=draft_chapter_pair,
         chapter_gate_review=chapter_gate_review,
@@ -491,6 +497,9 @@ def build_graph(
     def revise_outline(state: WorkflowState) -> WorkflowState:
         return _revise_outline_node(state, engine=engine)
 
+    def wait_for_window_drafts(state: WorkflowState) -> WorkflowState:
+        return _wait_for_window_drafts_node(state)
+
     def prepare_chapter_pair_context(state: WorkflowState) -> WorkflowState:
         return _prepare_chapter_pair_context_node(
             state,
@@ -558,6 +567,7 @@ def build_graph(
     graph.add_node("plan_chapter_batch", plan_chapter_batch)
     graph.add_node("review_outline", review_outline)
     graph.add_node("revise_outline", revise_outline)
+    graph.add_node("wait_for_window_drafts", wait_for_window_drafts)
     graph.add_node("prepare_chapter_pair_context", prepare_chapter_pair_context)
     graph.add_node("draft_chapter_pair", draft_chapter_pair)
     graph.add_node("chapter_gate_review", chapter_gate_review)
@@ -584,11 +594,13 @@ def build_graph(
             "prepare_chapter_pair_context": "prepare_chapter_pair_context",
             "plan_chapter_batch": "plan_chapter_batch",
             "revise_outline": "revise_outline",
+            "wait_for_window_drafts": "wait_for_window_drafts",
             "cancel_task": "cancel_task",
         },
     )
     graph.add_edge("revise_outline", "review_outline")
     graph.add_edge("plan_chapter_batch", "review_outline")
+    graph.add_edge("wait_for_window_drafts", "plan_chapter_batch")
 
     # 章节对循环
     graph.add_edge("prepare_chapter_pair_context", "draft_chapter_pair")

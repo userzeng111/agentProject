@@ -455,6 +455,18 @@ def build_router(
             logger.exception("获取章节失败 task_id=%s", task_id)
             raise _handle_error(exc) from exc
 
+    @router.get("/tasks/{task_id}/events/history")
+    def get_task_event_history(
+        task_id: str,
+        limit: int = Query(50, ge=1, le=200, description="每页事件数"),
+        cursor: str | None = Query(None, description="上一页最后一条事件 ID"),
+    ):
+        try:
+            return task_service.get_task_event_history(task_id, cursor=cursor, limit=limit)
+        except Exception as exc:
+            logger.exception("读取任务历史执行日志失败 task_id=%s", task_id)
+            raise _handle_error(exc) from exc
+
     @router.get("/file-text")
     def get_file_text(ref: str = Query(..., description="tasklog 相对路径")):
         try:

@@ -65,10 +65,11 @@ class TaskServiceContinuationMixin:
                 raise ValueError("当前任务缺少小说项目记录。")
 
             completed_count = int(project.completed_chapter_count or 0)
-            remaining = max(int(project.planned_chapter_count or 0) - completed_count, 0)
+            planned_until = len(task.story_plan.chapter_plan)
+            remaining = max(planned_until - completed_count, 0)
             effective_count = min(int(request.requested_chapter_count), remaining)
             if effective_count <= 0:
-                raise ValueError("当前任务没有可继续创作的剩余章节。")
+                raise ValueError("当前规划窗口的正文已完成，请等待下一窗口章节计划生成。")
 
             with self._run_lock:
                 self._queued_continue_runs.add(task_id)
@@ -141,10 +142,11 @@ class TaskServiceContinuationMixin:
                 raise ValueError("当前任务缺少小说项目记录。")
 
             completed_count = int(project.completed_chapter_count or 0)
-            remaining = max(int(project.planned_chapter_count or 0) - completed_count, 0)
+            planned_until = len(task.story_plan.chapter_plan)
+            remaining = max(planned_until - completed_count, 0)
             effective_count = min(int(request.requested_chapter_count), remaining)
             if effective_count <= 0:
-                raise ValueError("当前任务没有可继续创作的剩余章节。")
+                raise ValueError("当前规划窗口的正文已完成，请等待下一窗口章节计划生成。")
 
             batch = create_batch(
                 task_id,

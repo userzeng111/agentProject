@@ -241,6 +241,53 @@ class TaskServiceWorkspaceTests(unittest.TestCase):
             self.assertEqual(workspace.supervisor_plan.subtasks[0].kind, "reference_analysis")
             self.assertEqual(workspace.supervisor_plan.subtasks[0].status.value, "ready")
 
+    def test_workspace_chapter_catalog_keeps_full_planned_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            settings = Settings(
+                OPENAI_API_KEY="test-key",
+                DEFAULT_CHAT_MODEL="gpt-5.4",
+                tasklog_root=str(Path(tmp_dir) / "tasklog"),
+            )
+            store = TaskLogStore(root_dir=str(Path(tmp_dir) / "tasklog"))
+            engine = FakeEngine(settings)
+            model_catalog = build_verified_gateway_model_catalog(settings, engine.gateway_client)
+            service = TaskService(store=store, engine=engine, model_catalog=model_catalog)
+            task = service.create_task(
+                TaskCreateRequest(
+                    mode=TaskMode.LONG_STORY,
+                    prompt="写一部长篇悬疑小说",
+                    model_id="gpt-5.4",
+                    target_chapter_count=8,
+                )
+            )
+            story_plan = StoryPlan(
+                working_title="港口谜案",
+                logline="档案员调查夜航失踪案。",
+                world_notes=["潮湿港口"],
+                character_notes=["女档案员"],
+                planned_chapter_count=8,
+                chapter_plan=[
+                    {"number": 1, "title": "起始", "goal": "发现异常"},
+                    {"number": 2, "title": "夜航", "goal": "追踪线索"},
+                ],
+            )
+            review = ReviewPayload(
+                type="outline_review",
+                version="v1",
+                summary="请审核首批章节计划。",
+                story_plan=story_plan,
+            )
+            store.set_waiting_review(task.id, review, story_plan)
+
+            workspace = service.get_workspace(task.id)
+
+            self.assertEqual(len(workspace.chapter_catalog), 8)
+            self.assertEqual([item.number for item in workspace.chapter_catalog], list(range(1, 9)))
+            self.assertEqual(workspace.chapter_catalog[0].title, "起始")
+            self.assertEqual(workspace.chapter_catalog[0].status, "ready_to_draft")
+            self.assertEqual(workspace.chapter_catalog[2].status, "pending_outline")
+            self.assertFalse(workspace.chapter_catalog[2].content_available)
+
     def test_workspace_exposes_pending_review_summary_without_review_body(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             settings = Settings(

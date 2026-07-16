@@ -52,6 +52,7 @@ class TaskLogStore:
         self._tasks: dict[str, TaskRecord] = {}
         self._subscribers: dict[str, list[_TaskEventSubscriber | asyncio.Queue[dict[str, Any]]]] = {}
         self._lock = threading.Lock()
+        self._event_journal_lock = threading.Lock()
 
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +563,8 @@ class TaskLogStore:
             target.updated_at = utc_now()
             with self._lock:
                 self._tasks[target.id] = target
+            with performance_span(logger, "task_store_append_event_journal", task_id=target.id):
+                self._append_event_journal(target, event)
             with performance_span(logger, "task_store_broadcast_event", task_id=target.id):
                 self._broadcast_event(target.id, event)
             with performance_span(logger, "task_store_write_events", task_id=target.id):
@@ -569,6 +572,34 @@ class TaskLogStore:
             with performance_span(logger, "task_store_write_trace", task_id=target.id):
                 self._write_trace(target)
             return target
+
+    def list_event_history(
+        self,
+        task_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> tuple[list[TaskEvent], str | None, int]:
+        """按事件追加顺序分页读取任务业务事件。"""
+
+        if limit < 1:
+            raise ValueError("事件分页大小必须大于 0。")
+
+        task = self.get(task_id)
+        events = task.events
+        start = 0
+        normalized_cursor = str(cursor or "").strip()
+        if normalized_cursor:
+            for index, event in enumerate(events):
+                if event.event_id == normalized_cursor:
+                    start = index + 1
+                    break
+            else:
+                raise ValueError("事件分页游标无效。")
+
+        items = events[start : start + limit]
+        next_cursor = items[-1].event_id if start + len(items) < len(events) else None
+        return items, next_cursor, len(events)
 
     def broadcast_event(
         self,
@@ -719,6 +750,10 @@ class TaskLogStore:
                     task = TaskRecord.model_validate(data)
                     task.storage_state = storage_state
                     self._migrate_legacy_model_fields(task_dir, task)
+                    try:
+                        self._reconcile_event_journal(task)
+                    except OSError:
+                        logger.warning("读取任务事件追加日志失败 task_id=%s", task.id, exc_info=True)
                     loaded[task.id] = task
                 except json.JSONDecodeError:
                     logger.warning("跳过损坏的任务快照 %s: JSON 解析失败", snapshot_path)
@@ -817,6 +852,87 @@ class TaskLogStore:
         self._write_md(task_dir / "events.md", "\n".join(events_md) + "\n")
         tail = [event.model_dump(mode="json") for event in task.events[-self.tail_limit :]]
         self._write_json(task_dir / "events.tail.json", {"task_id": task.id, "items": tail})
+
+    def _event_journal_path(self, task: TaskRecord) -> Path:
+        return self._task_dir(task) / "events.jsonl"
+
+    @staticmethod
+    def _event_journal_line(event: TaskEvent) -> str:
+        return json.dumps(event.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")) + "\n"
+
+    def _append_event_journal(self, task: TaskRecord, event: TaskEvent) -> None:
+        journal_path = self._event_journal_path(task)
+        with self._event_journal_lock:
+            if not journal_path.exists():
+                content = "".join(self._event_journal_line(item) for item in task.events)
+                self._atomic_write_text(journal_path, content)
+                return
+            self._append_event_journal_content(journal_path, [event])
+
+    def _append_events_to_journal(self, task: TaskRecord, events: list[TaskEvent]) -> None:
+        if not events:
+            return
+        journal_path = self._event_journal_path(task)
+        with self._event_journal_lock:
+            self._append_event_journal_content(journal_path, events)
+
+    def _append_event_journal_content(self, journal_path: Path, events: list[TaskEvent]) -> None:
+        content = "".join(self._event_journal_line(event) for event in events)
+        with journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def _read_event_journal(self, task: TaskRecord) -> list[TaskEvent]:
+        journal_path = self._event_journal_path(task)
+        if not journal_path.exists():
+            return []
+
+        events: list[TaskEvent] = []
+        with journal_path.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                payload = line.strip()
+                if not payload:
+                    continue
+                try:
+                    event = TaskEvent.model_validate_json(payload)
+                except Exception:
+                    logger.warning(
+                        "跳过损坏的任务事件日志 task_id=%s line=%s",
+                        task.id,
+                        line_number,
+                    )
+                    continue
+                if event.task_id not in {None, task.id}:
+                    logger.warning(
+                        "跳过任务 ID 不匹配的事件日志 task_id=%s line=%s",
+                        task.id,
+                        line_number,
+                    )
+                    continue
+                event.task_id = task.id
+                events.append(event)
+        return events
+
+    def _reconcile_event_journal(self, task: TaskRecord) -> None:
+        """初始化历史任务的追加日志，并用日志补回崩溃前未写入快照的事件。"""
+
+        journal_path = self._event_journal_path(task)
+        if not journal_path.exists():
+            content = "".join(self._event_journal_line(event) for event in task.events)
+            self._atomic_write_text(journal_path, content)
+            return
+
+        journal_events = self._read_event_journal(task)
+        task_event_ids = {event.event_id for event in task.events}
+        missing_from_task = [event for event in journal_events if event.event_id not in task_event_ids]
+        if missing_from_task:
+            task.events.extend(missing_from_task)
+            task_event_ids.update(event.event_id for event in missing_from_task)
+
+        journal_event_ids = {event.event_id for event in journal_events}
+        missing_from_journal = [event for event in task.events if event.event_id not in journal_event_ids]
+        self._append_events_to_journal(task, missing_from_journal)
 
     def _write_trace(self, task: TaskRecord) -> None:
         task_dir = self._task_dir(task)

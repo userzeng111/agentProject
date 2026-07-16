@@ -29,6 +29,48 @@ class FakeMismatchedPlanEngine(FakeStoryEngine):
         )
 
 
+class WindowedFakeStoryEngine(FakeStoryEngine):
+    """显式模拟支持总纲与章节计划分离生成的新引擎。"""
+
+    supports_deferred_chapter_plan = True
+
+    def build_story_plan(
+        self,
+        spec,
+        reference_text,
+        context_packet=None,
+        model=None,
+        revision_comment="",
+        original_plan=None,
+        defer_chapter_plan=False,
+    ):
+        plan = super().build_story_plan(
+            spec,
+            reference_text,
+            context_packet=context_packet,
+            model=model,
+            revision_comment=revision_comment,
+            original_plan=original_plan,
+        )
+        if defer_chapter_plan:
+            plan.chapter_plan = []
+        return plan
+
+    def build_chapter_plan_batch(
+        self,
+        spec,
+        story_plan,
+        batch_index,
+        batch_size,
+        confirmed_chapter_plans,
+        model=None,
+    ):
+        return [
+            ChapterPlan(number=number, title=f"第{number}章", goal=f"目标{number}")
+            for number in range(batch_index + 1, batch_index + batch_size + 1)
+        ]
+
+
 class GraphChapterPairLoopTests(unittest.TestCase):
     def test_long_novel_normalized_spec_uses_default_target_chapter_constraints(self) -> None:
         spec = build_normalized_spec(
@@ -71,8 +113,8 @@ class GraphChapterPairLoopTests(unittest.TestCase):
         self.assertEqual(spec["chapter_count_range"], {"min": 90, "max": 110})
         self.assertEqual(spec["chapter_count_range_text"], "90 到 110 章")
 
-    def test_five_chapters_must_finish_all_pairs_before_verification(self) -> None:
-        engine = FakeStoryEngine()
+    def test_five_chapter_plan_waits_for_window_drafts(self) -> None:
+        engine = WindowedFakeStoryEngine()
         callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
@@ -107,27 +149,11 @@ class GraphChapterPairLoopTests(unittest.TestCase):
 
         # 章节计划批次审核通过
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(third["__interrupt__"][0].value["batch_index"], 0)
+        self.assertEqual(third["__interrupt__"][0].value["type"], "window_draft_ready")
+        self.assertIn("第 5 章", third["__interrupt__"][0].value["summary"])
 
-        fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
-
-        fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fifth["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(fifth["__interrupt__"][0].value["batch_index"], 4)
-
-        sixth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(sixth["__interrupt__"][0].value["type"], "verification_review")
-
-        final_result = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertNotIn("__interrupt__", final_result)
-        self.assertEqual(engine.generated_batch_indexes, [0, 2, 4])
-        self.assertEqual(len(final_result["draft_result"]["chapters"]), 5)
-
-    def test_style_remix_long_story_can_switch_to_single_chapter_batches_after_first_pair(self) -> None:
-        engine = FakeStoryEngine()
+    def test_style_remix_long_story_waits_for_window_drafts(self) -> None:
+        engine = WindowedFakeStoryEngine()
         callbacks = build_default_callbacks(
             engine,
             context_manager=FakeContextManager(),
@@ -163,24 +189,7 @@ class GraphChapterPairLoopTests(unittest.TestCase):
 
         # 章节计划批次审核通过
         third = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(third["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(len(third["__interrupt__"][0].value["chapter_pair"]), 2)
-
-        fourth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fourth["__interrupt__"][0].value["type"], "chapter_pair_review")
-        self.assertEqual(fourth["__interrupt__"][0].value["batch_index"], 2)
-        self.assertEqual(len(fourth["__interrupt__"][0].value["chapter_pair"]), 1)
-
-        fifth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(fifth["__interrupt__"][0].value["batch_index"], 3)
-        self.assertEqual(len(fifth["__interrupt__"][0].value["chapter_pair"]), 1)
-
-        sixth = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(sixth["__interrupt__"][0].value["batch_index"], 4)
-        self.assertEqual(len(sixth["__interrupt__"][0].value["chapter_pair"]), 1)
-
-        seventh = graph.invoke(Command(resume={"approved": True, "comment": "继续"}), config=config)
-        self.assertEqual(seventh["__interrupt__"][0].value["type"], "verification_review")
+        self.assertEqual(third["__interrupt__"][0].value["type"], "window_draft_ready")
 
     def test_graph_blocks_drafting_when_chapter_plan_is_shorter_than_declared_count(self) -> None:
         engine = FakeMismatchedPlanEngine()

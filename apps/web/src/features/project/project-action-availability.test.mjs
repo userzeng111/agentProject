@@ -57,6 +57,8 @@ test("已完成任务可查看结果和归档", () => {
   const actions = resolveProjectActions({ status: "completed" });
   assert.equal(actions.viewResult.available, true);
   assert.equal(actions.archive.available, true);
+  assert.equal(actions.delete.available, true);
+  assert.match(actions.delete.confirmPrompt, /不可恢复/);
   assert.ok(actions.recover.available === false);
 });
 
@@ -72,7 +74,7 @@ test("可删除状态", () => {
     { status: "created", expect: true },
     { status: "failed", expect: true },
     { status: "cancelled", expect: true },
-    { status: "completed", expect: false },
+    { status: "completed", expect: true },
     { status: "drafting", expect: false },
   ];
   for (const { status, expect } of deletable) {

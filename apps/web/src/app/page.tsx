@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Alert,
   Box,
@@ -26,7 +27,11 @@ import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { newProjectHref } from "@/lib/task-routes";
 import { DashboardResponse, ModelOption, ModelRefreshState, TaskCardSummary, TaskStatus } from "@/lib/types";
 import { formatModelRefreshStatus } from "@/features/task-models/model-refresh-state.mjs";
-import { resolveTaskHref } from "@/features/task-dashboard/task-card-state.mjs";
+import {
+  resolveLibraryTabIndex,
+  resolveLibraryTabValue,
+  resolveTaskHref,
+} from "@/features/task-dashboard/task-card-state.mjs";
 
 const statusLabelMap: Record<TaskStatus, string> = {
   created: "待启动",
@@ -51,6 +56,7 @@ const DELETABLE_STATUSES: TaskStatus[] = [
   "ready_for_batch",
   "waiting_chapter_review",
   "waiting_verification_review",
+  "completed",
   "failed",
   "cancelled",
 ];
@@ -75,13 +81,23 @@ function getDeletePrompt(status: TaskStatus): string {
       return "确认删除该已取消的任务？";
     case "ready_for_batch":
       return "该任务已有部分进度，删除后将丢失已生成内容。确认删除？";
+    case "completed":
+      return "该已完成任务将删除全部正文、章节和执行日志。此操作不可恢复，请确认删除？";
     default:
       return "确认删除该任务？此操作不可恢复。";
   }
 }
 
 // 首页作品库项目卡片
-function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (taskId: string) => void }) {
+function TaskListItem({
+  task,
+  libraryTab,
+  onDelete,
+}: {
+  task: TaskCardSummary;
+  libraryTab: string;
+  onDelete?: (taskId: string) => void;
+}) {
   const isFailed = task.status === "failed";
   const deletable = isDeletable(task.status);
   const taskTypeLabel = formatTaskTypeLabel({
@@ -136,7 +152,7 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
             >
               <Button
                 component={Link}
-                href={resolveTaskHref(task)}
+                href={resolveTaskHref(task, libraryTab)}
                 size="small"
                 variant="contained"
                 endIcon={<ArrowForwardIcon />}
@@ -202,8 +218,16 @@ function TaskListItem({ task, onDelete }: { task: TaskCardSummary; onDelete?: (t
 const PAGE_SIZE = 5;
 const LIST_MAX_HEIGHT = 480;
 
-function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; onDelete?: (taskId: string) => void }) {
-  const [activeTab, setActiveTab] = useState(0);
+function TaskTabPanel({
+  dashboard,
+  initialLibraryTab,
+  onDelete,
+}: {
+  dashboard: DashboardResponse;
+  initialLibraryTab: string | null;
+  onDelete?: (taskId: string) => void;
+}) {
+  const [activeTab, setActiveTab] = useState(() => resolveLibraryTabIndex(initialLibraryTab));
   const [page, setPage] = useState(1);
 
   const tabConfig = [
@@ -287,7 +311,12 @@ function TaskTabPanel({ dashboard, onDelete }: { dashboard: DashboardResponse; o
         {pagedList.length ? (
           <Stack spacing={1.5}>
             {pagedList.map((task) => (
-              <TaskListItem key={task.task_id} task={task} onDelete={onDelete} />
+              <TaskListItem
+                key={task.task_id}
+                task={task}
+                libraryTab={resolveLibraryTabValue(activeTab)}
+                onDelete={onDelete}
+              />
             ))}
           </Stack>
         ) : (
@@ -461,7 +490,9 @@ function HomeSkeleton() {
   );
 }
 
-export default function Home() {
+function HomeContent() {
+  const searchParams = useSearchParams();
+  const initialLibraryTab = searchParams.get("library_tab");
   const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
   const [models, setModels] = useState<ModelOption[]>([]);
   const [modelRefresh, setModelRefresh] = useState<ModelRefreshState>({
@@ -608,7 +639,11 @@ export default function Home() {
           <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
             {/* 主内容区 */}
             <Grid item xs={12} md={8}>
-              <TaskTabPanel dashboard={dashboard} onDelete={handleDeleteTask} />
+              <TaskTabPanel
+                dashboard={dashboard}
+                initialLibraryTab={initialLibraryTab}
+                onDelete={handleDeleteTask}
+              />
             </Grid>
 
             {/* 侧边栏 */}
@@ -634,5 +669,13 @@ export default function Home() {
         message={snackbarMsg}
       />
     </Container>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<HomeSkeleton />}>
+      <HomeContent />
+    </Suspense>
   );
 }

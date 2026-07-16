@@ -463,11 +463,39 @@ export interface WorkspaceEvent {
   };
 }
 
+export interface TaskEventHistoryResponse {
+  items: WorkspaceEvent[];
+  next_cursor: string | null;
+  total: number;
+}
+
 export interface SourceAsset {
   id: string;
   filename: string;
   media_type: string;
   uploaded_at: string;
+}
+
+export type ChapterCatalogStatus =
+  | "pending_outline"
+  | "outline_pending_review"
+  | "ready_to_draft"
+  | "drafting"
+  | "awaiting_chapter_review"
+  | "completed"
+  | "needs_attention";
+
+export interface ChapterCatalogItem {
+  number: number;
+  title?: string;
+  goal?: string;
+  summary?: string;
+  status: ChapterCatalogStatus;
+  progress: number;
+  outline_batch_no?: number | null;
+  generation_batch_no?: number | null;
+  updated_at?: string | null;
+  content_available?: boolean;
 }
 
 export interface WorkspaceResponse extends RecoveryContractFields {
@@ -517,6 +545,7 @@ export interface WorkspaceResponse extends RecoveryContractFields {
     remaining_chapter_count?: number;
     default_batch_size?: number;
   };
+  chapter_catalog?: ChapterCatalogItem[];
   sources?: SourceAsset[];
   supervisor_plan?: SupervisorPlanSnapshot | null;
   agent_runs?: AgentRunItem[];

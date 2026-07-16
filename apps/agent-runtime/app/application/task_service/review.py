@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.observability import get_logger
+from app.graph.state import OUTLINE_CHUNK_SIZE
 
 
 from app.domain.models import (
@@ -49,7 +50,7 @@ class TaskServiceReviewMixin:
                 # 总纲通过，进入章节计划批次生成
                 task.story_plan = story_plan
                 self._ensure_novel_project_seeded(task)
-                batch_size = outline_batch.batch_size if outline_batch else 20
+                batch_size = OUTLINE_CHUNK_SIZE
                 task.pending_review.outline_batch = OutlineBatchInfo(
                     phase="chapter_batches",
                     completed_count=0,
@@ -74,13 +75,12 @@ class TaskServiceReviewMixin:
                 plans_by_number.pop(plan.number, plan)
                 for plan in story_plan.chapter_plan
             ]
-            merged_chapter_plan.extend(plans_by_number.values())
+            merged_chapter_plan.extend(plans_by_number[number] for number in sorted(plans_by_number))
             story_plan.chapter_plan = merged_chapter_plan
             completed = len(story_plan.chapter_plan)
             task.story_plan = story_plan
 
-            total = story_plan.planned_chapter_count or completed
-            batch_size = outline_batch.batch_size if outline_batch else 20
+            batch_size = outline_batch.batch_size if outline_batch else OUTLINE_CHUNK_SIZE
             batch_no = (outline_batch.batch_index // batch_size) + 1 if outline_batch else 1
 
             db_repository.mark_chapter_plan_batch_approved(task_id, batch_no)
@@ -94,27 +94,28 @@ class TaskServiceReviewMixin:
                     status="outline_approved",
                 )
 
-            if completed >= total:
+            total = int(story_plan.planned_chapter_count or completed)
+            if (batch_size != OUTLINE_CHUNK_SIZE or not batch_plans) and completed >= total:
+                # 旧任务已按全量大纲模式创建，保留原有“全部确认后可继续创作”行为。
                 self.store.save(task)
                 snapshot = self.store.set_ready_for_batch(
-                    task_id, story_plan,
-                    message=comment.strip() or f"章节计划全部完成（{completed}章），等待继续创作。"
+                    task_id,
+                    story_plan,
+                    message=comment.strip() or f"章节计划全部完成（{completed}章），等待继续创作。",
                 )
                 return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
 
-            # 还有剩余，准备下一批
+            # 保留当前批的 checkpoint 位置，让图在恢复时完成本批审核并决定下一步。
+            # 不能提前推进 outline_batch_index，否则重放当前审核会把编号错当成下一批。
             outline_batch.completed_count = completed
-            outline_batch.batch_index = completed
-            outline_batch.current_batch_plans = []
             outline_batch.retry_count = 0
             self.store.save(task)
 
-            # 同步 checkpoint 状态，避免 graph 恢复时使用旧的分批进度
+            # 同步已确认章节数；当前批起点由 checkpoint 保留，供审核收尾校验使用。
             if hasattr(self.workflow_engine, "update_state"):
                 try:
                     self.workflow_engine.update_state(self._config(task_id), {
                         "outline_completed_count": completed,
-                        "outline_batch_index": completed,
                         "outline_batch_retry_count": 0,
                         "story_plan": task.story_plan.model_dump(mode="json"),
                     })
@@ -230,6 +231,40 @@ class TaskServiceReviewMixin:
                             "display_level": "public",
                             "completed_chapter_count": completed_count,
                             "next_chapter_number": next_chapter_number,
+                        },
+                    )
+                    snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")
+                    snapshot = self._sync_supervisor_plan(task_id)
+                    with self._run_lock:
+                        if task_id in self._active_runs:
+                            raise ValueError("任务正在运行中，请勿重复提交。")
+                    self._start_background(task_id, self._resume_task_sync, task_id, approved, comment, action_model_id)
+                    return snapshot
+
+                planned_until = len(story_plan.chapter_plan)
+                if planned_until > 0 and completed_count >= planned_until:
+                    update_project_status(
+                        task_id,
+                        status=TaskStatus.PLANNING.value,
+                        completed_chapter_count=completed_count,
+                        next_chapter_number=next_chapter_number,
+                        active_batch_no=None,
+                        active_continue_request_id="",
+                        current_generating_chapter_number=None,
+                    )
+                    snapshot = self.store.mark_stage(
+                        task_id,
+                        status=TaskStatus.PLANNING,
+                        stage="planning",
+                        progress=max(task.progress, 60),
+                        message=f"第 1-{planned_until} 章正文已完成，正在规划下一窗口。",
+                        event_type="outline.window.completed",
+                        unit_id="outline-window",
+                        payload={
+                            "summary": "当前章节规划窗口正文已完成，开始生成下一窗口。",
+                            "display_level": "public",
+                            "completed_chapter_count": completed_count,
+                            "planned_until": planned_until,
                         },
                     )
                     snapshot = self._record_last_action(task_id, model_id=action_model_id, kind="resume")

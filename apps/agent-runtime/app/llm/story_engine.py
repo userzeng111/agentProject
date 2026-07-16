@@ -33,7 +33,7 @@ _OUTLINE_RETRY_JSON_PROMPT = (
     "请重新输出一个更精简且完整的 JSON 对象。"
     "必须保留字段：working_title, logline, world_notes, character_notes, planned_chapter_count, chapter_plan。"
     "请压缩 world_notes 为最多 6 条短句，压缩 character_notes 为最多 6 条短句。"
-    "chapter_plan 中每章只保留 number、title、goal 三个字段，不要扩写，不要附加额外说明。"
+    "总纲阶段 chapter_plan 必须返回空数组 []；章节计划会在总纲审核后按批生成。"
     "不要输出 Markdown 代码围栏，不要解释，不要补充说明，只返回最终 JSON 对象。"
 )
 
@@ -124,6 +124,8 @@ def reset_exchange_callback(token: Token) -> None:
 
 
 class StoryEngine(BaseAgent):
+    # 显式声明总纲与章节计划可分阶段生成，避免仅接受 **kwargs 的旧扩展引擎被误判为支持该协议。
+    supports_deferred_chapter_plan = True
     _skill_subdir = "story_engine"
 
     def __init__(self, settings: Settings) -> None:
@@ -147,7 +149,7 @@ class StoryEngine(BaseAgent):
                     "human",
                     "请基于以下信息生成小说大纲，并严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), planned_chapter_count(int), "
-                    "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
+                    "chapter_plan([])。总纲阶段只确定章节总数，chapter_plan 必须是空数组，后续按批生成。\n"
                     "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
                     "单章字数下限：{chapter_word_min}\n单章建议浮动范围：{chapter_word_range}\n"
                     "章节范围硬约束：{chapter_count_range_text}\n"
@@ -211,7 +213,7 @@ class StoryEngine(BaseAgent):
                     "当前大纲：{original_plan_json}\n\n"
                     "请严格返回 JSON，结构必须包含："
                     "working_title(string), logline(string), world_notes(string[]), character_notes(string[]), planned_chapter_count(int), "
-                    "chapter_plan([{{number:int,title:string,goal:string}}])。\n"
+                    "chapter_plan([])。修订总纲时不得生成完整章节计划，后续按批生成。\n"
                     "模式：{mode}\n创作类型：{creative_mode}\n篇幅规模：{novel_size}\n题材：{genre}\n风格：{style}\n风格约束：{style_requirements}\n"
                     "单章字数下限：{chapter_word_min}\n单章建议浮动范围：{chapter_word_range}\n"
                     "章节范围硬约束：{chapter_count_range_text}\n"
@@ -520,6 +522,7 @@ class StoryEngine(BaseAgent):
         model: str | None = None,
         revision_comment: str | None = None,
         original_plan: dict[str, Any] | None = None,
+        defer_chapter_plan: bool = False,
     ) -> StoryPlan:
         resolved_model = self.resolve_model(model or spec.get("model_id") or spec.get("model"))
         active_exchange_callback = self.exchange_callback or _exchange_callback_var.get()
@@ -544,7 +547,7 @@ class StoryEngine(BaseAgent):
                 reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
             )
             self._require_gateway_client()
-            return self._build_story_plan_with_retry(
+            plan = self._build_story_plan_with_retry(
                 request_messages=request_messages,
                 model=resolved_model,
                 stage="planning",
@@ -552,6 +555,9 @@ class StoryEngine(BaseAgent):
                 exchange_callback=active_exchange_callback,
                 max_tokens=self._outline_generation_max_tokens(spec, resolved_model),
             )
+            if defer_chapter_plan:
+                plan.chapter_plan = []
+            return plan
 
         # 首次生成
         request_messages = self._render_skill_prompt(
@@ -571,7 +577,7 @@ class StoryEngine(BaseAgent):
             reference_excerpt=self._escape_user_input(self._context_reference(reference_text, context_packet)),
         )
         self._require_gateway_client()
-        return self._build_story_plan_with_retry(
+        plan = self._build_story_plan_with_retry(
             request_messages=request_messages,
             model=resolved_model,
             stage="planning",
@@ -579,6 +585,9 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             max_tokens=self._outline_generation_max_tokens(spec, resolved_model),
         )
+        if defer_chapter_plan:
+            plan.chapter_plan = []
+        return plan
 
     def build_chapter_plan_batch(
         self,
@@ -626,7 +635,7 @@ class StoryEngine(BaseAgent):
         if not payload:
             raise RuntimeError("章节计划批次生成返回空响应")
 
-        parsed = payload if isinstance(payload, list) else self._parse_strict_json(str(payload))
+        parsed = payload.get("chapters") if isinstance(payload, dict) else payload
         if not isinstance(parsed, list):
             raise RuntimeError(f"章节计划批次生成返回非数组 JSON: {type(parsed)}")
 
@@ -2302,7 +2311,7 @@ class StoryEngine(BaseAgent):
         chapter_count = len(plan.chapter_plan)
         if planned_count < chapter_count_min or planned_count > chapter_count_max:
             raise ValueError("大纲规划章节数超出允许范围。")
-        if chapter_count != planned_count:
+        if chapter_count not in {0, planned_count}:
             raise ValueError("大纲章节列表数量与 planned_chapter_count 不一致。")
         return plan
 
