@@ -105,6 +105,17 @@ class StreamSuccessGateway(StreamGatewayBase):
         yield StreamChunk(content=json.dumps(self.payload, ensure_ascii=False))
 
 
+class StreamSequenceGateway(StreamGatewayBase):
+    def __init__(self, payloads: list[dict]) -> None:
+        self.payloads = payloads
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        payload = self.payloads[len(self.calls) - 1]
+        yield StreamChunk(content=json.dumps(payload, ensure_ascii=False), model=model or "")
+
+
 class ProtocolResolverFailsGateway(StreamSuccessGateway):
     def _resolve_protocol(self, model: str) -> str:
         raise RuntimeError(f"无法解析模型协议: {model}")
@@ -291,6 +302,50 @@ class BoundaryWithoutEndChapterGateway(StreamGatewayBase):
         yield StreamChunk(finish_reason="stop", model=model or "")
 
 
+class PartialBoundaryThenRepairChapterGateway(StreamGatewayBase):
+    """复现章节元数据边界与结束边界同时缺失的真实模型响应。"""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def complete_stream_sync(self, messages, model=None, **kwargs):
+        self.calls.append({"messages": [dict(item) for item in messages], "model": model, "kwargs": dict(kwargs)})
+        prompt = messages[-1]["content"]
+        if len(self.calls) == 1:
+            content_match = re.search(r"---CHAPTER_CONTENT_BOUNDARY_([a-f0-9]{12})---", prompt)
+            if content_match is None:
+                yield StreamChunk(content="not-json", model=model or "")
+                return
+            suffix = content_match.group(1)
+            yield StreamChunk(
+                content=(
+                    '{"number":3,"title":"初次改写","summary":"主角测试账簿改写一件小事。"}\n'
+                    f"---CHAPTER_CONTENT_BOUNDARY_{suffix}---\n"
+                    "这是一段截断正文"
+                ),
+                model=model or "",
+            )
+            yield StreamChunk(finish_reason="stop", model=model or "")
+            return
+
+        meta_match = re.search(r"---CHAPTER_META_JSON_BOUNDARY_([a-f0-9]{12})---", prompt)
+        if meta_match is None:
+            yield StreamChunk(content="not-json", model=model or "")
+            return
+        suffix = meta_match.group(1)
+        yield StreamChunk(
+            content=(
+                f"---CHAPTER_META_JSON_BOUNDARY_{suffix}---\n"
+                '{"number":3,"title":"初次改写","summary":"主角测试账簿改写一件小事。"}\n'
+                f"---CHAPTER_CONTENT_BOUNDARY_{suffix}---\n"
+                "修复后的完整章节正文。\n"
+                f"---CHAPTER_END_BOUNDARY_{suffix}---"
+            ),
+            model=model or "",
+        )
+        yield StreamChunk(finish_reason="stop", model=model or "")
+
+
 class ConcurrentChapterGateway(StreamGatewayBase):
     def __init__(self, delay_seconds: float = 0.05) -> None:
         self.delay_seconds = delay_seconds
@@ -322,6 +377,77 @@ class ConcurrentChapterGateway(StreamGatewayBase):
 
 
 class StoryEngineContextTests(unittest.TestCase):
+    def test_build_chapter_plan_batch_repairs_single_chapter_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSequenceGateway([
+                {"number": 6, "title": "遗漏批次", "goal": "错误返回单章"},
+                {
+                    "chapters": [
+                        {"number": number, "title": f"第{number}章", "goal": "推进剧情"}
+                        for number in range(6, 11)
+                    ],
+                },
+            ])
+            engine.gateway_client = gateway
+
+            plans = engine.build_chapter_plan_batch(
+                spec={"model_id": "gpt-5.4"},
+                story_plan={"working_title": "测试作品", "logline": "测试梗概"},
+                batch_index=5,
+                batch_size=5,
+                confirmed_chapter_plans=[],
+                model="gpt-5.4",
+            )
+
+            self.assertEqual([item.number for item in plans], [6, 7, 8, 9, 10])
+            self.assertEqual(len(gateway.calls), 2)
+            self.assertIn("第 6 至第 10 章", gateway.calls[1]["messages"][-1]["content"])
+
+    def test_chapter_plan_batch_skips_invalid_cached_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="gpt-5.4",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = StreamSuccessGateway(
+                {
+                    "chapters": [
+                        {"number": number, "title": f"第{number}章", "goal": "推进剧情"}
+                        for number in range(6, 11)
+                    ],
+                }
+            )
+            engine.gateway_client = gateway
+            request_messages = [{"role": "user", "content": "生成第 6 至第 10 章计划"}]
+            cache_key = engine._response_cache_key(model="gpt-5.4", request_messages=request_messages)  # noqa: SLF001
+            engine.response_cache.set(cache_key, {"number": 6, "title": "无效缓存", "goal": "遗漏后续章节"})
+
+            payload, _ = engine._complete_stream_json_with_cache(  # noqa: SLF001
+                request_messages=request_messages,
+                model="gpt-5.4",
+                stage="planning",
+                exchange_label="chapter-plan-batch",
+                exchange_callback=None,
+                response_parser=lambda raw: engine._coerce_chapter_plan_batch_payload(  # noqa: SLF001
+                    raw,
+                    start_chapter=6,
+                    end_chapter=10,
+                ),
+            )
+
+            self.assertEqual([item["number"] for item in payload], [6, 7, 8, 9, 10])
+            self.assertEqual(len(gateway.stream_calls), 1)
+
     def test_build_chapter_plan_batch_accepts_chapters_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             engine = StoryEngine(
@@ -1149,6 +1275,80 @@ class StoryEngineContextTests(unittest.TestCase):
             self.assertIn('"钥匙出现在玄关托盘里。"', drafts[0].content)
             self.assertIn('"代价：一段记忆。"', drafts[0].content)
             self.assertEqual(len(gateway.calls), 1)
+
+    def test_parse_chapter_response_accepts_missing_meta_boundary_when_end_boundary_confirms_completeness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            engine.gateway_client = BoundaryChapterGateway()
+            boundaries = {
+                "meta": "---CHAPTER_META_JSON_BOUNDARY_test---",
+                "content": "---CHAPTER_CONTENT_BOUNDARY_test---",
+                "end": "---CHAPTER_END_BOUNDARY_test---",
+            }
+
+            payload = engine._parse_chapter_response(  # noqa: SLF001
+                '{"number":3,"title":"初次改写","summary":"摘要"}\n'
+                f"{boundaries['content']}\n"
+                "已确认完整的正文。\n"
+                f"{boundaries['end']}",
+                boundaries=boundaries,
+            )
+
+            self.assertEqual(payload["number"], 3)
+            self.assertEqual(payload["content"], "已确认完整的正文。")
+
+    def test_generate_chapter_pair_repairs_incomplete_partial_boundary_response(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = StoryEngine(
+                Settings(
+                    openai_api_key="test-key",
+                    default_chat_model="mimo-v2.5-pro",
+                    tasklog_root=str(Path(tmp_dir) / "tasklog"),
+                )
+            )
+            gateway = PartialBoundaryThenRepairChapterGateway()
+            engine.gateway_client = gateway
+
+            drafts = engine.generate_chapter_pair(
+                spec={
+                    "mode": "short_story",
+                    "creative_mode": "original",
+                    "novel_size": "short",
+                    "prompt": "写一章悬疑短篇。",
+                    "genre": "悬疑",
+                    "style": "冷静克制",
+                    "model_id": "mimo-v2.5-pro",
+                    "chapter_word_min": 600,
+                    "chapter_word_max": 780,
+                    "chapter_word_range_text": "600 到 780",
+                },
+                story_plan={
+                    "working_title": "账簿午夜",
+                    "logline": "旧书店账簿改写现实。",
+                    "planned_chapter_count": 3,
+                    "chapter_plan": [
+                        {"number": 3, "title": "初次改写", "goal": "主角测试账簿。"},
+                    ],
+                },
+                batch_index=0,
+                completed_chapters=[],
+                reference_text="",
+                model="mimo-v2.5-pro",
+            )
+
+            self.assertEqual(len(drafts), 1)
+            self.assertEqual(drafts[0].content, "修复后的完整章节正文。")
+            self.assertEqual(len(gateway.calls), 2)
+            repair_prompt = gateway.calls[1]["messages"][-1]["content"]
+            self.assertIn("---CHAPTER_META_JSON_BOUNDARY_", repair_prompt)
+            self.assertIn("---CHAPTER_CONTENT_BOUNDARY_", repair_prompt)
+            self.assertIn("---CHAPTER_END_BOUNDARY_", repair_prompt)
 
     def test_stream_usage_emits_provider_prompt_cache_progress_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

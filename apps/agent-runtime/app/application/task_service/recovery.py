@@ -706,9 +706,11 @@ class TaskServiceRecoveryMixin:
                 project = get_novel_project(task.id)
 
         chapters = list_outline_chapters(task.id)
+        has_persisted_chapters = False
         for chapter in chapters:
             chapter_path = self._chapter_storage_path(task.id, int(chapter.chapter_number))
             if chapter_path.exists():
+                has_persisted_chapters = True
                 current_hash, current_size = read_file_content_hash(chapter_path)
                 if chapter.content_hash and chapter.file_size and (
                     chapter.content_hash != current_hash or int(chapter.file_size) != int(current_size)
@@ -771,6 +773,26 @@ class TaskServiceRecoveryMixin:
                     task.id,
                     "章节批次一致性校验失败，已转入待人工处理。",
                 )
+
+        planned_total = int(
+            project.planned_chapter_count
+            or (task.story_plan.planned_chapter_count if task.story_plan is not None else 0)
+            or (len(task.story_plan.chapter_plan) if task.story_plan is not None else 0)
+        )
+        contiguous_completed = len(
+            self._load_completed_chapters_until_gap(task.id, max_chapters=planned_total)
+        )
+        if has_persisted_chapters and contiguous_completed != int(project.completed_chapter_count or 0):
+            # 章节文件可能在并行批次中乱序落盘；恢复时只能以前缀连续章节作为续写位置。
+            update_project_status(
+                task.id,
+                status=project.status,
+                completed_chapter_count=contiguous_completed,
+                next_chapter_number=contiguous_completed + 1,
+                active_batch_no=None,
+                active_continue_request_id="",
+            )
+            project = get_novel_project(task.id)
 
         if task.status in {TaskStatus.WAITING_MANUAL_ACTION, TaskStatus.CANCELLED} and project.blocked_from_status:
             blocked_status = project.blocked_from_status

@@ -607,7 +607,9 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       setActionModelId("");
       return;
     }
-    if (actionModelInitializedRef.current || !selectableModels.length) {
+    // 模型目录可能先于工作台数据返回。此时若提前标记完成初始化，
+    // 后续拿到任务绑定的模型也不会自动回填，导致“开始创作”按钮被错误禁用。
+    if (actionModelInitializedRef.current || !selectableModels.length || !workspace) {
       return;
     }
     actionModelInitializedRef.current = true;
@@ -621,7 +623,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       return;
     }
     setActionModelId("");
-  }, [actionModelId, currentTaskModelId, selectableModels]);
+  }, [actionModelId, currentTaskModelId, selectableModels, workspace]);
 
   const hasValidActionModel = Boolean(resolvedActionModelId);
 

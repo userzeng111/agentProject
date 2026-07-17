@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.errors import GraphInterrupt
 
 from app.context.manager import ContextManager
 from app.domain.models import AutoReviewPolicy, ReviewDecision, ReviewPayload
@@ -118,6 +119,18 @@ def _instrument_workflow_callback(node_name: str, callback: Callable[[WorkflowSt
             )
         try:
             result = callback(state)
+        except GraphInterrupt:
+            if progress is not None:
+                progress(
+                    {
+                        "event_type": "workflow.node.interrupted",
+                        "stage": stage,
+                        "unit_id": node_name,
+                        "message": f"节点已暂停，等待后续操作：{node_name}。",
+                        "payload": base_payload,
+                    }
+                )
+            raise
         except Exception as exc:
             if progress is not None:
                 progress(

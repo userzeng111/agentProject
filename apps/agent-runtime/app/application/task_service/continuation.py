@@ -45,6 +45,7 @@ class TaskServiceContinuationMixin:
                 get_active_batch,
                 get_batch_by_request,
                 get_novel_project,
+                update_project_status,
             )
 
             existing_batch = get_batch_by_request(task_id, request.continue_request_id)
@@ -64,10 +65,23 @@ class TaskServiceContinuationMixin:
             if project is None:
                 raise ValueError("当前任务缺少小说项目记录。")
 
-            completed_count = int(project.completed_chapter_count or 0)
             planned_until = len(task.story_plan.chapter_plan)
-            remaining = max(planned_until - completed_count, 0)
-            effective_count = min(int(request.requested_chapter_count), remaining)
+            completed_chapters, completed_count = self._continuous_completed_chapters(task_id, planned_until)
+            if completed_count != int(project.completed_chapter_count or 0):
+                update_project_status(
+                    task_id,
+                    status=project.status,
+                    completed_chapter_count=completed_count,
+                    next_chapter_number=completed_count + 1,
+                    active_batch_no=None,
+                    active_continue_request_id="",
+                )
+            effective_count = self._safe_generation_count(
+                task_id,
+                start_chapter=completed_count + 1,
+                requested_count=int(request.requested_chapter_count),
+                planned_until=planned_until,
+            )
             if effective_count <= 0:
                 raise ValueError("当前规划窗口的正文已完成，请等待下一窗口章节计划生成。")
 
@@ -141,10 +155,23 @@ class TaskServiceContinuationMixin:
             if project is None:
                 raise ValueError("当前任务缺少小说项目记录。")
 
-            completed_count = int(project.completed_chapter_count or 0)
             planned_until = len(task.story_plan.chapter_plan)
-            remaining = max(planned_until - completed_count, 0)
-            effective_count = min(int(request.requested_chapter_count), remaining)
+            completed_chapters, completed_count = self._continuous_completed_chapters(task_id, planned_until)
+            if completed_count != int(project.completed_chapter_count or 0):
+                update_project_status(
+                    task_id,
+                    status=project.status,
+                    completed_chapter_count=completed_count,
+                    next_chapter_number=completed_count + 1,
+                    active_batch_no=None,
+                    active_continue_request_id="",
+                )
+            effective_count = self._safe_generation_count(
+                task_id,
+                start_chapter=completed_count + 1,
+                requested_count=int(request.requested_chapter_count),
+                planned_until=planned_until,
+            )
             if effective_count <= 0:
                 raise ValueError("当前规划窗口的正文已完成，请等待下一窗口章节计划生成。")
 
@@ -176,7 +203,6 @@ class TaskServiceContinuationMixin:
             )
             task = self._record_last_action(task_id, model_id=action_model_id, kind="continue")
 
-            completed_chapters = self.get_current_chapters(task_id)[:completed_count]
             draft_seed_map = self._load_draft_seed_map(
                 task_id,
                 list(range(completed_count + 1, completed_count + effective_count + 1)),
@@ -236,13 +262,14 @@ class TaskServiceContinuationMixin:
                     next_chapter_number=completed_count + 1,
                     current_generating_chapter_number=None,
                 )
+                review_chapters = self._pending_draft_review_chapters(task_id, chapter_drafts)
                 review = ReviewPayload(
                     type="chapter_pair_review",
                     version="v1",
                     summary="请审核当前章节批次。",
-                    chapter_pair=chapter_drafts,
-                    batch_index=completed_count,
-                    completed_count=completed_count,
+                    chapter_pair=review_chapters,
+                    batch_index=review_chapters[0].number - 1,
+                    completed_count=review_chapters[0].number - 1,
                     total_chapters=int(project.planned_chapter_count or len(task.story_plan.chapter_plan)),
                 )
                 # 自动审核：若开启则在入库前生成 Agent 评分与建议
@@ -327,6 +354,55 @@ class TaskServiceContinuationMixin:
                 return self._safe_sync_supervisor_plan(task_id, fallback=snapshot)
         finally:
             self._leave_active_run(task_id)
+
+    def _continuous_completed_chapters(
+        self,
+        task_id: str,
+        planned_until: int,
+    ) -> tuple[list[dict[str, Any]], int]:
+        chapters = self._load_completed_chapters_until_gap(task_id, max_chapters=planned_until)
+        return chapters, len(chapters)
+
+    def _safe_generation_count(
+        self,
+        task_id: str,
+        *,
+        start_chapter: int,
+        requested_count: int,
+        planned_until: int,
+    ) -> int:
+        max_count = min(max(int(requested_count), 0), max(planned_until - start_chapter + 1, 0))
+        if max_count <= 0:
+            return 0
+        for chapter_number in range(start_chapter + 1, planned_until + 1):
+            if (
+                self._load_chapter_draft_from_file(task_id, chapter_number) is not None
+                or self._load_chapter_draft_from_history(task_id, chapter_number) is not None
+            ):
+                return min(max_count, chapter_number - start_chapter)
+        return max_count
+
+    def _pending_draft_review_chapters(
+        self,
+        task_id: str,
+        generated_chapters: list[ChapterDraft],
+    ) -> list[ChapterDraft]:
+        from app.storage.db_repository import list_outline_chapters
+
+        chapters_by_number = {chapter.number: chapter for chapter in generated_chapters}
+        for row in list_outline_chapters(task_id):
+            if row.status == "approved" or int(row.chapter_number) in chapters_by_number:
+                continue
+            payload = self._load_chapter_draft_from_file(task_id, int(row.chapter_number))
+            if payload is None:
+                payload = self._load_chapter_draft_from_history(task_id, int(row.chapter_number))
+            if payload is None:
+                continue
+            try:
+                chapters_by_number[int(row.chapter_number)] = ChapterDraft.model_validate(payload)
+            except Exception:
+                continue
+        return [chapters_by_number[number] for number in sorted(chapters_by_number)]
 
     def get_current_chapters(self, task_id: str) -> list[dict[str, Any]]:
         """获取当前任务的章节正文列表（用于工作台预览）。"""

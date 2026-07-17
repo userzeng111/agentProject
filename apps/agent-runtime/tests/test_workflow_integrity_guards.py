@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from langgraph.errors import GraphInterrupt
 
 from app.domain.models import StoryPlan
 from app.graph.main_graph import _instrument_workflow_callback
@@ -136,3 +137,22 @@ def test_workflow_node_events_cover_start_complete_and_failure() -> None:
     ]
     assert events[0]["stage"] == "planning"
     assert events[-1]["payload"]["error_type"] == "RuntimeError"
+
+
+def test_workflow_node_interrupt_is_recorded_as_pause_not_failure() -> None:
+    events: list[dict] = []
+    token = set_progress_callback(events.append)
+    try:
+        with pytest.raises(GraphInterrupt):
+            _instrument_workflow_callback(
+                "wait_for_window_drafts",
+                lambda _state: (_ for _ in ()).throw(GraphInterrupt()),
+            )({})
+    finally:
+        reset_progress_callback(token)
+
+    assert [item["event_type"] for item in events] == [
+        "workflow.node.started",
+        "workflow.node.interrupted",
+    ]
+    assert events[-1]["stage"] == "planning"

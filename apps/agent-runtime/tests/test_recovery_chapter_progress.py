@@ -30,9 +30,35 @@ class FakeEngine:
             {"id": "K2.6", "object": "model", "owned_by": "moonshot"},
         ]
         self.progress_callback = None
+        self.generated_batches: list[dict[str, int | list[int]]] = []
 
     def set_runtime_default_model(self, model_id: str) -> None:
         self.settings.default_chat_model = model_id
+
+    def generate_chapter_pair(
+        self,
+        *,
+        story_plan,
+        batch_index,
+        requested_batch_size,
+        **_kwargs,
+    ):
+        plans = story_plan["chapter_plan"][batch_index : batch_index + requested_batch_size]
+        self.generated_batches.append(
+            {
+                "batch_index": batch_index,
+                "generated_numbers": [int(plan["number"]) for plan in plans],
+            }
+        )
+        return [
+            {
+                "number": plan["number"],
+                "title": plan["title"],
+                "summary": f"第{plan['number']}章摘要",
+                "content": f"新生成第{plan['number']}章正文",
+            }
+            for plan in plans
+        ]
 
 
 class RecoveryChapterProgressTests(unittest.TestCase):
@@ -302,6 +328,84 @@ class RecoveryChapterProgressTests(unittest.TestCase):
                 self.assertTrue(str(row.json_ref).endswith(".json"))
                 self.assertTrue(row.content_hash)
                 self.assertGreater(int(row.file_size or 0), 0)
+
+    def test_recover_and_continue_regenerates_gap_without_overwriting_later_chapters(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.LONG_STORY,
+                prompt="修复并继续生成长篇小说",
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="断章恢复",
+            logline="在缺失章节后安全恢复正文。",
+            chapter_plan=[
+                {"number": number, "title": f"第{number}章", "goal": f"推进第{number}章"}
+                for number in range(1, 21)
+            ],
+        )
+        task = store.set_ready_for_batch(task.id, story_plan)
+        service._ensure_novel_project_seeded(task)
+        for number in [*range(1, 16), *range(17, 21)]:
+            service._write_chapter_file(
+                task.id,
+                chapter_number=number,
+                title=f"第{number}章",
+                summary=f"第{number}章摘要",
+                content=f"保留第{number}章正文",
+            )
+        store.set_waiting_manual_action(task.id, "第16章生成失败。")
+        update_project_status(
+            task.id,
+            status=TaskStatus.WAITING_MANUAL_ACTION.value,
+            completed_chapter_count=19,
+            next_chapter_number=20,
+            blocked_from_status=TaskStatus.READY_FOR_BATCH.value,
+        )
+
+        recovered = service.recover_task(task.id, force=True)
+
+        self.assertEqual(recovered.status, TaskStatus.READY_FOR_BATCH)
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.completed_chapter_count, 15)
+        self.assertEqual(project.next_chapter_number, 16)
+        with get_session() as session:
+            row = session.query(NovelOutlineChapterModel).filter_by(task_id=task.id, chapter_number=17).first()
+            self.assertIsNotNone(row)
+            assert row is not None
+            row.status = "outline_planned"
+            session.commit()
+
+        continued = service.continue_task(
+            task.id,
+            {"requested_chapter_count": 20, "continue_request_id": "recover-gap-16"},
+        )
+
+        self.assertEqual(service.engine.generated_batches[-1]["batch_index"], 15)
+        self.assertEqual(service.engine.generated_batches[-1]["generated_numbers"], [16])
+        chapters = {item["number"]: item for item in service.get_current_chapters(task.id)}
+        self.assertEqual(chapters[17]["content"], "保留第17章正文")
+        self.assertEqual(continued.status, TaskStatus.WAITING_CHAPTER_REVIEW)
+        self.assertEqual(
+            [chapter.number for chapter in continued.pending_review.chapter_pair or []],
+            list(range(1, 21)),
+        )
+        self.assertEqual(continued.pending_review.batch_index, 0)
+        self.assertEqual(continued.pending_review.completed_count, 0)
+
+        service._start_background = lambda *_args, **_kwargs: None
+        service.resume_task(task.id, approved=True, comment="批次通过")
+        project = get_novel_project(task.id)
+        self.assertIsNotNone(project)
+        assert project is not None
+        self.assertEqual(project.completed_chapter_count, 20)
+        self.assertEqual(project.next_chapter_number, 21)
 
     def test_mark_failed_unless_stable_completes_when_all_chapter_files_exist(self) -> None:
         tmp_dir, store, service = self._build_service()

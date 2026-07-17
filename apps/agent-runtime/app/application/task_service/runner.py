@@ -156,6 +156,13 @@ class TaskServiceRunnerMixin:
                     max_interrupt_rounds = 10
                     interrupt_round = 0
                     while "__interrupt__" in result and interrupt_round < max_interrupt_rounds:
+                        interrupt_payload = self._extract_interrupt_payload(result)
+                        if interrupt_payload.get("type") == "window_draft_ready":
+                            # 当前窗口的章节计划已确认，但正文尚未完成；必须交给
+                            # _sync_result 落为 ready_for_batch，不能把上一次审核决定
+                            # 透传为下一窗口的继续指令。
+                            logger.info("章节规划窗口已就绪，停止自动解析后续中断，task_id=%s", task_id)
+                            break
                         interrupt_round += 1
                         logger.info(
                             "检测到后续中断，自动解析第 %d 轮，task_id=%s",

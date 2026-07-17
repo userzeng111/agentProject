@@ -1200,6 +1200,65 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         except ValueError as exc:  # pragma: no cover - 红灯断言
             self.fail(f"_resume_task_sync 不应拒绝 planning 状态: {exc}")
 
+    def test_resume_stops_auto_resolution_when_outline_window_is_ready(self) -> None:
+        """窗口中断必须交给 ready_for_batch，不能沿图边继续规划下一窗口。"""
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                prompt="生成二十章后必须先完成正文再规划下一窗口",
+                creative_mode="original",
+                novel_size="medium",
+                target_chapter_count=80,
+                model_id="gpt-5.4",
+            )
+        )
+        task.pending_review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="通过当前章节计划批次。",
+        )
+        task.status = TaskStatus.WAITING_OUTLINE_REVIEW
+        task.current_stage = "waiting_outline_review"
+        store.save(task)
+
+        window_interrupt = {
+            "__interrupt__": [
+                {
+                    "type": "window_draft_ready",
+                    "version": "v1",
+                    "summary": "章节计划已确认至第 20 章，等待本窗口正文全部完成。",
+                }
+            ]
+        }
+
+        class FakeWorkflow:
+            def __init__(self) -> None:
+                self.resume_calls: list[Command] = []
+
+            def get_state(self, config):
+                return SimpleNamespace(values={})
+
+            def resume(self, command, config=None):
+                self.resume_calls.append(command)
+                if len(self.resume_calls) > 1:
+                    raise AssertionError("窗口中断不应被自动恢复到下一章节规划。")
+                return window_interrupt
+
+        workflow = FakeWorkflow()
+        service.workflow_engine = workflow
+        service._rehydrate_resume_state_if_needed = lambda *_args, **_kwargs: True
+        synced_results: list[dict] = []
+        service._sync_result = lambda _task_id, result, review_comment="": (  # type: ignore[method-assign]
+            synced_results.append(result) or store.get(task.id)
+        )
+
+        service._resume_task_sync(task.id, approved=True, comment="批次通过")
+
+        self.assertEqual(len(workflow.resume_calls), 1)
+        self.assertEqual(synced_results, [window_interrupt])
+
     def test_outline_approve_moves_task_to_ready_for_batch_without_background_resume(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)

@@ -231,8 +231,8 @@ class StoryEngine(BaseAgent):
                 ),
                 (
                     "human",
-                    "请基于以下小说总纲，生成指定范围的章节计划，并严格返回 JSON 数组。\n"
-                    "每个元素结构为：{{number:int, title:string, goal:string}}\n\n"
+                    "请基于以下小说总纲，生成指定范围的章节计划，并严格返回 JSON 对象。\n"
+                    "对象必须只包含 chapters 数组；数组中每个元素结构为：{{number:int, title:string, goal:string}}。\n\n"
                     "作品标题：{title}\n"
                     "一句话梗概：{logline}\n"
                     "世界观：{world_notes}\n"
@@ -631,13 +631,23 @@ class StoryEngine(BaseAgent):
             exchange_callback=active_exchange_callback,
             progress_callback=None,
             max_tokens=self._generation_max_tokens(resolved_model),
+            response_parser=lambda raw: self._coerce_chapter_plan_batch_payload(
+                raw,
+                start_chapter=batch_index + 1,
+                end_chapter=batch_index + batch_size,
+            ),
+            repair_prompt=(
+                f"上一次章节计划批次未完整覆盖第 {batch_index + 1} 至第 {batch_index + batch_size} 章。"
+                "请只返回 JSON 对象，且仅包含 chapters 数组；数组必须按顺序包含该范围内每一章的 "
+                "number、title、goal，不得遗漏、重复或输出范围外章节。"
+                "不要输出 Markdown 代码围栏、解释或其他字段。"
+            ),
         )
-        if not payload:
-            raise RuntimeError("章节计划批次生成返回空响应")
-
-        parsed = payload.get("chapters") if isinstance(payload, dict) else payload
-        if not isinstance(parsed, list):
-            raise RuntimeError(f"章节计划批次生成返回非数组 JSON: {type(parsed)}")
+        parsed = self._coerce_chapter_plan_batch_payload(
+            payload,
+            start_chapter=batch_index + 1,
+            end_chapter=batch_index + batch_size,
+        )
 
         from app.domain.models import ChapterPlan
         result: list[ChapterPlan] = []
@@ -650,6 +660,33 @@ class StoryEngine(BaseAgent):
             if number > 0 and title:
                 result.append(ChapterPlan(number=number, title=title, goal=goal))
         return result
+
+    def _coerce_chapter_plan_batch_payload(
+        self,
+        payload: Any,
+        *,
+        start_chapter: int,
+        end_chapter: int,
+    ) -> list[dict[str, Any]]:
+        if isinstance(payload, str):
+            payload = self._strip_and_parse_json(payload)
+        if isinstance(payload, dict):
+            chapters = payload.get("chapters", [payload])
+        else:
+            chapters = payload
+        if not isinstance(chapters, list) or not all(isinstance(item, dict) for item in chapters):
+            raise GatewayClientError("章节计划批次必须返回包含 chapters 数组的 JSON 对象。")
+
+        expected_numbers = list(range(start_chapter, end_chapter + 1))
+        actual_numbers = [self._positive_int(item.get("number")) for item in chapters]
+        if actual_numbers != expected_numbers:
+            raise GatewayClientError(
+                f"章节计划批次必须完整按序返回第 {start_chapter} 至第 {end_chapter} 章，"
+                f"实际章节号为 {actual_numbers}。"
+            )
+        if any(not str(item.get("title") or "").strip() for item in chapters):
+            raise GatewayClientError("章节计划批次中的每一章都必须包含标题。")
+        return chapters
 
     @staticmethod
     def _normalize_chapter_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -748,6 +785,7 @@ class StoryEngine(BaseAgent):
                     raw,
                     boundaries=boundaries,
                 ),
+                repair_prompt=self._chapter_response_repair_prompt(chapter_boundaries),
             )
             conversation_history = self._drafting_history_for_next_request(next_conversation_history)
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(chapter_payload))
@@ -907,6 +945,7 @@ class StoryEngine(BaseAgent):
                     raw,
                     boundaries=boundaries,
                 ),
+                repair_prompt=self._chapter_response_repair_prompt(chapter_boundaries),
             )
             chapter_draft = ChapterDraft.model_validate(self._normalize_chapter_payload(payload))
 
@@ -1365,26 +1404,47 @@ class StoryEngine(BaseAgent):
             "end": f"---CHAPTER_END_BOUNDARY_{suffix}---",
         }
 
+    @staticmethod
+    def _chapter_response_repair_prompt(boundaries: dict[str, str]) -> str:
+        """构造章节分区协议的专用修复提示，避免误用通用 JSON 修复格式。"""
+        return (
+            "上一次章节响应未完整遵守分区协议。请重新输出完整章节，且只按以下顺序输出：\n"
+            f"{boundaries['meta']}\n"
+            "{\"number\":当前章节序号,\"title\":\"章节标题\",\"summary\":\"不超过80字摘要\"}\n"
+            f"{boundaries['content']}\n"
+            "完整正文原文\n"
+            f"{boundaries['end']}\n"
+            "三条边界标记必须逐字保留，元数据必须是单个 JSON 对象，正文不得截断。"
+            "不要使用 Markdown 代码围栏，不要解释，也不要把正文放进 JSON。"
+        )
+
     def _parse_chapter_response(self, raw: str, *, boundaries: dict[str, str]) -> dict[str, Any]:
         text = raw.strip()
         meta_boundary = boundaries["meta"]
         content_boundary = boundaries["content"]
         end_boundary = boundaries["end"]
         if meta_boundary not in text and content_boundary not in text and end_boundary not in text:
-            return self._strip_and_parse_json(raw)
+            payload = self._strip_and_parse_json(raw)
+            if isinstance(payload, dict) and str(payload.get("content") or "").strip():
+                return payload
+            raise GatewayClientError("章节响应缺少分区边界或非空正文，无法安全保存。")
 
         meta_start = text.find(meta_boundary)
-        content_start = text.find(content_boundary, meta_start + len(meta_boundary))
-        if meta_start < 0 or content_start < 0:
+        content_start = text.find(content_boundary)
+        if content_start < 0:
             raise GatewayClientError("章节分区响应缺少必要边界，无法解析。")
         end_start = text.find(end_boundary, content_start + len(content_boundary))
+        if meta_start < 0 and end_start < 0:
+            raise GatewayClientError("章节分区响应缺少元数据边界和结束边界，无法确认正文完整性。")
         if end_start < 0:
             end_start = len(text)
 
-        meta_raw = text[meta_start + len(meta_boundary):content_start].strip()
+        meta_raw = text[meta_start + len(meta_boundary):content_start].strip() if meta_start >= 0 else text[:content_start].strip()
         content = text[content_start + len(content_boundary):end_start].strip()
         if not meta_raw:
             raise GatewayClientError("章节分区响应缺少元数据 JSON。")
+        if not content:
+            raise GatewayClientError("章节分区响应缺少正文，无法保存。")
         payload = self._strip_and_parse_json(meta_raw)
         if not isinstance(payload, dict):
             raise GatewayClientError("章节分区元数据必须是 JSON 对象。")
@@ -1510,22 +1570,36 @@ class StoryEngine(BaseAgent):
             model,
             cache_key[:24],
             max_tokens,
-            isinstance(cached_payload, dict),
+            cached_payload is not None,
         )
-        if isinstance(cached_payload, dict):
-            conversation_history = self._append_assistant_message(request_messages, cached_payload)
-            self._emit_exchange(
-                callback=exchange_callback,
-                stage=stage,
-                exchange_label=exchange_label,
-                model=model,
-                cache_hit=True,
-                request_messages=request_messages,
-                conversation_history=conversation_history,
-                response_payload=cached_payload,
-                cache_key=cache_key,
-            )
-            return cached_payload, conversation_history
+        if cached_payload is not None:
+            try:
+                payload = (
+                    response_parser(json.dumps(cached_payload, ensure_ascii=False))
+                    if response_parser is not None
+                    else cached_payload
+                )
+            except (GatewayClientError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "流式响应缓存不符合当前结构约束，跳过缓存重新请求: stage=%s exchange_label=%s error=%s",
+                    stage,
+                    exchange_label,
+                    exc,
+                )
+            else:
+                conversation_history = self._append_assistant_message(request_messages, payload)
+                self._emit_exchange(
+                    callback=exchange_callback,
+                    stage=stage,
+                    exchange_label=exchange_label,
+                    model=model,
+                    cache_hit=True,
+                    request_messages=request_messages,
+                    conversation_history=conversation_history,
+                    response_payload=payload,
+                    cache_key=cache_key,
+                )
+                return payload, conversation_history
 
         if self.gateway_client is None:
             raise GatewayClientError("当前没有可用的模型网关。")

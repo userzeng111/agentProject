@@ -25,6 +25,21 @@ test.describe("任务工作台动作分支", () => {
     await expect.poll(() => runRequests, { message: "开始执行应请求 run API" }).toBe(1);
   });
 
+  test("模型目录先返回时，创建任务仍会自动回填动作模型", async ({ page }) => {
+    const taskId = "task_action_model_race_fixture";
+    await mockCommonApiRoutes(page);
+    const workspace = makeWorkspace("created", { task_id: taskId });
+    await mockTaskWorkspace(page, workspace);
+    // 此路由后注册，优先于 fixture 的同一路由处理；模拟模型目录快于工作台返回。
+    await page.route(`**/api/tasks/${taskId}/workspace**`, async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await route.fulfill({ json: workspace });
+    });
+
+    await page.goto(`/p/${taskId}/`, { waitUntil: "commit" });
+    await expect(page.getByRole("button", { name: "开始创作", exact: true })).toBeEnabled();
+  });
+
   test("ready_for_batch 分支点击继续创作会调用 continue API", async ({ page }) => {
     const taskId = "task_action_continue_fixture";
     await openWorkspace(page, "ready_for_batch", taskId);
