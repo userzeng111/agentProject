@@ -8,6 +8,8 @@ import {
   newProjectHref,
   projectViewHref,
   settingsHref,
+  settingsModelsHref,
+  settingsRagHref,
   workspaceHref,
   legacyProjectHref,
   legacyCreateHref,
@@ -89,6 +91,13 @@ describe("任务路由工具函数", () => {
   describe("settingsHref", () => {
     it("返回设置规范路径", () => {
       assert.equal(settingsHref(), "/settings/");
+    });
+  });
+
+  describe("设置子页面路径", () => {
+    it("返回 RAG 与模型协议设置规范路径", () => {
+      assert.equal(settingsRagHref(), "/settings/rag/");
+      assert.equal(settingsModelsHref(), "/settings/models/");
     });
   });
 

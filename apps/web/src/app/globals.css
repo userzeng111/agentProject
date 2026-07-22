@@ -52,6 +52,48 @@ pre {
   border-radius: 16px;
 }
 
+/* === 自定义滚动条：与主题统一 === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(39, 100, 81, 0.22);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(39, 100, 81, 0.42);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(39, 100, 81, 0.22) transparent;
+}
+
+@media (prefers-color-scheme: dark) {
+  ::-webkit-scrollbar-thumb {
+    background: rgba(79, 209, 168, 0.22);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(79, 209, 168, 0.42);
+  }
+  * {
+    scrollbar-color: rgba(79, 209, 168, 0.22) transparent;
+  }
+}
+
 /* === 全局过渡动画 === */
 .transition-default {
   transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
@@ -59,12 +101,53 @@ pre {
 
 /* === 页面淡入动画 === */
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(10px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
 .page-fade-in {
-  animation: fadeIn 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  animation: fadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* === 卡片 hover 上浮效果 === */
+.card-lift {
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
+              border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.card-lift:hover {
+  transform: translateY(-2px);
+}
+
+/* === 任务卡片 stagger 入场 === */
+@keyframes cardEnter {
+  from { opacity: 0; transform: translateY(12px) scale(0.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.task-card-enter {
+  opacity: 0;
+  animation: cardEnter 0.35s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.task-card-enter:nth-child(1) { animation-delay: 0.04s; }
+.task-card-enter:nth-child(2) { animation-delay: 0.08s; }
+.task-card-enter:nth-child(3) { animation-delay: 0.12s; }
+.task-card-enter:nth-child(4) { animation-delay: 0.16s; }
+.task-card-enter:nth-child(5) { animation-delay: 0.20s; }
+.task-card-enter:nth-child(6) { animation-delay: 0.24s; }
+
+/* === 按钮柔和 hover === */
+.btn-soft-hover {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1),
+              background-color 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.btn-soft-hover:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(39, 100, 81, 0.18);
 }
 
 /* === 减少动画偏好 === */

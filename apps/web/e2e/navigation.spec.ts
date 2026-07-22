@@ -13,7 +13,7 @@ test.describe("真实后端页面导航", () => {
     await expect(page.getByRole("heading", { name: /归档/ })).toBeVisible();
 
     await page.goto("/settings", { waitUntil: "commit" });
-    await expect(page.getByRole("heading", { name: /设置/ })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "设置中心" })).toBeVisible();
 
     await page.goto("/chat", { waitUntil: "commit" });
     await expect(page.getByRole("heading", { name: "AI 对话" })).toBeVisible();

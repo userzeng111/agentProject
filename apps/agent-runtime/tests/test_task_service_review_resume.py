@@ -1427,6 +1427,63 @@ class TaskServiceReviewResumeTests(unittest.TestCase):
         self.assertEqual(response.review_type, "outline_review")
         self.assertEqual(response.revision_count, 3)
 
+    def test_get_review_exposes_confirmed_chapter_plans_for_batch_outline_review(self) -> None:
+        tmp_dir, store, service = self._build_service()
+        self.addCleanup(tmp_dir.cleanup)
+
+        task = service.create_task(
+            TaskCreateRequest(
+                mode=TaskMode.SHORT_STORY,
+                prompt="写一篇恐怖短篇",
+                model_id="gpt-5.4",
+            )
+        )
+        story_plan = StoryPlan(
+            working_title="批次大纲",
+            logline="分批展示已确认章节计划。",
+            world_notes=["旧公寓"],
+            character_notes=["独居主角"],
+            planned_chapter_count=3,
+            chapter_plan=[
+                ChapterPlan(number=1, title="第一章", goal="建立悬念"),
+                ChapterPlan(number=2, title="第二章", goal="推进调查"),
+                ChapterPlan(number=3, title="第三章", goal="揭开真相"),
+            ],
+        )
+        outline_batch = OutlineBatchInfo(
+            phase="chapter_batches",
+            batch_index=2,
+            batch_size=2,
+            completed_count=2,
+            total_count=3,
+            current_batch_plans=[ChapterPlan(number=3, title="第三章", goal="揭开真相")],
+        )
+        task = store.get(task.id)
+        task.story_plan = story_plan
+        task.pending_review = ReviewPayload(
+            type="outline_review",
+            version="v1",
+            summary="请审核下一批章节计划。",
+            story_plan=story_plan,
+            outline_batch=outline_batch,
+        )
+        task.status = TaskStatus.WAITING_OUTLINE_REVIEW
+        task.current_stage = "waiting_outline_review"
+        store.save(task)
+
+        response = service.get_review(task.id)
+
+        self.assertEqual(response.outline_batch["completed_count"], 2)
+        self.assertEqual(
+            response.story_plan["chapter_plan"],
+            [
+                {"number": 1, "title": "第一章", "goal": "建立悬念"},
+                {"number": 2, "title": "第二章", "goal": "推进调查"},
+                {"number": 3, "title": "第三章", "goal": "揭开真相"},
+            ],
+        )
+        self.assertIn("[已确认] 第1章 第一章：建立悬念", response.outline_markdown or "")
+
     def test_get_review_without_pending_review_uses_last_waiting_review_type(self) -> None:
         tmp_dir, store, service = self._build_service()
         self.addCleanup(tmp_dir.cleanup)

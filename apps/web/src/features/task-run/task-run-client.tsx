@@ -57,8 +57,8 @@ import {
 } from "@/features/task-run/task-action-state.mjs";
 import DebugPanel from "@/features/task-run/debug-panel";
 import WorkflowOverviewCard from "@/features/task-run/workflow-overview-card";
-import { ProjectShell } from "@/components/project-shell";
-import { StageNav } from "@/components/stage-nav";
+import { ProjectWorkbenchContext } from "@/components/project-workbench-context";
+import { WorkbenchPageLayout } from "@/components/workbench-page-layout";
 import { selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatTaskTypeLabel } from "@/lib/task-labels";
 import { projectViewHref } from "@/lib/task-routes";
@@ -1001,21 +1001,58 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
   const workspaceTitle = workspace.meta.title || workspace.meta.task_id || taskId || "未命名任务";
   const workspaceCreativeModel = resolveWorkspaceTaskModelId(workspace) || "未设置";
   const workspaceReviewModel = formatWorkspaceReviewModel(workspace);
+  const summaryActions = actions.review.available
+    ? { ...actions, review: { ...actions.review, available: false } }
+    : actions;
 
   return (
-    <ProjectShell
-      breadcrumbs={[
-        { label: "首页", href: "/" },
-        { label: workspaceTitle },
-      ]}
-      title={workspaceTitle}
-      metaItems={[
-        { label: `任务 ID：${workspace.meta.task_id}`, variant: "outlined" },
-        { label: `任务创作模型：${workspaceCreativeModel}`, variant: "outlined" },
-        { label: `审核模型：${workspaceReviewModel}`, variant: "outlined" },
-      ]}
-      actions={<Chip color={status.color} label={status.label} />}
-      stageNav={<StageNav stages={workspaceStageNav.stages} activeStep={workspaceStageNav.activeStep} />}
+    <WorkbenchPageLayout
+      testId="project-shell"
+      contentLabel="任务追踪内容"
+      responsiveSlots={{ navigation: "md" }}
+      navigation={
+        <ProjectWorkbenchContext
+          title={workspaceTitle}
+          status={status.label}
+          statusColor={status.color}
+          stages={workspaceStageNav.stages}
+          activeStep={workspaceStageNav.activeStep}
+          taskId={workspace.meta.task_id}
+          testId="stage-nav"
+        />
+      }
+      header={
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          spacing={1}
+          alignItems={{ xs: "flex-start", sm: "center" }}
+          justifyContent="space-between"
+          sx={{ px: { xs: 1.5, sm: 2.5, lg: 3 }, py: 1.5, borderBottom: 1, borderColor: "divider" }}
+        >
+          <Box sx={{ minWidth: 0 }}>
+            <Typography variant="h6" component="h1" sx={{ fontFamily: "var(--font-serif-sc)", overflowWrap: "anywhere" }}>
+              {workspaceTitle}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              创作模型：{workspaceCreativeModel} · 审核模型：{workspaceReviewModel}
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Chip color={status.color} label={status.label} size="small" />
+            {actions.review.available && actions.review.targetView ? (
+              <Button
+                component={Link}
+                href={projectViewHref(workspace.meta.task_id, "review")}
+                variant="contained"
+                size="small"
+                sx={{ minHeight: 36 }}
+              >
+                {actions.review.label}
+              </Button>
+            ) : null}
+          </Stack>
+        </Stack>
+      }
     >
       <Stack spacing={3} sx={{ minWidth: 0 }}>
 
@@ -1064,7 +1101,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       ) : null}
 
       {/* 工作流图谱 —— 可折叠，默认收起 */}
-      <Card>
+      <Card className="card-lift">
         <CardContent sx={{ py: 1.5, "&:last-child": { pb: 1.5 } }}>
           <Stack spacing={2}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
@@ -1097,7 +1134,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       </Card>
 
       {/* 请求摘要卡片 */}
-      <Card>
+      <Card className="card-lift">
         <CardContent>
           <Stack spacing={2}>
             <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", md: "center" }} spacing={1}>
@@ -1115,7 +1152,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
                   <ExpandIcon />
                 </IconButton>
                 <WorkspaceActionBar
-                  actions={actions}
+                  actions={summaryActions}
                   onRun={["created", "sources_ingested"].includes(workspace.meta.status) ? handleRun : undefined}
                   onContinue={workspace.meta.status === "ready_for_batch" ? handleContinueDraft : undefined}
                   onRecoverOpen={handleOpenRecoveryDialog}
@@ -1340,7 +1377,7 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
       </Card>
 
       {/* Tab 区域 */}
-      <Card>
+      <Card className="card-lift" sx={{ position: "sticky", top: 0, zIndex: 2, borderRadius: 2 }}>
         <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center">
             <Tabs
@@ -1766,6 +1803,6 @@ export default function TaskRunClient({ taskId }: { taskId?: string }) {
         message={snackbarMsg}
       />
       </Stack>
-    </ProjectShell>
+    </WorkbenchPageLayout>
   );
 }

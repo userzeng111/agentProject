@@ -17,8 +17,10 @@ test.describe("真实浏览器任务生命周期", () => {
       await page.getByLabel("目标总章节数").fill("4");
       await page.getByRole("textbox", { name: "创意提示词", exact: true }).fill("Playwright 真实浏览器链路测试：写一个海港灯塔里的短篇悬疑。");
       await page.getByLabel("题材").fill("悬疑");
-      await page.getByLabel("风格").fill("冷静克制");
       await page.getByLabel("标题倾向").fill("灯塔证词");
+      await page.getByRole("button", { name: "下一步", exact: true }).click();
+      await page.getByRole("button", { name: /补充设定/ }).click();
+      await page.getByLabel("风格").fill("冷静克制");
       await page.locator('input[type="file"]').setInputFiles({
         name: "playwright-real-reference.txt",
         mimeType: "text/plain",

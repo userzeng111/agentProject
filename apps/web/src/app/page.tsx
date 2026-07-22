@@ -11,7 +11,6 @@ import {
   CardContent,
   Chip,
   Container,
-  Grid,
   Pagination,
   Skeleton,
   Snackbar,
@@ -19,6 +18,8 @@ import {
   Tab,
   Tabs,
   Typography,
+  alpha,
+  type Theme,
 } from "@mui/material";
 import { ArrowForward as ArrowForwardIcon, Replay as ReplayIcon, Delete as DeleteIcon } from "@mui/icons-material";
 import { deleteTask, getDashboard, getModelCatalog, getProtocolSettings, normalizeModelOptions, setModelProtocol } from "@/lib/api";
@@ -109,10 +110,23 @@ function TaskListItem({
     <Card
       data-testid="project-card"
       variant="outlined"
+      className="card-lift task-card-enter"
       sx={{
-        borderRadius: 2,
-        transition: "border-color 0.2s, box-shadow 0.2s",
-        "&:hover": { borderColor: "primary.main", boxShadow: 2 },
+        borderRadius: 3,
+        borderColor: "divider",
+        backgroundColor: "background.paper",
+        transition: "border-color 0.25s, box-shadow 0.25s, transform 0.25s",
+        boxShadow: (theme: Theme) =>
+          theme.palette.mode === "light"
+            ? "0 2px 8px rgba(60, 50, 35, 0.06)"
+            : "0 2px 8px rgba(0, 0, 0, 0.25)",
+        "&:hover": {
+          borderColor: "primary.main",
+          boxShadow: (theme: Theme) =>
+            theme.palette.mode === "light"
+              ? "0 8px 24px rgba(39, 100, 81, 0.12)"
+              : "0 8px 24px rgba(79, 209, 168, 0.12)",
+        },
       }}
     >
       <CardContent sx={{ p: 2.25, "&:last-child": { pb: 2.25 } }}>
@@ -216,7 +230,6 @@ function TaskListItem({
 
 // Tab 分组 + 独立滚动列表 + 固定分页器
 const PAGE_SIZE = 5;
-const LIST_MAX_HEIGHT = 480;
 
 function TaskTabPanel({
   dashboard,
@@ -257,11 +270,19 @@ function TaskTabPanel({
       sx={{
         border: 1,
         borderColor: "divider",
-        borderRadius: 2,
+        borderRadius: 3,
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
-        bgcolor: "background.paper",
+        bgcolor: (theme: Theme) =>
+          alpha(theme.palette.background.paper, theme.palette.mode === "light" ? 0.82 : 0.78),
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        height: "100%",
+        boxShadow: (theme: Theme) =>
+          theme.palette.mode === "light"
+            ? "0 16px 48px rgba(60, 50, 35, 0.10)"
+            : "0 16px 48px rgba(0, 0, 0, 0.40)",
       }}
     >
       <Box sx={{ px: 2, py: 1.75, borderBottom: 1, borderColor: "divider", flexShrink: 0 }}>
@@ -302,10 +323,12 @@ function TaskTabPanel({
       <Box
         sx={{
           overflowY: "auto",
-          maxHeight: LIST_MAX_HEIGHT,
           px: 2,
           py: 1.5,
           flex: 1,
+          minHeight: 0,
+          // 给滚动条留一点内边距，避免贴边
+          pr: 1.5,
         }}
       >
         {pagedList.length ? (
@@ -382,9 +405,9 @@ function SidebarStats({
   const selectableModels: ModelOption[] = selectNovelTaskModels(models);
 
   return (
-    <Stack spacing={2}>
+    <Stack spacing={2} sx={{ pr: 0.5 }}>
       {stats.map((item) => (
-        <Card key={item.label}>
+        <Card key={item.label} className="card-lift">
           <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
             <Stack spacing={0.5}>
               <Typography variant="overline" color="text.secondary">
@@ -402,7 +425,7 @@ function SidebarStats({
       ))}
 
       {/* 协议设置卡片 */}
-      <Card>
+      <Card className="card-lift">
         <CardContent sx={{ p: 2, "&:last-child": { pb: 2 } }}>
           <Stack spacing={1.5}>
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
@@ -458,13 +481,22 @@ function SidebarStats({
 // 骨架屏
 function HomeSkeleton() {
   return (
-    <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
-      <Grid item xs={12} md={8}>
-        <Card sx={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <Box
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: { xs: "column", md: "row" },
+        gap: 3,
+      }}
+    >
+      <Box sx={{ flex: { xs: "1 1 auto", md: "2 1 0%" }, minHeight: 0, overflow: "hidden" }}>
+        <Card sx={{ display: "flex", flexDirection: "column", overflow: "hidden", height: "100%" }}>
           <Box sx={{ borderBottom: 1, borderColor: "divider", px: 2, py: 1 }}>
             <Skeleton variant="text" width={240} height={24} />
           </Box>
-          <Box sx={{ p: 2, maxHeight: LIST_MAX_HEIGHT, overflow: "hidden" }}>
+          <Box sx={{ p: 2, flex: 1, overflow: "hidden" }}>
             <Stack spacing={1.5}>
               {[1, 2, 3].map((i) => (
                 <Box key={i} sx={{ height: 80, bgcolor: "action.hover", borderRadius: 3 }} />
@@ -472,8 +504,8 @@ function HomeSkeleton() {
             </Stack>
           </Box>
         </Card>
-      </Grid>
-      <Grid item xs={12} md={4}>
+      </Box>
+      <Box sx={{ flex: { xs: "1 1 auto", md: "1 1 0%" }, minHeight: 0, overflow: "auto" }}>
         <Stack spacing={2}>
           {[1, 2, 3].map((i) => (
             <Card key={i}>
@@ -485,8 +517,8 @@ function HomeSkeleton() {
             </Card>
           ))}
         </Stack>
-      </Grid>
-    </Grid>
+      </Box>
+    </Box>
   );
 }
 
@@ -602,52 +634,102 @@ function HomeContent() {
   }, [protocolUpdating, showSnackbar]);
 
   return (
-    <Container maxWidth="lg" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-      <Stack spacing={3} className="page-fade-in">
+    <Container maxWidth="lg" sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <Stack
+        spacing={3}
+        className="page-fade-in"
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          py: 3,
+          px: { xs: 2, sm: 3 },
+        }}
+      >
         {/* 紧凑标题栏 */}
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          spacing={2}
-          justifyContent="space-between"
-          alignItems={{ xs: "flex-start", sm: "center" }}
+        <Box
+          sx={{
+            flexShrink: 0,
+            px: 2,
+            py: 1.5,
+            borderRadius: 3,
+            bgcolor: (theme: Theme) =>
+              alpha(theme.palette.background.paper, theme.palette.mode === "light" ? 0.65 : 0.72),
+            backdropFilter: "blur(12px)",
+            WebkitBackdropFilter: "blur(12px)",
+            border: 1,
+            borderColor: "divider",
+            boxShadow: (theme: Theme) =>
+              theme.palette.mode === "light"
+                ? "0 8px 24px rgba(60, 50, 35, 0.06)"
+                : "0 8px 24px rgba(0, 0, 0, 0.22)",
+          }}
         >
-          <Stack spacing={1} direction="row" alignItems="baseline" sx={{ flexWrap: "wrap", gap: 1 }}>
-            <Typography
-              variant="h4"
-              sx={{ fontFamily: "var(--font-serif-sc)", lineHeight: 1.2 }}
-            >
-              小说工坊
-            </Typography>
-            <Chip label="LangChain + LangGraph" size="small" />
-            <Typography variant="body2" color="text.secondary" sx={{ width: "100%" }}>
-              从灵感到成稿，AI 辅助小说创作。输入创意，审核大纲，生成初稿。
-            </Typography>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={2}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+          >
+            <Stack spacing={1} direction="row" alignItems="baseline" sx={{ flexWrap: "wrap", gap: 1 }}>
+              <Typography
+                variant="h4"
+                sx={{ fontFamily: "var(--font-serif-sc)", lineHeight: 1.2 }}
+              >
+                小说工坊
+              </Typography>
+              <Chip label="LangChain + LangGraph" size="small" />
+              <Typography variant="body2" color="text.secondary" sx={{ width: "100%" }}>
+                从灵感到成稿，AI 辅助小说创作。输入创意，审核大纲，生成初稿。
+              </Typography>
+            </Stack>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ flexShrink: 0 }}>
+              <Button
+                component={Link}
+                href={newProjectHref()}
+                size="large"
+                variant="contained"
+                className="btn-soft-hover"
+                sx={{
+                  boxShadow: (theme: Theme) =>
+                    theme.palette.mode === "light"
+                      ? "0 4px 14px rgba(39, 100, 81, 0.25)"
+                      : "0 4px 14px rgba(79, 209, 168, 0.20)",
+                }}
+              >
+                创建任务
+              </Button>
+              <Button component={Link} href="/archive" size="large" variant="outlined" className="btn-soft-hover">
+                归档
+              </Button>
+            </Stack>
           </Stack>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ flexShrink: 0 }}>
-            <Button component={Link} href={newProjectHref()} size="large" variant="contained">
-              创建任务
-            </Button>
-            <Button component={Link} href="/archive" size="large" variant="outlined">
-              归档
-            </Button>
-          </Stack>
-        </Stack>
+        </Box>
 
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        {error ? <Alert severity="error" sx={{ flexShrink: 0 }}>{error}</Alert> : null}
 
         {dashboard ? (
-          <Grid container spacing={3} sx={{ m: 0, width: "100%" }}>
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: { xs: "column", md: "row" },
+              gap: 3,
+            }}
+          >
             {/* 主内容区 */}
-            <Grid item xs={12} md={8}>
+            <Box sx={{ flex: { xs: "1 1 auto", md: "2 1 0%" }, minHeight: 0, overflow: "hidden" }}>
               <TaskTabPanel
                 dashboard={dashboard}
                 initialLibraryTab={initialLibraryTab}
                 onDelete={handleDeleteTask}
               />
-            </Grid>
+            </Box>
 
             {/* 侧边栏 */}
-            <Grid item xs={12} md={4}>
+            <Box sx={{ flex: { xs: "1 1 auto", md: "1 1 0%" }, minHeight: 0, overflow: "auto" }}>
               <SidebarStats
                 dashboard={dashboard}
                 models={models}
@@ -656,8 +738,8 @@ function HomeContent() {
                 protocolOverrides={protocolOverrides}
                 onToggleProtocol={handleToggleProtocol}
               />
-            </Grid>
-          </Grid>
+            </Box>
+          </Box>
         ) : (
           <HomeSkeleton />
         )}

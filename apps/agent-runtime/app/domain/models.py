@@ -566,6 +566,8 @@ class ReviewResponse(BaseModel):
     auto_review_trace: list[dict[str, Any]] = Field(default_factory=list)
     # 结构化大纲数据（供前端 MasterOutlineSection 渲染）
     story_plan: dict[str, Any] | None = None
+    # 大纲批次状态（供前端区分总纲与章节计划审核）
+    outline_batch: dict[str, Any] | None = None
     # 章节对审核
     chapter_pair: list[dict[str, Any]] = Field(default_factory=list)
     batch_index: int | None = None

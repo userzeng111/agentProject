@@ -58,7 +58,7 @@ test.describe("键盘可访问性验收", () => {
   test("设置页可通过键盘导航", async ({ page }) => {
     await mockCommonApiRoutes(page);
     await page.goto("/settings/", { waitUntil: "commit" });
-    await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "设置中心" })).toBeVisible();
 
     // 多次 Tab，应能到达某个 focusable 元素
     let moved = false;

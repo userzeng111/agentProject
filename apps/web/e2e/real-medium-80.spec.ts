@@ -171,7 +171,7 @@ async function openWorkspace(page: Page, taskId: string) {
 
 async function openReview(page: Page, taskId: string) {
   await page.goto(`/p/${taskId}/?view=review`, { waitUntil: "commit" });
-  await expect(page.getByTestId("project-shell")).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByTestId("review-workbench")).toBeVisible({ timeout: 60_000 });
 }
 
 async function createMediumNovelFromUi(page: Page, testInfo: TestInfo) {
@@ -201,10 +201,13 @@ async function createMediumNovelFromUi(page: Page, testInfo: TestInfo) {
       `章节结尾留下适度悬念，避免超自然万能解释。本次独立真实验证标识：${REAL_RUN_TAG}。`,
   );
   await page.getByLabel("题材").fill("都市悬疑");
-  await page.getByLabel("风格").fill("冷静克制、细节扎实、人物关系渐进");
-  await page.getByLabel("单章字数下限").fill("1800");
   await page.getByLabel("标题倾向").fill("消失街区的地图");
   await page.getByLabel("目标读者").fill("偏好长线悬疑与成长叙事的成年读者");
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByRole("button", { name: /补充设定/ }).click();
+  await page.getByLabel("风格").fill("冷静克制、细节扎实、人物关系渐进");
+  await page.getByRole("button", { name: "下一步", exact: true }).click();
+  await page.getByLabel("单章字数下限").fill("1800");
   await expect(page.getByLabel("启用自动审核")).toBeChecked();
 
   await page.getByRole("button", { name: "创建并进入任务页" }).click();

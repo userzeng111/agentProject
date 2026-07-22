@@ -1,5 +1,5 @@
-import SettingsClient from "@/features/settings/settings-client";
+import SettingsOverviewClient from "@/features/settings/settings-overview-client";
 
 export default function SettingsPage() {
-  return <SettingsClient />;
+  return <SettingsOverviewClient />;
 }

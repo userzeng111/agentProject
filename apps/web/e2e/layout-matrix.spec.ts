@@ -43,7 +43,7 @@ test.describe("布局矩阵 — 所有页面在各视口下无横向滚动", () 
       await page.setViewportSize(vp);
       await mockCommonApiRoutes(page);
       await page.goto("/settings/", { waitUntil: "commit" });
-      await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "设置中心" })).toBeVisible();
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
       expect(overflow, `${vp.name} 设置页无横向滚动`).toBe(false);
     });
@@ -57,4 +57,28 @@ test.describe("布局矩阵 — 所有页面在各视口下无横向滚动", () 
       expect(overflow, `${vp.name} 归档页无横向滚动`).toBe(false);
     });
   }
+
+  test("创建、归档与设置仅由中央工作区承担桌面纵向滚动", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await mockCommonApiRoutes(page);
+
+    const pages = [
+      { path: "/new/", testId: "task-create-workbench-content" },
+      { path: "/archive/", testId: "archive-workbench-content" },
+      { path: "/settings/", testId: "settings-overview-workbench-content" },
+    ];
+
+    for (const target of pages) {
+      await page.goto(target.path, { waitUntil: "commit" });
+      const content = page.getByTestId(target.testId);
+      await expect(content).toBeVisible();
+      await expect
+        .poll(async () => content.evaluate((element) => window.getComputedStyle(element).overflowY))
+        .toBe("auto");
+      const pageNeedsVerticalScroll = await page.evaluate(() => (
+        document.documentElement.scrollHeight > document.documentElement.clientHeight + 1
+      ));
+      expect(pageNeedsVerticalScroll, `${target.path} 不应回退为整页纵向滚动`).toBe(false);
+    }
+  });
 });

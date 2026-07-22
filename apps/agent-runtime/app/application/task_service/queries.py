@@ -332,6 +332,10 @@ class TaskServiceQueriesMixin:
                 "world_notes": task.story_plan.world_notes,
                 "character_notes": task.story_plan.character_notes,
                 "planned_chapter_count": task.story_plan.planned_chapter_count,
+                "chapter_plan": [
+                    {"number": chapter.number, "title": chapter.title, "goal": chapter.goal}
+                    for chapter in task.story_plan.chapter_plan
+                ],
             }
         return ReviewResponse(
             meta=self._to_summary(task),

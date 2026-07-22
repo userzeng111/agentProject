@@ -193,7 +193,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
       {error ? <Alert severity="error">{error}</Alert> : null}
 
       {/* 结果摘要 */}
-      <Card>
+      <Card className="card-lift">
         <CardContent>
           <Stack spacing={2}>
             <Typography variant="h5">结果摘要</Typography>
@@ -205,7 +205,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
       {result.chapter_index.length ? <NovelReader chapters={result.chapter_index} /> : null}
 
       {/* 章节索引 */}
-      <Card>
+      <Card className="card-lift">
         <CardContent>
           <Stack spacing={2}>
             <Typography variant="h5">章节索引</Typography>
@@ -250,7 +250,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
 
       {/* 工件索引 */}
       {result.artifact_index.length ? (
-        <Card>
+        <Card className="card-lift">
           <CardContent>
             <Stack spacing={2}>
               <Typography variant="h5">工件索引</Typography>
@@ -300,7 +300,7 @@ export default function TaskResultClient({ taskId }: { taskId?: string }) {
 
       {/* 历史记录 */}
       {result.history_index?.length ? (
-        <Card>
+        <Card className="card-lift">
           <CardContent>
             <Stack spacing={2}>
               <Typography variant="h5">历史记录</Typography>

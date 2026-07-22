@@ -681,6 +681,7 @@ export interface ReviewResponse extends RecoveryContractFields {
     world_notes: string[];
     character_notes: string[];
     planned_chapter_count: number | null;
+    chapter_plan?: ChapterPlan[];
   };
   // 大纲批次分步审核
   outline_batch?: {

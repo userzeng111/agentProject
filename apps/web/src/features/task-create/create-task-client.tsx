@@ -5,31 +5,51 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Box,
   Breadcrumbs,
   Button,
   Card,
   CardContent,
   Chip,
-  Container,
+  Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogContentText,
+  DialogTitle,
   FormControlLabel,
   MenuItem,
   Skeleton,
   Stack,
   Switch,
   TextField,
-  Tooltip,
   Typography,
   alpha,
 } from "@mui/material";
-import { NavigateNext as NavigateNextIcon } from "@mui/icons-material";
+import {
+  ArrowBack as ArrowBackIcon,
+  ArrowForward as ArrowForwardIcon,
+  CheckCircleOutline as CheckCircleOutlineIcon,
+  CircleOutlined as CircleOutlinedIcon,
+  ExpandMore as ExpandMoreIcon,
+  NavigateNext as NavigateNextIcon,
+} from "@mui/icons-material";
+import { WorkbenchPageLayout } from "@/components/workbench-page-layout";
 import { createTask, getModelCatalog, getRagSettings, getStyleProfiles, getTask, normalizeModelOptions, uploadAsset } from "@/lib/api";
 import { isNovelTaskModelSupported, selectNovelTaskModels } from "@/lib/model-options.mjs";
 import { formatModelRefreshStatus, isCurrentSelectionValid, resolveSelectionAfterRefresh } from "@/features/task-models/model-refresh-state.mjs";
-import { settingsHref, workspaceHref } from "@/lib/task-routes";
+import { settingsRagHref, workspaceHref } from "@/lib/task-routes";
 import { formatCreativeModeLabel, formatNovelSizeLabel, needsStyleProfile, resolveCreativeMode, resolveNovelSize } from "@/lib/task-labels";
 import { CreativeMode, ModelOption, ModelRefreshState, NovelSize, RagSettingsStatus, StyleProfile, TaskCreatePayload } from "@/lib/types";
 import { getValidationLinkFromError } from "@/features/chat/model-validation-state.mjs";
+import {
+  CREATE_WORKBENCH_STAGES,
+  resolveCreateWorkbenchReadiness,
+  resolveCreateWorkbenchStages,
+} from "./create-workbench-state.mjs";
 
 const defaultPayload: TaskCreatePayload = {
   creative_mode: "original",
@@ -53,6 +73,11 @@ type TaskCreateModelSelection = Pick<
   TaskCreatePayload,
   "model_id" | "review_model_id" | "auto_review_model_mode"
 >;
+
+type CreateStepKey = "story" | "reference" | "execution";
+
+/** 与 WorkbenchPageLayout 的 xl 工作台槽位保持一致，避免 1440px 起重复展示创建操作。 */
+const CREATE_SUMMARY_MIN_WIDTH = 1440;
 
 export function reconcileTaskCreateModelSelection(
   payload: TaskCreatePayload,
@@ -167,7 +192,12 @@ export default function CreateTaskClient() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [retryLoaded, setRetryLoaded] = useState(false);
+  const [retryPrefillNotice, setRetryPrefillNotice] = useState("");
   const [ragStatus, setRagStatus] = useState<RagSettingsStatus | null>(null);
+  const [activeStep, setActiveStep] = useState<CreateStepKey>("story");
+  const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false);
+  const [submissionPhase, setSubmissionPhase] = useState<"" | "creating" | "uploading">("");
+  const [createdTaskAfterUploadFailure, setCreatedTaskAfterUploadFailure] = useState("");
   const currentModelIdRef = useRef(payload.model_id);
   const currentModelsRef = useRef<ModelOption[]>([]);
 
@@ -293,6 +323,7 @@ export default function CreateTaskClient() {
           review_model_id: input.review_model_id ?? task.review_model_id ?? current.review_model_id,
           style_profile_id: input.style_profile_id ?? current.style_profile_id,
         }));
+        setRetryPrefillNotice("已从原任务预填创作设定，你可以继续编辑后重新创建。");
       } catch (loadError) {
         // 重试数据加载失败不影响正常创建流程
         console.warn("加载重试任务数据失败：", loadError);
@@ -348,25 +379,20 @@ export default function CreateTaskClient() {
     const upper = Math.max(lower, Math.ceil(target * 1.1));
     return `${lower}-${upper}`;
   }, [payload.target_chapter_count]);
-  const canSubmit =
-    Boolean(payload.prompt.trim()) &&
-    Boolean(hasValidSelectedModel && selectedModel && isNovelTaskModelSupported(selectedModel)) &&
-    Boolean(hasValidReviewModel) &&
-    Number(payload.target_chapter_count || 0) > 0 &&
-    (!requiresStyleProfile || Boolean(selectedStyleProfile));
-  const disabledReason = !canSubmit
-    ? !payload.prompt.trim()
-      ? "请填写创意提示词"
-      : !hasValidSelectedModel || !isNovelTaskModelSupported(selectedModel)
-        ? "请选择经过小说工作流兼容性验证的创作模型"
-        : !hasValidReviewModel
-          ? "审核模型配置不完整"
-          : Number(payload.target_chapter_count || 0) <= 0
-            ? "目标总章节数必须大于 0"
-            : requiresStyleProfile && !selectedStyleProfile
-              ? "请选择创作风格"
-              : "请完成所有必填项"
-    : "";
+  const workbenchStateOptions = {
+    payload,
+    ragAvailable: ragStatus?.available === true,
+    hasValidCreativeModel: Boolean(hasValidSelectedModel && selectedModel && isNovelTaskModelSupported(selectedModel)),
+    hasValidReviewModel,
+    hasStyleProfile: Boolean(selectedStyleProfile),
+  };
+  const readiness = resolveCreateWorkbenchReadiness(workbenchStateOptions);
+  const createSteps = resolveCreateWorkbenchStages(workbenchStateOptions);
+  const firstIncomplete = readiness.firstIncomplete;
+  const canSubmit = firstIncomplete === null;
+  const isRagUnavailable = ragStatus?.available === false;
+  const readinessMessage =
+    firstIncomplete?.incompleteHint || "关键设定已完成，可以创建任务。";
   const modelFeatures = useMemo(
     () =>
       Array.isArray(selectedModelCapabilities?.features)
@@ -417,6 +443,37 @@ export default function CreateTaskClient() {
     setFile(event.target.files?.[0] ?? null);
   };
 
+  const focusStepField = (step: CreateStepKey, targetId?: string) => {
+    setActiveStep(step);
+    if (!targetId) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(targetId)?.focus();
+    });
+  };
+
+  const goToReadinessItem = (item: typeof readiness.items[number]) => {
+    const targetIds: Record<string, string> = {
+      prompt: "create-prompt",
+      "creative-model": "create-model",
+      chapters: "create-chapter-count",
+      rag: "create-rag-status",
+      "style-profile": "create-style-profile",
+      "review-model": "create-review-model",
+    };
+    focusStepField(item.stage as CreateStepKey, targetIds[item.key]);
+  };
+
+  const confirmReset = () => {
+    setPayload(resetPayload);
+    setFile(null);
+    setError("");
+    setCreatedTaskAfterUploadFailure("");
+    setActiveStep("story");
+    setResetConfirmationOpen(false);
+  };
+
   const handleSubmit = async () => {
     if (!ragStatus?.available) {
       setError("当前小说知识库尚未构建，请先前往设置页完成索引同步。");
@@ -438,9 +495,12 @@ export default function CreateTaskClient() {
       setError(`请先选择一个有效的${formatCreativeModeLabel(currentCreativeMode)}参考实例。`);
       return;
     }
+    let createdTaskId = "";
     try {
       setSubmitting(true);
+      setSubmissionPhase("creating");
       setError("");
+      setCreatedTaskAfterUploadFailure("");
       const task = await createTask({
         ...payload,
         creative_model_id: payload.model_id,
@@ -449,46 +509,261 @@ export default function CreateTaskClient() {
             ? payload.review_model_id
             : payload.model_id,
       });
+      createdTaskId = task.id;
       if (file) {
+        setSubmissionPhase("uploading");
         await uploadAsset(task.id, file);
       }
       router.push(workspaceHref(task.id));
     } catch (submitError) {
-      setError(submitError instanceof Error ? submitError.message : "创建任务失败");
+      const message = submitError instanceof Error ? submitError.message : "创建任务失败";
+      if (createdTaskId) {
+        setCreatedTaskAfterUploadFailure(createdTaskId);
+        setError(`任务已经创建，但参考文本上传失败：${message}`);
+      } else {
+        setError(message);
+      }
     } finally {
       setSubmitting(false);
+      setSubmissionPhase("");
     }
   };
 
-  return (
-    <Container maxWidth="md" sx={{ py: 3, px: { xs: 2, sm: 3 } }}>
-    <Stack spacing={3} className="page-fade-in">
-      {/* 面包屑 */}
-      <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
-        <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
-          <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
-            首页
-          </Typography>
-        </Link>
-        <Typography variant="body2">创建任务</Typography>
-      </Breadcrumbs>
+  const nextStep = CREATE_WORKBENCH_STAGES[
+    Math.min(CREATE_WORKBENCH_STAGES.findIndex((step) => step.key === activeStep) + 1, CREATE_WORKBENCH_STAGES.length - 1)
+  ]?.key as CreateStepKey;
+  const previousStep = CREATE_WORKBENCH_STAGES[
+    Math.max(CREATE_WORKBENCH_STAGES.findIndex((step) => step.key === activeStep) - 1, 0)
+  ]?.key as CreateStepKey;
+  const isFirstStep = activeStep === "story";
+  const isLastStep = activeStep === "execution";
+  const submissionLabel =
+    submissionPhase === "uploading" ? "正在上传参考文本..." : submissionPhase === "creating" ? "正在创建任务..." : "创建并进入任务页";
 
-      {/* 标题 */}
-      <Stack spacing={1}>
-        <Typography variant="h3" sx={{ fontFamily: "var(--font-serif-sc)" }}>
-          创建小说任务
-        </Typography>
-        <Typography color="text.secondary">
-          填写创作需求，开始生成大纲，审核通过后继续生成正文。
-        </Typography>
-      </Stack>
+  const renderCreateAction = (fullWidth = true) => {
+    if (isRagUnavailable) {
+      return (
+        <Button component={Link} href={settingsRagHref()} variant="contained" fullWidth={fullWidth}>
+          前往知识库同步
+        </Button>
+      );
+    }
+    return (
+      <Button
+        disabled={submitting || !canSubmit}
+        onClick={handleSubmit}
+        variant="contained"
+        fullWidth={fullWidth}
+        className="btn-soft-hover"
+      >
+        {submissionLabel}
+      </Button>
+    );
+  };
+
+  return (
+    <WorkbenchPageLayout
+      testId="task-create-workbench"
+      contentLabel="创建任务表单"
+      responsiveSlots={{ navigation: "md", aside: "xl" }}
+      navigation={
+        <Stack spacing={2}>
+          <Box>
+            <Typography variant="overline" color="text.secondary">
+              创作工作台
+            </Typography>
+            <Typography variant="body2" color="text.secondary">
+              每一步都可返回修改，已填写内容会保留。
+            </Typography>
+          </Box>
+          <Stack component="nav" aria-label="创建任务步骤" spacing={0.75}>
+            {createSteps.map((step, index) => {
+              const isActive = step.key === activeStep;
+              return (
+              <Button
+                key={step.key}
+                data-testid={`create-step-${step.key}`}
+                aria-current={isActive ? "step" : undefined}
+                onClick={() => focusStepField(step.key as CreateStepKey)}
+                variant="text"
+                color="inherit"
+                sx={{
+                  minHeight: 44,
+                  justifyContent: "flex-start",
+                  gap: 1.25,
+                  px: 1,
+                  borderRadius: 1.5,
+                  color: isActive ? "primary.main" : "text.primary",
+                  bgcolor: isActive ? (theme) => alpha(theme.palette.primary.main, 0.1) : "transparent",
+                  "&:hover": { bgcolor: (theme) => alpha(theme.palette.primary.main, 0.08) },
+                }}
+              >
+                <Box
+                  component="span"
+                  sx={{
+                    display: "inline-flex",
+                    color: step.complete ? "success.main" : isActive ? "primary.main" : "text.secondary",
+                  }}
+                >
+                  {step.complete ? <CheckCircleOutlineIcon fontSize="small" /> : <CircleOutlinedIcon fontSize="small" />}
+                </Box>
+                <Stack alignItems="flex-start" spacing={0.1} sx={{ minWidth: 0 }}>
+                  <Typography variant="body2" fontWeight={isActive ? 700 : 500}>
+                    {index + 1}. {step.label}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {isActive ? "正在编辑" : step.complete ? "已完成" : "待补充"}
+                  </Typography>
+                </Stack>
+              </Button>
+              );
+            })}
+          </Stack>
+          <Divider />
+          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.7 }}>
+            准备度会持续提示仍缺少的创作设定，点击缺项可直接返回对应步骤。
+          </Typography>
+        </Stack>
+      }
+      header={
+        <Box
+          sx={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 1,
+            minWidth: 0,
+            px: { xs: 1.5, sm: 2.5, lg: 3 },
+            pt: { xs: 1.5, sm: 2.5 },
+            pb: { xs: 1.25, sm: 2 },
+            borderBottom: "1px solid",
+            borderColor: "divider",
+          }}
+        >
+          <Breadcrumbs separator={<NavigateNextIcon fontSize="small" />}>
+            <Link href="/" style={{ color: "inherit", textDecoration: "none" }}>
+              <Typography variant="body2" color="text.secondary" sx={{ "&:hover": { color: "primary.main" } }}>
+                首页
+              </Typography>
+            </Link>
+            <Typography variant="body2">创建任务</Typography>
+          </Breadcrumbs>
+          <Stack
+            direction={{ xs: "column", sm: "row" }}
+            spacing={1}
+            justifyContent="space-between"
+            alignItems={{ xs: "flex-start", sm: "center" }}
+          >
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="h4" component="h1" sx={{ fontFamily: "var(--font-serif-sc)" }}>
+                创建小说任务
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                先写下故事核心，再补充参考与执行设定。
+              </Typography>
+            </Box>
+          </Stack>
+          <Stack
+            component="nav"
+            aria-label="移动端创建步骤"
+            direction="row"
+            spacing={0.5}
+            sx={{ display: { xs: "flex", md: "none" }, overflowX: "auto", pb: 0.25 }}
+          >
+            {createSteps.map((step, index) => {
+              const isActive = step.key === activeStep;
+              return (
+                <Button
+                  key={step.key}
+                  aria-current={isActive ? "step" : undefined}
+                  onClick={() => focusStepField(step.key as CreateStepKey)}
+                  variant={isActive ? "contained" : "outlined"}
+                  size="small"
+                  sx={{ minHeight: 36, flex: "1 0 auto" }}
+                >
+                  {index + 1}. {step.label}
+                </Button>
+              );
+            })}
+          </Stack>
+          <Typography role="status" variant="caption" color={canSubmit ? "success.main" : "text.secondary"}>
+            {readinessMessage}
+          </Typography>
+        </Box>
+      }
+      aside={
+        <Stack spacing={2} data-testid="create-desktop-summary">
+          <Box>
+            <Typography variant="subtitle1" fontWeight={700}>
+              创建准备度
+            </Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+              完成所有必填项后即可开始生成大纲。
+            </Typography>
+          </Box>
+          <Stack spacing={0.5}>
+            {readiness.items.map((item) => (
+              <Button
+                key={item.key}
+                onClick={() => goToReadinessItem(item)}
+                color={item.complete ? "success" : "inherit"}
+                variant="text"
+                sx={{ justifyContent: "flex-start", minHeight: 40, px: 0.5 }}
+              >
+                {item.complete ? <CheckCircleOutlineIcon fontSize="small" /> : <CircleOutlinedIcon fontSize="small" />}
+                <Typography component="span" variant="body2" sx={{ ml: 1, textAlign: "left" }}>
+                  {item.complete ? item.label : item.incompleteHint}
+                </Typography>
+              </Button>
+            ))}
+          </Stack>
+          <Divider />
+          <Stack spacing={1}>
+            <Typography variant="caption" color="text.secondary">
+              {formatNovelSizeLabel(payload.novel_size)} · {payload.target_chapter_count || "未填写"} 章
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+              {selectedModel?.display_name || selectedModel?.id || "尚未选择创作模型"}
+            </Typography>
+            {renderCreateAction()}
+          </Stack>
+          <Button onClick={() => setResetConfirmationOpen(true)} variant="text" fullWidth>
+            重置表单
+          </Button>
+        </Stack>
+      }
+      footer={
+        <Box
+          data-testid="create-mobile-action"
+          sx={{
+            display: "block",
+            [`@media (min-width: ${CREATE_SUMMARY_MIN_WIDTH}px)`]: { display: "none" },
+            borderTop: 1,
+            borderColor: "divider",
+            bgcolor: "background.paper",
+            p: 1.5,
+          }}
+        >
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+            <Typography role="status" variant="caption" color={canSubmit ? "success.main" : "text.secondary"} sx={{ flex: 1 }}>
+              {canSubmit ? "关键设定已完成，可以开始创作。" : `还需完成：${readinessMessage}`}
+            </Typography>
+            <Box sx={{ minWidth: { sm: 208 } }}>{renderCreateAction()}</Box>
+            <Button size="small" onClick={() => setResetConfirmationOpen(true)}>
+              重置表单
+            </Button>
+          </Stack>
+        </Box>
+      }
+    >
+      <Stack spacing={2.5} className="page-fade-in" sx={{ minWidth: 0 }}>
 
       {ragStatus?.available === false ? (
         <Alert
           severity="warning"
+          sx={{ flexShrink: 0 }}
           action={
-            <Button component={Link} href={settingsHref()} color="inherit" size="small">
-              前往设置
+            <Button component={Link} href={settingsRagHref()} color="inherit" size="small">
+              查看 RAG 设置
             </Button>
           }
         >
@@ -500,8 +775,13 @@ export default function CreateTaskClient() {
         <Alert
           severity="error"
           role="alert"
+          sx={{ flexShrink: 0 }}
           action={
-            validationErrorHref ? (
+            createdTaskAfterUploadFailure ? (
+              <Button component={Link} href={workspaceHref(createdTaskAfterUploadFailure)} color="inherit" size="small">
+                打开已创建任务
+              </Button>
+            ) : validationErrorHref ? (
               <Button component={Link} href={validationErrorHref} color="inherit" size="small">
                 去 AI 对话验证
               </Button>
@@ -512,14 +792,75 @@ export default function CreateTaskClient() {
         </Alert>
       ) : null}
 
-      {/* 表单卡片 */}
-      <Card>
-        <CardContent>
+      {retryPrefillNotice ? <Alert severity="info">{retryPrefillNotice}</Alert> : null}
+
+      <Box
+        data-testid="create-readiness"
+        sx={(theme) => ({
+          display: "block",
+          [`@media (min-width: ${CREATE_SUMMARY_MIN_WIDTH}px)`]: { display: "none" },
+          p: 1.25,
+          borderRadius: 1.5,
+          border: "1px solid",
+          borderColor: "divider",
+          bgcolor: alpha(theme.palette.primary.main, 0.035),
+        })}
+      >
+        <Stack spacing={0.5}>
+          <Typography variant="subtitle2">创建准备度</Typography>
+          {readiness.items.filter((item) => !item.complete).length ? (
+            readiness.items.filter((item) => !item.complete).map((item) => (
+              <Button
+                key={item.key}
+                onClick={() => goToReadinessItem(item)}
+                variant="text"
+                color="inherit"
+                sx={{ justifyContent: "flex-start", minHeight: 36, px: 0.5 }}
+              >
+                <CircleOutlinedIcon fontSize="small" />
+                <Typography component="span" variant="body2" sx={{ ml: 1 }}>
+                  {item.incompleteHint}
+                </Typography>
+              </Button>
+            ))
+          ) : (
+            <Stack direction="row" spacing={1} alignItems="center">
+              <CheckCircleOutlineIcon color="success" fontSize="small" />
+              <Typography variant="body2" color="success.main">关键设定已完成。</Typography>
+            </Stack>
+          )}
+        </Stack>
+      </Box>
+
+      <Stack spacing={2.5}>
+        {activeStep === "story" ? <Card
+          component="section"
+          id="create-story"
+          className="card-lift"
+          sx={{ p: 0, scrollMarginTop: 16, "& .MuiCardContent-root": { p: { xs: 2, sm: 3 } } }}
+        >
+          <CardContent>
           <Stack spacing={3}>
+            <Box>
+              <Typography variant="h6" component="h2">故事核心</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                从一句清晰的故事设想开始，再确定创作方式与规模。
+              </Typography>
+            </Box>
+            <TextField
+              id="create-prompt"
+              label="创意提示词"
+              value={payload.prompt}
+              onChange={updateField("prompt")}
+              multiline
+              minRows={5}
+              required
+              placeholder="例如：写一个带有潮湿海港气味的悬疑故事，主角是负责夜航记录的女学者。"
+            />
             <Box
               sx={{
                 display: "grid",
-                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
+                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
                 gap: 2,
               }}
             >
@@ -535,6 +876,19 @@ export default function CreateTaskClient() {
                   </MenuItem>
                 ))}
               </TextField>
+              <TextField label="题材" value={payload.genre} onChange={updateField("genre")} />
+              <TextField label="标题倾向" value={payload.title_hint} onChange={updateField("title_hint")} />
+              <TextField label="目标读者" value={payload.audience} onChange={updateField("audience")} />
+            </Box>
+            <Box>
+              <Typography variant="subtitle2" sx={{ mb: 1 }}>篇幅与章节</Typography>
+              <Box
+                sx={{
+                  display: "grid",
+                  gridTemplateColumns: { xs: "1fr", sm: "repeat(2, minmax(0, 1fr))" },
+                  gap: 2,
+                }}
+              >
               <TextField
                 select
                 label="篇幅规模"
@@ -549,6 +903,7 @@ export default function CreateTaskClient() {
                 ))}
               </TextField>
               <TextField
+                id="create-chapter-count"
                 label="目标总章节数"
                 type="number"
                 value={payload.target_chapter_count ?? ""}
@@ -556,6 +911,7 @@ export default function CreateTaskClient() {
                 inputProps={{ min: 1, step: 1 }}
                 helperText={`允许浮动范围：${chapterCountRangeText}`}
               />
+              </Box>
             </Box>
 
             {modelsLoading ? (
@@ -564,11 +920,12 @@ export default function CreateTaskClient() {
               <Stack spacing={1.5}>
                 <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
                   <Typography variant="subtitle2">任务创作模型</Typography>
-                  <Button size="small" variant="outlined" onClick={() => void loadModels(true)}>
-                    刷新模型
+                  <Button size="small" variant="outlined" disabled={modelsLoading || modelRefresh.loading} onClick={() => void loadModels(true)}>
+                    {modelRefresh.loading ? "刷新中..." : "刷新模型"}
                   </Button>
                 </Stack>
                 <TextField
+                  id="create-model"
                   select
                   label="任务创作模型"
                   inputProps={{ "data-testid": "model-select" }}
@@ -611,15 +968,35 @@ export default function CreateTaskClient() {
             )}
 
             {!modelsLoading && selectedModel && (
-              <Box
-                sx={(theme) => ({
-                  p: 2,
-                  borderRadius: 2,
-                  border: "1px solid",
-                  borderColor: "divider",
-                  backgroundColor: alpha(theme.palette.text.primary, 0.03),
-                })}
-              >
+              <Accordion disableGutters variant="outlined" sx={{ borderRadius: "8px !important", overflow: "hidden" }}>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography variant="subtitle2">查看模型能力详情</Typography>
+                    {selectedModel.metadata?.compatibility ? (
+                      <Chip
+                        size="small"
+                        color={isNovelTaskModelSupported(selectedModel) ? "success" : "warning"}
+                        label={isNovelTaskModelSupported(selectedModel) ? "小说任务：已验证" : "小说任务：未验证"}
+                      />
+                    ) : null}
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      label={`上下文：${formatTokenCount(
+                        selectedModelCapabilities?.context_window?.max_input_tokens ||
+                          selectedModelCapabilities?.context_window?.max_total_tokens,
+                      )}`}
+                    />
+                  </Stack>
+                </AccordionSummary>
+                <AccordionDetails sx={{ pt: 0 }}>
+                <Box
+                  sx={(theme) => ({
+                    p: 1.5,
+                    borderRadius: 1.5,
+                    bgcolor: alpha(theme.palette.text.primary, 0.03),
+                  })}
+                >
                 <Stack spacing={1.5}>
                   <Stack
                     direction={{ xs: "column", sm: "row" }}
@@ -680,8 +1057,29 @@ export default function CreateTaskClient() {
                     </Typography>
                   )}
                 </Stack>
-              </Box>
+                </Box>
+                </AccordionDetails>
+              </Accordion>
             )}
+
+          </Stack>
+        </CardContent>
+      </Card> : null}
+
+      {activeStep === "reference" ? <Card
+        component="section"
+        id="create-reference"
+        className="card-lift"
+        sx={{ p: 0, scrollMarginTop: 16, "& .MuiCardContent-root": { p: { xs: 2, sm: 3 } } }}
+      >
+        <CardContent>
+          <Stack spacing={3}>
+            <Box>
+              <Typography variant="h6" component="h2">参考与边界</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                为故事补充参考来源、文风倾向与明确的创作边界。
+              </Typography>
+            </Box>
 
             {requiresStyleProfile ? (
               <Box
@@ -718,6 +1116,7 @@ export default function CreateTaskClient() {
                     <Skeleton variant="rounded" height={56} />
                   ) : (
                     <TextField
+                      id="create-style-profile"
                       select
                       label={currentCreativeMode === "fanfic" ? "同人参考实例" : "风格参考实例"}
                       value={payload.style_profile_id}
@@ -790,23 +1189,17 @@ export default function CreateTaskClient() {
               </Box>
             ) : null}
 
-            <TextField
-              label="创意提示词"
-              value={payload.prompt}
-              onChange={updateField("prompt")}
-              multiline
-              minRows={4}
-              placeholder="例如：写一个带有潮湿海港气味的悬疑故事，主角是负责夜航记录的女学者。"
-            />
-
-            <Box
-              sx={{
-                display: "grid",
-                gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)" },
-                gap: 2,
-              }}
-            >
-              <TextField label="题材" value={payload.genre} onChange={updateField("genre")} />
+            <Accordion disableGutters variant="outlined" defaultExpanded={Boolean(payload.style || payload.banned || file)}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Stack spacing={0.25}>
+                  <Typography variant="subtitle2">补充设定</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    文风、禁忌和可选参考文本均可随时补充。
+                  </Typography>
+                </Stack>
+              </AccordionSummary>
+              <AccordionDetails sx={{ pt: 0 }}>
+                <Stack spacing={2}>
               <TextField
                 label={
                   currentCreativeMode === "style_remix"
@@ -825,16 +1218,67 @@ export default function CreateTaskClient() {
                     : undefined
                 }
               />
-              <TextField
-                label="单章字数下限"
-                type="number"
-                value={payload.chapter_word_min}
-                onChange={updateField("chapter_word_min")}
-                helperText="系统会在此基础上按剧情需要上浮 10%-30%。"
-              />
-              <TextField label="标题倾向" value={payload.title_hint} onChange={updateField("title_hint")} />
-              <TextField label="目标读者" value={payload.audience} onChange={updateField("audience")} />
               <TextField label="禁忌要求" value={payload.banned} onChange={updateField("banned")} />
+              <Stack spacing={1}>
+                <Typography variant="subtitle2">上传参考文本（可选）</Typography>
+                <Button component="label" variant="outlined" sx={{ alignSelf: "flex-start", maxWidth: "100%" }}>
+                  <Typography component="span" noWrap sx={{ maxWidth: 280 }}>
+                    {file ? `已选择：${file.name}` : "选择 UTF-8 文本文件"}
+                  </Typography>
+                  <input hidden type="file" accept=".txt,text/plain" onChange={handleFile} />
+                </Button>
+              </Stack>
+                </Stack>
+              </AccordionDetails>
+            </Accordion>
+
+          </Stack>
+        </CardContent>
+      </Card> : null}
+
+      {activeStep === "execution" ? <Card
+        component="section"
+        id="create-execution"
+        className="card-lift"
+        sx={{ p: 0, scrollMarginTop: 16, "& .MuiCardContent-root": { p: { xs: 2, sm: 3 } } }}
+      >
+        <CardContent>
+          <Stack spacing={3}>
+            <Box>
+              <Typography variant="h6" component="h2">篇幅与执行</Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                确认单章字数、自动审核和最终创建准备度。
+              </Typography>
+            </Box>
+
+            <TextField
+              label="单章字数下限"
+              type="number"
+              value={payload.chapter_word_min}
+              onChange={updateField("chapter_word_min")}
+              helperText="系统会在此基础上按剧情需要上浮 10%-30%。"
+            />
+
+            <Box
+              id="create-rag-status"
+              tabIndex={-1}
+              sx={(theme) => ({
+                p: 1.5,
+                borderRadius: 1.5,
+                border: "1px solid",
+                borderColor: ragStatus?.available ? "success.main" : "divider",
+                bgcolor: alpha(ragStatus?.available ? theme.palette.success.main : theme.palette.warning.main, 0.05),
+              })}
+            >
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} justifyContent="space-between" alignItems={{ sm: "center" }}>
+                <Box>
+                  <Typography variant="subtitle2">小说知识库</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    {ragStatus?.available ? "已就绪，可在创建后为创作流程提供检索上下文。" : ragStatus ? "尚未构建，完成同步后才能创建任务。" : "正在检查知识库状态。"}
+                  </Typography>
+                </Box>
+                {ragStatus?.available ? <Chip size="small" color="success" label="已就绪" /> : <Button component={Link} href={settingsRagHref()} size="small">前往同步</Button>}
+              </Stack>
             </Box>
 
             <Box
@@ -846,7 +1290,7 @@ export default function CreateTaskClient() {
                 backgroundColor: alpha(theme.palette.primary.main, 0.03),
               })}
             >
-              <Stack direction="row" spacing={2} alignItems="center">
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "flex-start", sm: "center" }}>
                 <FormControlLabel
                   control={
                     <Switch
@@ -858,7 +1302,7 @@ export default function CreateTaskClient() {
                     />
                   }
                   label="启用自动审核"
-                  sx={{ flex: 1 }}
+                  sx={{ minHeight: 44 }}
                 />
                 <Typography variant="body2" color="text.secondary">
                   开启后，大纲/章节/验证阶段将自动通过 AI 审核流转，无需人工介入
@@ -878,6 +1322,7 @@ export default function CreateTaskClient() {
                   </TextField>
                   {payload.auto_review_model_mode === "fixed" ? (
                     <TextField
+                      id="create-review-model"
                       select
                       label="审核模型"
                       value={hasValidReviewModel ? payload.review_model_id : ""}
@@ -911,30 +1356,31 @@ export default function CreateTaskClient() {
               ) : null}
             </Box>
 
-            <Stack spacing={1}>
-              <Typography variant="subtitle1">上传参考文本（可选）</Typography>
-              <Button component="label" variant="outlined">
-                {file ? `已选择：${file.name}` : "选择 UTF-8 文本文件"}
-                <input hidden type="file" accept=".txt,text/plain" onChange={handleFile} />
-              </Button>
-            </Stack>
-
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Tooltip title={disabledReason} placement="top">
-                <span>
-                  <Button disabled={submitting || !canSubmit} onClick={handleSubmit} variant="contained">
-                    {submitting ? "正在创建..." : "创建并进入任务页"}
-                  </Button>
-                </span>
-              </Tooltip>
-              <Button onClick={() => setPayload(resetPayload)} variant="text">
-                重置表单
-              </Button>
-            </Stack>
           </Stack>
         </CardContent>
-      </Card>
+      </Card> : null}
+      <Stack direction={{ xs: "column-reverse", sm: "row" }} spacing={1} justifyContent="space-between">
+        <Button startIcon={<ArrowBackIcon />} onClick={() => focusStepField(previousStep)} disabled={isFirstStep}>
+          上一步
+        </Button>
+        {!isLastStep ? (
+          <Button endIcon={<ArrowForwardIcon />} variant="contained" onClick={() => focusStepField(nextStep)}>
+            下一步
+          </Button>
+        ) : null}
+      </Stack>
+      </Stack>
     </Stack>
-    </Container>
+    <Dialog open={resetConfirmationOpen} onClose={() => setResetConfirmationOpen(false)} aria-labelledby="create-reset-dialog-title">
+      <DialogTitle id="create-reset-dialog-title">重置创作设定？</DialogTitle>
+      <DialogContent>
+        <DialogContentText>这会清空当前表单和已选择的参考文本，无法撤销。</DialogContentText>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={() => setResetConfirmationOpen(false)}>取消</Button>
+        <Button color="error" variant="contained" onClick={confirmReset}>确认重置</Button>
+      </DialogActions>
+    </Dialog>
+  </WorkbenchPageLayout>
   );
 }

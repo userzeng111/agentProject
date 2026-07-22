@@ -421,7 +421,7 @@ test.describe("聊天与设置页面", () => {
     await expectNoHorizontalOverflow(page);
   });
 
-  test("设置页在增量不可用时引导显式全量重建", async ({ page }) => {
+  test("RAG 设置子页在增量不可用时引导显式全量重建", async ({ page }) => {
     await mockCommonApiRoutes(page);
     let startRequests = 0;
     await page.route("**/api/settings/rag/plans", async (route) => {
@@ -442,7 +442,7 @@ test.describe("聊天与设置页面", () => {
       startRequests += 1;
       await route.fulfill({ status: 500, json: { detail: "不应创建作业" } });
     });
-    await page.goto("/settings", { waitUntil: "commit" });
+    await page.goto("/settings/rag/", { waitUntil: "commit" });
     await expect(page.getByText("小说 RAG 数据库")).toBeVisible();
     await expect(page.getByText(/数据库可用|尚未构建/)).toBeVisible();
     await page.getByTestId("rag-incremental-sync").click();
@@ -450,7 +450,7 @@ test.describe("聊天与设置页面", () => {
     expect(startRequests).toBe(0);
   });
 
-  test("设置页仅在确认全量重建后创建后台作业并保存模型协议", async ({ page }) => {
+  test("设置子页仅在确认全量重建后创建后台作业并保存模型协议", async ({ page }) => {
     await mockCommonApiRoutes(page);
     let rebuildRequests = 0;
     let protocolRequests = 0;
@@ -520,7 +520,8 @@ test.describe("聊天与设置页面", () => {
       await route.fulfill({ json: { model_id: "gpt-5.4", protocol: "anthropic" } });
     });
 
-    await page.goto("/settings", { waitUntil: "commit" });
+    await page.goto("/settings/rag/", { waitUntil: "commit" });
+    await expect(page.getByText(/数据库可用|尚未构建/)).toBeVisible();
     await page.getByTestId("rag-full-rebuild").click();
     await expect(page.getByRole("dialog", { name: "确认全量重建 RAG 索引？" })).toBeVisible();
     expect(rebuildRequests).toBe(0);
@@ -528,13 +529,14 @@ test.describe("聊天与设置页面", () => {
     await expect.poll(() => rebuildRequests, { message: "确认后应请求后台作业 API" }).toBe(1);
     await expect(page.getByText("同步完成 fixture")).toBeVisible();
 
-    await page.getByLabel("协议").click();
+    await page.goto("/settings/models/", { waitUntil: "commit" });
+    await page.getByRole("combobox", { name: "协议", exact: true }).click();
     await page.getByRole("option", { name: "Anthropic" }).click();
     await expect.poll(() => protocolRequests, { message: "协议选择应请求保存接口" }).toBe(1);
     await expect(page.getByText("已保存：gpt-5.4 → anthropic")).toBeVisible();
   });
 
-  test("设置页全量作业创建失败时保留确认弹窗以便重试", async ({ page }) => {
+  test("RAG 设置子页全量作业创建失败时保留确认弹窗以便重试", async ({ page }) => {
     await mockCommonApiRoutes(page);
     await page.route("**/api/settings/rag/plans", async (route) => {
       await route.fulfill({
@@ -551,7 +553,8 @@ test.describe("聊天与设置页面", () => {
       await route.fulfill({ status: 409, json: { detail: "已有 RAG 同步任务正在运行，请等待其完成。" } });
     });
 
-    await page.goto("/settings", { waitUntil: "commit" });
+    await page.goto("/settings/rag/", { waitUntil: "commit" });
+    await expect(page.getByText(/数据库可用|尚未构建/)).toBeVisible();
     await page.getByTestId("rag-full-rebuild").click();
     const dialog = page.getByRole("dialog", { name: "确认全量重建 RAG 索引？" });
     await expect(dialog).toBeVisible();

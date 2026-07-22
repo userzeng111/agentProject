@@ -56,6 +56,16 @@ export function settingsHref(): string {
   return "/settings/";
 }
 
+/** RAG 语料库与索引同步设置 */
+export function settingsRagHref(): string {
+  return "/settings/rag/";
+}
+
+/** Gateway 模型协议设置 */
+export function settingsModelsHref(): string {
+  return "/settings/models/";
+}
+
 /* ── 旧路由兼容壳专用 ── */
 
 const VALID_TABS = ["overview", "outline", "read", "meta"] as const;

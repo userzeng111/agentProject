@@ -4,15 +4,23 @@ import { AppThemeProvider } from "@/components/app-theme-provider";
 import { AppHeader } from "@/components/app-header";
 import { NotificationProvider } from "@/components/notification-center";
 import { Box } from "@mui/material";
+import { usePathname } from "next/navigation";
 
 export function ClientLayout({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname() ?? "";
+  const isWorkbenchRoute = ["/new", "/create", "/archive", "/settings", "/p/"].some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
+
   return (
     <AppThemeProvider>
       <NotificationProvider>
         <Box
           data-testid="root-layout-box"
           sx={{
-            minHeight: "100vh",
+            minHeight: "100dvh",
+            height: isWorkbenchRoute ? "100dvh" : { xs: "auto", md: "100dvh" },
+            overflow: isWorkbenchRoute ? "hidden" : { md: "hidden" },
             display: "flex",
             flexDirection: "column",
             background: (theme) =>
@@ -22,7 +30,16 @@ export function ClientLayout({ children }: { children: React.ReactNode }) {
           }}
         >
           <AppHeader />
-          <Box component="main" sx={{ flex: 1 }}>
+          <Box
+            component="main"
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: "flex",
+              flexDirection: "column",
+              overflow: isWorkbenchRoute ? "hidden" : undefined,
+            }}
+          >
             {children}
           </Box>
         </Box>

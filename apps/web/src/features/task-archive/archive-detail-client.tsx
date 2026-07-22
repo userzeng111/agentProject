@@ -168,6 +168,10 @@ function OutlineTab({ storyPlan }: { storyPlan?: StoryPlan | null }) {
     );
   }
 
+  const worldNotes = Array.isArray(storyPlan.world_notes) ? storyPlan.world_notes : [];
+  const characterNotes = Array.isArray(storyPlan.character_notes) ? storyPlan.character_notes : [];
+  const chapterPlan = Array.isArray(storyPlan.chapter_plan) ? storyPlan.chapter_plan : [];
+
   return (
     <Stack spacing={3}>
       {/* 故事梗概 */}
@@ -183,14 +187,14 @@ function OutlineTab({ storyPlan }: { storyPlan?: StoryPlan | null }) {
       </Card>
 
       {/* 世界观 */}
-      {storyPlan.world_notes.length > 0 ? (
+      {worldNotes.length > 0 ? (
         <Card>
           <CardContent>
             <Typography variant="h6" sx={{ mb: 2, fontFamily: "var(--font-serif-sc)" }}>
               世界观
             </Typography>
             <Stack spacing={1}>
-              {storyPlan.world_notes.map((note: string, idx: number) => (
+              {worldNotes.map((note: string, idx: number) => (
                 <Typography key={idx} sx={{ lineHeight: 1.8, textIndent: "2em" }}>
                   {note}
                 </Typography>
@@ -201,14 +205,14 @@ function OutlineTab({ storyPlan }: { storyPlan?: StoryPlan | null }) {
       ) : null}
 
       {/* 人物设定 */}
-      {storyPlan.character_notes.length > 0 ? (
+      {characterNotes.length > 0 ? (
         <Card>
           <CardContent>
             <Typography variant="h6" sx={{ mb: 2, fontFamily: "var(--font-serif-sc)" }}>
               人物设定
             </Typography>
             <Stack spacing={1}>
-              {storyPlan.character_notes.map((note: string, idx: number) => (
+              {characterNotes.map((note: string, idx: number) => (
                 <Typography key={idx} sx={{ lineHeight: 1.8, textIndent: "2em" }}>
                   {note}
                 </Typography>
@@ -224,17 +228,21 @@ function OutlineTab({ storyPlan }: { storyPlan?: StoryPlan | null }) {
           <Typography variant="h6" sx={{ mb: 2, fontFamily: "var(--font-serif-sc)" }}>
             章节计划
           </Typography>
-          <List dense>
-            {storyPlan.chapter_plan.map((ch: { number: number; title: string; goal: string }) => (
-              <ListItem key={ch.number} disableGutters sx={{ py: 0.5 }}>
-                <ListItemText
-                  primary={`第 ${ch.number} 章 · ${ch.title}`}
-                  secondary={ch.goal}
-                  primaryTypographyProps={{ fontWeight: 500 }}
-                />
-              </ListItem>
-            ))}
-          </List>
+          {chapterPlan.length ? (
+            <List dense>
+              {chapterPlan.map((ch: { number: number; title: string; goal: string }) => (
+                <ListItem key={ch.number} disableGutters sx={{ py: 0.5 }}>
+                  <ListItemText
+                    primary={`第 ${ch.number} 章 · ${ch.title}`}
+                    secondary={ch.goal}
+                    primaryTypographyProps={{ fontWeight: 500 }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          ) : (
+            <Alert severity="info">当前归档缺少章节计划明细。</Alert>
+          )}
         </CardContent>
       </Card>
     </Stack>

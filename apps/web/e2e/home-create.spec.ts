@@ -41,7 +41,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await expect(card.getByText(`ID ${LONG_CREATED_TASK_ID}`)).toBeVisible();
     await expect(card.getByRole("link", { name: "进入项目" })).toHaveAttribute(
       "href",
-      new RegExp(`/p/${LONG_CREATED_TASK_ID}/?$`),
+      `/p/${LONG_CREATED_TASK_ID}/?library_tab=pending`,
     );
 
     const hasHorizontalOverflow = await page.evaluate(() => (
@@ -67,7 +67,7 @@ test.describe("首页 Dashboard 与创建任务", () => {
     const completedCard = page.getByTestId("project-card").filter({ hasText: "自动化测试-completed" });
     await expect(completedCard.getByRole("link", { name: "进入项目" })).toHaveAttribute(
       "href",
-      "/p/task_completed_fixture/?view=result",
+      "/p/task_completed_fixture/?view=result&library_tab=completed",
     );
 
     await page.getByRole("tab", { name: "失败 (1)" }).click();
@@ -134,6 +134,8 @@ test.describe("首页 Dashboard 与创建任务", () => {
     await expect(page.getByTestId("model-select")).toHaveValue("gpt-5.4");
     await page.getByRole("textbox", { name: "创意提示词", exact: true }).fill("写一个潮湿海港里的悬疑故事。");
     await page.getByLabel("题材").fill("悬疑");
+    await page.getByRole("button", { name: "下一步", exact: true }).click();
+    await page.getByRole("button", { name: /补充设定/ }).click();
     await page.getByLabel("风格").fill("克制");
     const submit = page.getByRole("button", { name: "创建并进入任务页" });
     await expect(submit).toBeEnabled();
