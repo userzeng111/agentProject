@@ -1,6 +1,6 @@
 ---
 name: project-interface-smoke
-description: Use when checking this repository's web routes and API endpoints after frontend or backend changes, especially when task pages, review pages, result pages, archive pages, or local startup ports may be broken.
+description: Use only when the user explicitly requests a focused AgentProject frontend/backend route smoke check after route, API, or port changes. Verifies health, models, dashboard, canonical project routes, and optional temporary task lifecycle. Use --read-only for a no-write diagnosis; never run automatically during hot startup.
 ---
 
 # 项目接口冒烟检查
@@ -21,7 +21,7 @@ description: Use when checking this repository's web routes and API endpoints af
 - 出现“页面不存在”“点击查看打不开”“接口 404/400/500”这类问题
 
 ## 使用方式
-1. 先启动后端与前端开发服务。
+1. 仅在用户明确要求检查时启动或使用已有的后端与前端服务；热启动时不要自动触发本检查。
 2. 再运行：
 
 ```bash
@@ -36,6 +36,16 @@ python3 .agents/skills/project-interface-smoke/scripts/run_smoke.py \
   --backend-url http://localhost:8000
 ```
 
+脚本只从当前 `/api/models` 中选择兼容性已验证的小说模型；需要指定模型时传入 `--model-id <模型 ID>`，不会使用默认或写死模型。
+
+无可用模型、只需判断端口和路由时使用：
+
+```bash
+python3 .agents/skills/project-interface-smoke/scripts/run_smoke.py --read-only
+```
+
+默认会删除新建的测试任务；排查任务状态时才传入 `--keep-test-task`。页面检查使用当前规范路径 `/p/{task_id}/?view=...`，不依赖旧路由别名。
+
 ## 检查内容
 - 后端：
   - `/api/health`
@@ -47,13 +57,13 @@ python3 .agents/skills/project-interface-smoke/scripts/run_smoke.py \
   - `/api/tasks/{id}/supervisor`
 - 前端：
   - `/`
-  - `/create`
-  - `/archive`
-  - `/chat`
-  - `/tasks/?id={id}`
-  - `/review/?id={id}`
-  - `/result/?id={id}`
-  - `/archive/detail/?id={id}`
+  - `/new/`
+  - `/archive/`
+  - `/chat/`
+  - `/p/{id}/`
+  - `/p/{id}/?view=review`
+  - `/p/{id}/?view=result`
+  - `/p/{id}/?view=archive`
 
 ## 常见根因
 - Next.js 被配置成静态导出，但任务详情页依赖运行期动态 ID

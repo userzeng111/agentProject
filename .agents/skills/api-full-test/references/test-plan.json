@@ -1,0 +1,457 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "operation": "DELETE /api/model-validation",
+      "module": "model-validation",
+      "tier": "contract",
+      "scenario": "model-validation",
+      "required": true
+    },
+    {
+      "operation": "DELETE /api/settings/protocols/{model_id}",
+      "module": "model-settings",
+      "tier": "contract",
+      "scenario": "protocol-settings",
+      "required": true
+    },
+    {
+      "operation": "DELETE /api/tasks/{task_id}",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "GET /api/archive",
+      "module": "archive",
+      "tier": "read-only",
+      "scenario": "archive-read",
+      "required": true
+    },
+    {
+      "operation": "GET /api/archive/{task_id}",
+      "module": "archive",
+      "tier": "contract",
+      "scenario": "archive-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "GET /api/dashboard",
+      "module": "core-api",
+      "tier": "read-only",
+      "scenario": "foundation-read",
+      "required": true
+    },
+    {
+      "operation": "GET /api/file-text",
+      "module": "task-files",
+      "tier": "contract",
+      "scenario": "file-reference",
+      "required": true
+    },
+    {
+      "operation": "GET /api/health",
+      "module": "core-api",
+      "tier": "read-only",
+      "scenario": "foundation-read",
+      "required": true
+    },
+    {
+      "operation": "GET /api/model-validation",
+      "module": "model-validation",
+      "tier": "contract",
+      "scenario": "model-validation",
+      "required": true
+    },
+    {
+      "operation": "GET /api/models",
+      "module": "core-api",
+      "tier": "read-only",
+      "scenario": "foundation-read",
+      "required": true
+    },
+    {
+      "operation": "GET /api/settings/protocols",
+      "module": "model-settings",
+      "tier": "read-only",
+      "scenario": "protocol-settings",
+      "required": true
+    },
+    {
+      "operation": "GET /api/settings/rag",
+      "module": "rag-sync",
+      "tier": "read-only",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "GET /api/settings/rag/jobs/current",
+      "module": "rag-sync",
+      "tier": "contract",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "GET /api/settings/rag/jobs/{job_id}",
+      "module": "rag-sync",
+      "tier": "contract",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "GET /api/style-profiles",
+      "module": "style-profiles",
+      "tier": "read-only",
+      "scenario": "style-profiles",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}",
+      "module": "task-lifecycle",
+      "tier": "contract",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/artifacts",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/chapters",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/events/history",
+      "module": "task-events",
+      "tier": "contract",
+      "scenario": "task-events",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/events/stream",
+      "module": "task-events",
+      "tier": "contract",
+      "scenario": "task-events",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/files/{path}",
+      "module": "task-files",
+      "tier": "contract",
+      "scenario": "file-reference",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/result",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/review",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/sse",
+      "module": "task-events",
+      "tier": "contract",
+      "scenario": "task-events",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/supervisor",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/workspace",
+      "module": "task-workspace",
+      "tier": "contract",
+      "scenario": "task-workspace",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/workspace/events",
+      "module": "task-events",
+      "tier": "contract",
+      "scenario": "task-events",
+      "required": true
+    },
+    {
+      "operation": "GET /api/tasks/{task_id}/workspace/stream",
+      "module": "task-events",
+      "tier": "contract",
+      "scenario": "task-events",
+      "required": true
+    },
+    {
+      "operation": "GET /api/v2/dynamic/health",
+      "module": "dynamic-orchestration",
+      "tier": "read-only",
+      "scenario": "dynamic-orchestration",
+      "required": true
+    },
+    {
+      "operation": "PATCH /api/settings/default-model",
+      "module": "model-settings",
+      "tier": "contract",
+      "scenario": "protocol-settings",
+      "required": true
+    },
+    {
+      "operation": "PATCH /api/settings/protocols/{model_id}",
+      "module": "model-settings",
+      "tier": "contract",
+      "scenario": "protocol-settings",
+      "required": true
+    },
+    {
+      "operation": "POST /api/chat/completions",
+      "module": "chat",
+      "tier": "gateway",
+      "scenario": "chat-gateway",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "只回复“ok”。"
+            }
+          ],
+          "model": "${model_id}",
+          "stream": false
+        },
+        "expected_statuses": [
+          200
+        ],
+        "required_json_paths": [
+          "choices.0.message.content"
+        ],
+        "expected_json_values": {
+          "choices.0.message.role": "assistant"
+        }
+      }
+    },
+    {
+      "operation": "POST /api/chat/stream",
+      "module": "chat",
+      "tier": "gateway",
+      "scenario": "chat-gateway",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "messages": [
+            {
+              "role": "user",
+              "content": "只回复“ok”。"
+            }
+          ],
+          "model": "${model_id}",
+          "stream": true
+        },
+        "expected_statuses": [
+          200
+        ],
+        "expect_sse": {
+          "required": [
+            "event: chat.chunk",
+            "event: chat.done"
+          ],
+          "forbidden": [
+            "event: chat.error"
+          ]
+        }
+      }
+    },
+    {
+      "operation": "POST /api/model-validation",
+      "module": "model-validation",
+      "tier": "gateway",
+      "scenario": "model-validation",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "model_id": "${model_id}",
+          "context_marker": "api-full-test"
+        },
+        "expected_statuses": [
+          200
+        ],
+        "expect_sse": {
+          "required": [
+            "event:"
+          ],
+          "forbidden": []
+        }
+      }
+    },
+    {
+      "operation": "POST /api/model-validation/stream",
+      "module": "model-validation",
+      "tier": "gateway",
+      "scenario": "model-validation",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "model_id": "${model_id}",
+          "context_marker": "api-full-test"
+        },
+        "expected_statuses": [
+          200
+        ],
+        "expect_sse": {
+          "required": [
+            "event:"
+          ],
+          "forbidden": []
+        }
+      }
+    },
+    {
+      "operation": "POST /api/settings/rag/jobs",
+      "module": "rag-sync",
+      "tier": "state-machine",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "POST /api/settings/rag/plans",
+      "module": "rag-sync",
+      "tier": "state-machine",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "POST /api/settings/rag/rebuild",
+      "module": "rag-sync",
+      "tier": "contract",
+      "scenario": "rag-sync",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/archive",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/assets",
+      "module": "task-files",
+      "tier": "contract",
+      "scenario": "file-reference",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/cancel",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/continue",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/recover",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/resume",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/rollback-chapter-plan",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/tasks/{task_id}/run",
+      "module": "task-lifecycle",
+      "tier": "state-machine",
+      "scenario": "task-lifecycle",
+      "required": true
+    },
+    {
+      "operation": "POST /api/v2/dynamic/orchestrate",
+      "module": "dynamic-orchestration",
+      "tier": "gateway",
+      "scenario": "dynamic-orchestration",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "task_type": "outline_review",
+          "task_description": "验证动态编排接口可用性。",
+          "task_context": {},
+          "model": "${model_id}",
+          "max_workers": 1
+        },
+        "expected_statuses": [
+          200
+        ],
+        "required_json_paths": [
+          "success"
+        ],
+        "expected_json_values": {
+          "success": true
+        }
+      }
+    },
+    {
+      "operation": "POST /api/v2/dynamic/orchestrate/compare",
+      "module": "dynamic-orchestration",
+      "tier": "gateway",
+      "scenario": "dynamic-orchestration",
+      "required": true,
+      "live_request": {
+        "payload": {
+          "task_type": "outline_review",
+          "task_description": "验证动态编排对比接口可用性。",
+          "task_context": {},
+          "model": "${model_id}",
+          "max_workers": 1
+        },
+        "expected_statuses": [
+          200
+        ],
+        "required_json_paths": [
+          "dynamic",
+          "legacy"
+        ]
+      }
+    }
+  ]
+}

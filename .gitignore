@@ -138,3 +138,4 @@ apps/agent-runtime/.next/
 
 # Git worktrees
 .worktrees/
+.superpowers/

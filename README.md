@@ -96,27 +96,39 @@ npm run build
 # 健康检查
 curl http://localhost:8000/api/health
 
-# 查看模型列表（14 个模型）
-curl http://localhost:8000/api/models | python3 -c "
+# 查看当前供应商返回的模型目录（必要时绕过服务端缓存）
+curl 'http://localhost:8000/api/models?refresh=true' | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
 print(f'模型数量: {len(d[\"data\"])}')
 for m in d['data']:
-    print(f'  {m[\"id\"]} ({m.get(\"display_name\",\"\")})')
+    meta=m.get('metadata', {})
+    print(f'  {m[\"id\"]} ({m.get(\"display_name\",\"\")}) - {meta.get(\"compatibility\",\"unverified\")}')
 "
+
+# 小说任务只能使用 /api/models 中兼容性已验证的模型；验证过程通过 SSE 返回
+curl -N -X POST http://localhost:8000/api/model-validation \
+  -H 'Content-Type: application/json' \
+  -d '{"model_id":"<来自 /api/models 的模型 ID>"}'
+
+# 创建小说任务时显式传入已验证的 model_id
+curl -X POST http://localhost:8000/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"写一个关于人工智能的科幻小说","model_id":"<已验证模型 ID>"}'
 
 # 查看 Dashboard
 curl http://localhost:8000/api/dashboard | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-print(f'默认模型: {d[\"model_summary\"][\"default_model\"]}')
+print(f'当前供应商模型数: {len(d[\"model_summary\"][\"supported_models\"])}')
 print(f'待处理: {d[\"continue_total\"]}, 运行中: {d[\"running_total\"]}, 失败: {d[\"failed_total\"]}')
 "
 
-# 切换默认模型
-curl -X PATCH http://localhost:8000/api/settings/default-model \
+# 全局默认模型接口已废弃，固定返回 410
+curl -i -X PATCH http://localhost:8000/api/settings/default-model \
   -H 'Content-Type: application/json' \
   -d '{"model_id":"gpt-5.3-codex"}'
+# {"detail":"全局默认模型已移除，请在任务、聊天或恢复动作中显式选择模型。"}
 
 # 归档列表（分页）
 curl "http://localhost:8000/api/archive?page=1&page_size=5" | python3 -c "
@@ -153,8 +165,8 @@ apps/
 
 ## 核心功能
 
-- **首页双栏布局**：Tab 分组任务列表 + 侧边栏统计 & 模型切换
-- **默认模型切换**：首页侧边栏下拉选择，运行时生效，持久化到配置文件
+- **首页双栏布局**：Tab 分组任务列表 + 侧边栏统计与当前供应商模型信息
+- **显式模型选择**：从 `/api/models` 选择模型；任务、聊天、恢复和动态编排均不回退到全局默认模型，小说任务还要求兼容性已验证
 - **归档分页**：后端分页查询，前端 Pagination 组件
 - **工作流**：LangGraph 驱动（创建 → 规划 → 审核 → 生成 → 归档）
 - **上下文管理**：预算分配、参考素材压缩、模型响应缓存

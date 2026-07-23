@@ -1,0 +1,247 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "module": "api-gate",
+      "include": [
+        ".agents/skills/api-full-test/**",
+        "apps/agent-runtime/tests/test_api_full_test_script.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_full_test_script.py"
+      ]
+    },
+    {
+      "module": "core-api",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/llm/model_catalog.py",
+        "apps/agent-runtime/app/llm/model_capabilities_config.py",
+        "apps/agent-runtime/app/settings/**",
+        "apps/web/src/lib/api.ts",
+        "apps/web/src/app/page.tsx",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_model_catalog.py",
+        "apps/agent-runtime/tests/test_runtime_settings.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_model_catalog.py",
+        "apps/agent-runtime/tests/test_runtime_settings.py"
+      ]
+    },
+    {
+      "module": "model-validation",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/llm/model_compatibility.py",
+        "apps/agent-runtime/app/llm/gateway_client.py",
+        "apps/web/src/features/chat/model-validation-panel.tsx",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_model_compatibility.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_model_compatibility.py"
+      ]
+    },
+    {
+      "module": "model-settings",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/settings/runtime_settings.py",
+        "apps/agent-runtime/app/llm/protocols.py",
+        "apps/web/src/features/settings/model-protocol-settings-client.tsx",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_runtime_settings.py",
+        "apps/agent-runtime/tests/test_protocol_adapter.py",
+        "apps/agent-runtime/tests/test_settings_and_gateway_fail_fast.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_runtime_settings.py",
+        "apps/agent-runtime/tests/test_protocol_adapter.py",
+        "apps/agent-runtime/tests/test_settings_and_gateway_fail_fast.py"
+      ]
+    },
+    {
+      "module": "rag-sync",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/rag/**",
+        "embeddingProject/**",
+        "apps/web/src/app/settings/rag/page.tsx",
+        "apps/web/src/features/settings/rag-settings-client.tsx",
+        "apps/agent-runtime/tests/test_rag_rebuild.py",
+        "apps/agent-runtime/tests/test_rag_service.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_rag_rebuild.py",
+        "apps/agent-runtime/tests/test_rag_service.py"
+      ]
+    },
+    {
+      "module": "style-profiles",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/style_profiles/**",
+        "apps/agent-runtime/app/novel_skills/**",
+        "apps/web/src/app/settings/page.tsx",
+        "apps/agent-runtime/tests/test_style_profiles.py",
+        "apps/agent-runtime/tests/test_graph_style_profiles.py",
+        "apps/agent-runtime/tests/test_novel_skills.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_style_profiles.py",
+        "apps/agent-runtime/tests/test_graph_style_profiles.py",
+        "apps/agent-runtime/tests/test_novel_skills.py"
+      ]
+    },
+    {
+      "module": "task-lifecycle",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/application/task_service/core.py",
+        "apps/agent-runtime/app/application/task_service/runner.py",
+        "apps/agent-runtime/app/application/task_service/review.py",
+        "apps/agent-runtime/app/application/task_service/recovery.py",
+        "apps/agent-runtime/app/application/task_service/continuation.py",
+        "apps/agent-runtime/app/domain/**",
+        "apps/agent-runtime/app/graph/**",
+        "apps/agent-runtime/app/storage/**",
+        "apps/web/src/features/task-create/**",
+        "apps/web/src/features/task-recovery/**",
+        "apps/web/src/features/task-run/**",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_e2e_full_workflow.py",
+        "apps/agent-runtime/tests/test_task_service_review_resume.py",
+        "apps/agent-runtime/tests/test_recovery_cancelled_task.py",
+        "apps/agent-runtime/tests/test_workflow_cancel_routes.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_e2e_full_workflow.py",
+        "apps/agent-runtime/tests/test_task_service_review_resume.py",
+        "apps/agent-runtime/tests/test_recovery_cancelled_task.py",
+        "apps/agent-runtime/tests/test_workflow_cancel_routes.py"
+      ]
+    },
+    {
+      "module": "task-workspace",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/application/task_service/queries.py",
+        "apps/agent-runtime/app/application/task_service/review.py",
+        "apps/agent-runtime/app/storage/**",
+        "apps/web/src/app/p/**",
+        "apps/web/src/features/project/**",
+        "apps/web/src/features/task-result/**",
+        "apps/web/src/features/task-review/**",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_service_workspace.py",
+        "apps/agent-runtime/tests/test_task_store_context.py",
+        "apps/agent-runtime/tests/test_task_store_supervisor.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_service_workspace.py",
+        "apps/agent-runtime/tests/test_task_store_context.py",
+        "apps/agent-runtime/tests/test_task_store_supervisor.py"
+      ]
+    },
+    {
+      "module": "task-events",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/application/task_service/queries.py",
+        "apps/agent-runtime/app/storage/**",
+        "apps/web/src/features/project/live-event-log.tsx",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_event_stream.py",
+        "apps/agent-runtime/tests/test_outline_progress_events.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_event_stream.py",
+        "apps/agent-runtime/tests/test_outline_progress_events.py"
+      ]
+    },
+    {
+      "module": "task-files",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/application/task_service/queries.py",
+        "apps/agent-runtime/app/storage/**",
+        "apps/web/src/lib/api.ts",
+        "apps/agent-runtime/tests/test_api_context.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py"
+      ]
+    },
+    {
+      "module": "archive",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/application/task_service/core.py",
+        "apps/agent-runtime/app/application/task_service/queries.py",
+        "apps/agent-runtime/app/storage/**",
+        "apps/web/src/app/archive/**",
+        "apps/web/src/features/task-archive/**",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_service_workspace.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_task_service_workspace.py"
+      ]
+    },
+    {
+      "module": "chat",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/routes.py",
+        "apps/agent-runtime/app/services/chat_service.py",
+        "apps/agent-runtime/app/llm/gateway_client.py",
+        "apps/agent-runtime/app/llm/story_engine.py",
+        "apps/web/src/app/chat/**",
+        "apps/web/src/features/chat/**",
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_gateway_empty_response_retry.py",
+        "apps/agent-runtime/tests/test_gateway_max_tokens_injection.py",
+        "apps/agent-runtime/tests/test_story_engine_context.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_api_context.py",
+        "apps/agent-runtime/tests/test_gateway_empty_response_retry.py",
+        "apps/agent-runtime/tests/test_gateway_max_tokens_injection.py",
+        "apps/agent-runtime/tests/test_story_engine_context.py"
+      ]
+    },
+    {
+      "module": "dynamic-orchestration",
+      "include": [
+        "apps/agent-runtime/app/main.py",
+        "apps/agent-runtime/app/api/dynamic_routes.py",
+        "apps/agent-runtime/app/agents/dynamic/**",
+        "apps/agent-runtime/app/llm/gateway_client.py",
+        "apps/agent-runtime/tests/test_dynamic_routes.py",
+        "apps/agent-runtime/tests/test_dynamic_review_bridge.py"
+      ],
+      "pytest_targets": [
+        "apps/agent-runtime/tests/test_dynamic_routes.py",
+        "apps/agent-runtime/tests/test_dynamic_review_bridge.py"
+      ]
+    }
+  ]
+}

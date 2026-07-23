@@ -1,0 +1,3754 @@
+{
+  "version": 1,
+  "openapi_fingerprint": "b1212bc1918eedd245edacc4f63e3ed66804474348d46eb568ceb8a17e7d819e",
+  "operations": [
+    {
+      "method": "GET",
+      "path": "/api/archive",
+      "operation_id": "get_archive_api_archive_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/archive/{task_id}",
+      "operation_id": "get_archive_detail_api_archive__task_id__get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/completions",
+      "operation_id": "chat_completions_api_chat_completions_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "messages": {
+                  "items": {
+                    "properties": {
+                      "content": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "content",
+                      "role"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "rag_enabled": {
+                  "type": "boolean"
+                },
+                "rag_top_k": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stream": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "messages"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/chat/stream",
+      "operation_id": "chat_stream_api_chat_stream_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "messages": {
+                  "items": {
+                    "properties": {
+                      "content": {
+                        "type": "string"
+                      },
+                      "role": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "content",
+                      "role"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "rag_enabled": {
+                  "type": "boolean"
+                },
+                "rag_top_k": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stream": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "messages"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/dashboard",
+      "operation_id": "get_dashboard_api_dashboard_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/file-text",
+      "operation_id": "get_file_text_api_file_text_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/health",
+      "operation_id": "health_api_health_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/model-validation",
+      "operation_id": "delete_model_validation_api_model_validation_delete",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/model-validation",
+      "operation_id": "get_model_validation_api_model_validation_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/model-validation",
+      "operation_id": "stream_model_validation_api_model_validation_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/model-validation/stream",
+      "operation_id": "stream_model_validation_legacy_api_model_validation_stream_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/models",
+      "operation_id": "list_models_api_models_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/settings/default-model",
+      "operation_id": "update_default_model_api_settings_default_model_patch",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/protocols",
+      "operation_id": "get_protocol_settings_api_settings_protocols_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/settings/protocols/{model_id}",
+      "operation_id": "delete_model_protocol_api_settings_protocols__model_id__delete",
+      "signature": {
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/settings/protocols/{model_id}",
+      "operation_id": "update_model_protocol_api_settings_protocols__model_id__patch",
+      "signature": {
+        "parameters": [
+          {
+            "name": "model_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/rag",
+      "operation_id": "get_rag_status_api_settings_rag_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/rag/jobs",
+      "operation_id": "create_rag_sync_job_api_settings_rag_jobs_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/rag/jobs/current",
+      "operation_id": "get_current_rag_sync_job_api_settings_rag_jobs_current_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings/rag/jobs/{job_id}",
+      "operation_id": "get_rag_sync_job_api_settings_rag_jobs__job_id__get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/rag/plans",
+      "operation_id": "create_rag_sync_plan_api_settings_rag_plans_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "additionalProperties": true,
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/settings/rag/rebuild",
+      "operation_id": "rebuild_rag_library_api_settings_rag_rebuild_post",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/style-profiles",
+      "operation_id": "list_style_profiles_api_style_profiles_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks",
+      "operation_id": "create_task_api_tasks_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "audience": {
+                  "type": "string"
+                },
+                "auto_review": {
+                  "anyOf": [
+                    {
+                      "type": "boolean"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "auto_review_model_mode": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "fixed",
+                        "follow_creative"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "banned": {
+                  "type": "string"
+                },
+                "chapter_word_min": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "creative_mode": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "fanfic",
+                        "original",
+                        "style_remix"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "genre": {
+                  "type": "string"
+                },
+                "mode": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "fanfic",
+                        "long_story",
+                        "short_story",
+                        "style_remix"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "model_id": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "novel_size": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "long",
+                        "medium",
+                        "short"
+                      ],
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "review_model_id": {
+                  "type": "string"
+                },
+                "style": {
+                  "type": "string"
+                },
+                "style_profile_id": {
+                  "type": "string"
+                },
+                "target_chapter_count": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title_hint": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "prompt"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/tasks/{task_id}",
+      "operation_id": "delete_task_api_tasks__task_id__delete",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}",
+      "operation_id": "get_task_api_tasks__task_id__get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/archive",
+      "operation_id": "archive_completed_task_api_tasks__task_id__archive_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/artifacts",
+      "operation_id": "list_artifacts_api_tasks__task_id__artifacts_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/assets",
+      "operation_id": "upload_asset_api_tasks__task_id__assets_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "properties": {
+                "file": {
+                  "contentMediaType": "application/octet-stream",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "file"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/cancel",
+      "operation_id": "cancel_task_api_tasks__task_id__cancel_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "anyOf": [
+                {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/chapters",
+      "operation_id": "get_current_chapters_api_tasks__task_id__chapters_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/continue",
+      "operation_id": "continue_task_api_tasks__task_id__continue_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "continue_request_id": {
+                  "type": "string"
+                },
+                "model_id": {
+                  "type": "string"
+                },
+                "requested_chapter_count": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "continue_request_id",
+                "requested_chapter_count"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/events/history",
+      "operation_id": "get_task_event_history_api_tasks__task_id__events_history_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/events/stream",
+      "operation_id": "stream_task_events_api_tasks__task_id__events_stream_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/files/{path}",
+      "operation_id": "get_task_file_text_api_tasks__task_id__files__path__get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "path",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/recover",
+      "operation_id": "recover_task_api_tasks__task_id__recover_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "model_id": {
+                      "type": "string"
+                    },
+                    "recovery_mode": {
+                      "enum": [
+                        "recover_to_stable",
+                        "restart_from_input"
+                      ],
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/result",
+      "operation_id": "get_result_api_tasks__task_id__result_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/resume",
+      "operation_id": "resume_task_api_tasks__task_id__resume_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "approved": {
+                  "type": "boolean"
+                },
+                "comment": {
+                  "type": "string"
+                },
+                "model_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "approved"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/review",
+      "operation_id": "get_review_api_tasks__task_id__review_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/rollback-chapter-plan",
+      "operation_id": "rollback_chapter_plan_api_tasks__task_id__rollback_chapter_plan_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "keep_batch_count": {
+                  "minimum": 0.0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "keep_batch_count"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/tasks/{task_id}/run",
+      "operation_id": "run_task_api_tasks__task_id__run_post",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "anyOf": [
+                {
+                  "properties": {
+                    "model_id": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/sse",
+      "operation_id": "stream_task_events_api_tasks__task_id__sse_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/supervisor",
+      "operation_id": "get_supervisor_api_tasks__task_id__supervisor_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/workspace",
+      "operation_id": "get_workspace_api_tasks__task_id__workspace_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/workspace/events",
+      "operation_id": "stream_task_events_api_tasks__task_id__workspace_events_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/tasks/{task_id}/workspace/stream",
+      "operation_id": "stream_task_events_api_tasks__task_id__workspace_stream_get",
+      "signature": {
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/v2/dynamic/health",
+      "operation_id": "dynamic_health_api_v2_dynamic_health_get",
+      "signature": {
+        "parameters": [],
+        "request_body": null,
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/dynamic/orchestrate",
+      "operation_id": "orchestrate_api_v2_dynamic_orchestrate_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "max_workers": {
+                  "maximum": 16.0,
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "task_context": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "task_description": {
+                  "type": "string"
+                },
+                "task_type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_description",
+                "task_type"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "agent_results": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "agents_created": {
+                    "type": "integer"
+                  },
+                  "agents_failed": {
+                    "type": "integer"
+                  },
+                  "agents_succeeded": {
+                    "type": "integer"
+                  },
+                  "blueprint_snapshot": {
+                    "items": {
+                      "additionalProperties": true,
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "dag_snapshot": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "orchestration_id": {
+                    "type": "string"
+                  },
+                  "overall_approved": {
+                    "type": "boolean"
+                  },
+                  "overall_score": {
+                    "type": "number"
+                  },
+                  "success": {
+                    "type": "boolean"
+                  },
+                  "synthesis_result": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "total_duration_ms": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "success"
+                ],
+                "type": "object"
+              }
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/v2/dynamic/orchestrate/compare",
+      "operation_id": "orchestrate_compare_api_v2_dynamic_orchestrate_compare_post",
+      "signature": {
+        "parameters": [],
+        "request_body": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "properties": {
+                "max_workers": {
+                  "maximum": 16.0,
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "model": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "task_context": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "task_description": {
+                  "type": "string"
+                },
+                "task_type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "task_description",
+                "task_type"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "additionalProperties": true,
+                "type": "object"
+              }
+            },
+            "headers": {}
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "properties": {
+                  "detail": {
+                    "items": {
+                      "properties": {
+                        "ctx": {
+                          "type": "object"
+                        },
+                        "input": {},
+                        "loc": {
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "integer"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          },
+                          "type": "array"
+                        },
+                        "msg": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "loc",
+                        "msg",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "headers": {}
+          }
+        },
+        "security": [],
+        "deprecated": false
+      }
+    }
+  ]
+}
